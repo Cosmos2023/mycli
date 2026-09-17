@@ -1,3 +1,4 @@
+import { deniedReadPath, type DeniedReadPolicy } from "../policy/denied-read-policy.ts";
 import {
 	realpath,
 	stat,
@@ -10,7 +11,7 @@ import {
 	resolve,
 	sep,
 } from "node:path";
-import { isOutside } from "../path-containment.ts";
+import { isOutside, isWithinRoots } from "../path-containment.ts";
 
 export type WorkspacePathErrorKind =
 	| "not_found"
@@ -37,6 +38,7 @@ export interface WritableWorkspaceFile {
 }
 
 export interface WorkspacePathResolutionOptions {
+	readonly deniedReadPolicy?: DeniedReadPolicy;
 	readonly allowOutsideWorkspace?: boolean;
 	readonly allowedRoots?: readonly string[];
 }
@@ -59,6 +61,9 @@ export async function resolveReadableWorkspaceFile(
 			&& options.allowedRoots === undefined
 			&& isOutside(unresolvedRoot, candidate)) {
 			throw new WorkspacePathError("workspace_escape");
+		}
+		if (options.deniedReadPolicy && deniedReadPath(unresolvedRoot, candidate, options.deniedReadPolicy)) {
+			throw new WorkspacePathError("permission_denied");
 		}
 		realTarget = await realpath(candidate);
 	} catch (error) {
@@ -110,9 +115,12 @@ export async function resolveWritableWorkspaceFile(
 		throw new WorkspacePathError("is_directory");
 	}
 
+	if (options.deniedReadPolicy && deniedReadPath(unresolvedRoot, candidate, options.deniedReadPolicy)) {
+		throw new WorkspacePathError("permission_denied");
+	}
 	const located = await locateWritableTarget(candidate);
 	if (!options.allowOutsideWorkspace
-		&& !isWithinAllowedRoots(realRoot, located.target, options.allowedRoots)) {
+		&& !isWithinRoots(located.target, options.allowedRoots ?? [realRoot])) {
 		throw new WorkspacePathError("workspace_escape");
 	}
 	return {
@@ -194,7 +202,7 @@ function isWithinAllowedRoots(
 	allowedRoots: readonly string[] | undefined,
 ): boolean {
 	return !isOutside(workspaceRoot, candidate)
-		|| (allowedRoots ?? []).some((root) => !isOutside(resolve(root), candidate));
+		|| isWithinRoots(candidate, allowedRoots ?? []);
 }
 
 function classifyPathError(error: unknown): WorkspacePathError {

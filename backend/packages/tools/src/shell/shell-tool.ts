@@ -234,6 +234,12 @@ export class ShellTool implements ToolAdapter {
 				policy = { ...policy, network: options.executionPolicy.network, networkDomains: options.executionPolicy.networkDomains };
 			}
 		}
+		if ((options.executionPolicy.deniedReadRoots?.length ?? 0) > 0 || (options.executionPolicy.deniedReadGlobs?.length ?? 0) > 0) {
+			policy = { ...policy,
+				deniedReadRoots: [...new Set([...(policy.deniedReadRoots ?? []), ...(options.executionPolicy.deniedReadRoots ?? [])])],
+				deniedReadGlobs: [...new Set([...(policy.deniedReadGlobs ?? []), ...(options.executionPolicy.deniedReadGlobs ?? [])])],
+			};
+		}
 		const effectivePolicy = policy.networkDomains === undefined ? policy : {
 			...policy, networkDomains: Object.freeze([...policy.networkDomains]),
 		};
@@ -267,9 +273,9 @@ export class ShellTool implements ToolAdapter {
 			};
 			launch = prepareSandboxedProcess(argv, profile, probes);
 			if (effectivePolicy.network === "enabled" && effectivePolicy.networkDomains?.length) {
-				if (this.#platform !== "darwin") {
+				if (this.#platform !== "darwin" && this.#platform !== "win32") {
 					throw new ProcessSandboxError("network_proxy_unavailable",
-						"Domain-constrained Shell networking is currently supported only on macOS.");
+						"Domain-constrained Shell networking is currently supported only on macOS and Windows.");
 				}
 				options.signal.throwIfAborted();
 				networkProxy = await this.#networkProxyFactory(effectivePolicy.networkDomains);

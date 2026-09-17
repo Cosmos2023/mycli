@@ -29,12 +29,18 @@
 - Tool route binding:
   `ToolRouter.beginTurn(turnId, catalog?) -> void` and
   `ToolAdapter.beginTurn?(turnId, catalog?) -> void`.
+- Optional integration lifecycle port:
+  `NodeTurnRuntimeOptions.runLifecycle.prepare(turnId, signal)` and `finish(turnId)`.
 - Durable suspension field:
   `suspended_turn.payload.continuation.run_snapshot`.
 - Compaction factory:
   `createCompactionCoordinator(config, runSnapshot?) -> CompactionCoordinatorContract`.
 - Child inheritance callback:
   `parentTools({parentSessionId, parentTurnId}) -> string[]`.
+- Durable child extension authority:
+  `AgentSpawnConfigSnapshot.integrationAuthority?: {configurationFingerprint, toolFingerprints}`.
+  Both fingerprint kinds are lowercase 64-character SHA-256 strings; at most 512 tool entries
+  with non-empty names of at most 256 characters. Invalid values fail with `StorageFailure`.
 
 ### 3. Contracts
 
@@ -43,6 +49,11 @@
   deferred definitions, optional rendered skill catalog, and a deterministic SHA-256 fingerprint.
 - Snapshot construction validates and copies all nested values. Callers cannot mutate policy roots,
   tool arrays, definitions, schemas, or skill text after the snapshot is created.
+- Await the optional run lifecycle preparation before snapshot/catalog capture. The app uses it
+  to refresh integrations and retain the session's content owner; runtime does not depend on the
+  integrations implementation. Terminal cleanup releases ownership even after preparation failure
+  or cancellation. Approval/clarification suspension, including a retryable resolution failure,
+  keeps ownership until completion/interruption. Repeated preparation for that owner is idempotent.
 - The first provider step and every later step in the run use the same collaboration mode, direct
   catalog, deferred catalog, and skill catalog. Trust, permission, MCP, plugin, or skill discovery
   changes affect only a later run.
@@ -50,8 +61,17 @@
   names from that run's frozen deferred catalog. Unknown, removed, newly discovered, or duplicate
   names do not widen exposure. Schema additions invalidate Responses continuation before canonical
   replay.
+- Discovery is not execution authorization. Calls to registered deferred tools in the frozen
+  allowed catalog proceed through normal argument validation, policy, and hooks even before a
+  search in this run. Absent/disallowed tools remain unavailable; image capability checks remain
+  separate. Tool-search activation alone does not approve an operation.
+- New run construction applies `planExtensionToolExposure` to the published integration catalog
+  and durable session discovery fingerprints. Retained tools become direct definitions only after
+  full current-definition matching and budget checks. See `mcp-runtime-contract.md` for bounds.
+- Stable external-tool ordering and source descriptions must survive direct/deferred selection
+  changes when the exposed set is unchanged. Actual provider cache hits require provider evidence.
 - `ToolRouter` binds a restored dynamic route only when both its route name and complete current
-  definition match the frozen deferred definition. A refreshed adapter with a different schema is
+  definition match a frozen direct or deferred definition. A refreshed adapter with a different schema is
   unavailable to the old run even if it reuses the same name.
 - Approval and clarification suspension persist the complete run snapshot with the continuation.
   Restoration requires the suspended turn id to match. When the same process still owns the run,
@@ -68,7 +88,10 @@
 - A child agent inherits its parent tools and execution policy from the exact parent session/turn
   snapshot. Child-requested tools can narrow that set but cannot expand it. Missing parent snapshot
   state fails closed to an empty tool set and a read-only policy projection instead of consulting the
-  current global catalog or policy.
+  current global catalog or policy. Child spawn state also retains non-secret integration
+  configuration and tool fingerprints. Session-owned child clients pin the captured configuration;
+  reloaded children cannot adopt changed schemas, packages, hooks or Skill catalogs under old
+  authority. Missing legacy fingerprints disable integrations while preserving built-in tools.
 - Root Worker wrappers forward snapshot lookup without owning a second copy. Terminal cleanup asks
   `RunExecutionCoordinator` to end policy state and remove the in-memory mode/snapshot state
   together.
@@ -94,6 +117,8 @@
 | Activated name is absent from the frozen deferred catalog | Ignore it; do not expose or route the tool |
 | Current dynamic adapter definition differs from the frozen definition | Keep the route unavailable for that run |
 | Parent run snapshot is unavailable | Spawn inherits no tools and no elevated authority |
+| Child configuration or tool fingerprint differs on reload | Disable unmatched integrations before execution; preserve allowed built-ins |
+| Child authority contains invalid hashes or too many tool entries | Reject durable spawn state before reservation |
 
 ### 5. Good/Base/Bad Cases
 
@@ -116,6 +141,9 @@
   steps and assert the active run is unchanged while the next run observes the refresh.
 - Approval and clarification tests recreate continuation coordinators and recover the exact stored
   snapshot; same-process mismatch tests assert resolution has not started.
+- Lifecycle tests prove refresh-before-capture, no provider request before preparation, release
+  after failure/cancellation/completion, and retention through approvals/questions and retryable
+  resolution failures. App tests prove independent root/child ownership protects live MCP clients while allowing another session to refresh.
 - Router and `tool_search` tests restore an old catalog after dynamic refresh and assert newly added
   or schema-changed routes cannot be discovered or executed.
 - Compaction tests change durable activations between estimates and assert the lazy base-context

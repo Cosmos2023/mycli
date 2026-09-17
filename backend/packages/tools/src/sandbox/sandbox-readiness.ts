@@ -44,6 +44,7 @@ export interface SandboxReadiness {
 	readonly helperCompatible?: boolean;
 	readonly setupComplete?: boolean;
 	readonly sandboxReady?: boolean;
+	readonly managedStatePresent?: boolean;
 }
 
 export interface WindowsSandboxHandshake {
@@ -51,6 +52,7 @@ export interface WindowsSandboxHandshake {
 	readonly protocolVersion: number;
 	readonly setupComplete: boolean;
 	readonly sandboxReady: boolean;
+	readonly managedStatePresent?: boolean;
 }
 
 export interface SandboxReadinessProbes {
@@ -129,6 +131,7 @@ export async function inspectSandboxReadiness(
 			helperCompatible: handshake.protocolVersion === WINDOWS_SANDBOX_PROTOCOL_VERSION,
 			setupComplete: handshake.setupComplete,
 			sandboxReady: handshake.sandboxReady,
+			...(handshake.managedStatePresent === undefined ? {} : { managedStatePresent: handshake.managedStatePresent }),
 		} as const;
 		if (!details.helperCompatible) {
 			return readiness(
@@ -209,6 +212,7 @@ function runWindowsSandboxHandshake(
 					protocolVersion: value.protocol_version,
 					setupComplete: value.setup_complete,
 					sandboxReady: value.sandbox_ready,
+					...(value.managed_state_present === undefined ? {} : { managedStatePresent: value.managed_state_present }),
 				};
 				if (!validWindowsHandshakeShape(handshake)) {
 					throw new TypeError("invalid sandbox handshake");
@@ -250,6 +254,7 @@ function validWindowsHandshakeShape(value: unknown): value is WindowsSandboxHand
 		&& value.protocolVersion >= 0
 		&& typeof value.setupComplete === "boolean"
 		&& typeof value.sandboxReady === "boolean"
+		&& (value.managedStatePresent === undefined || typeof value.managedStatePresent === "boolean")
 		&& (value.setupComplete || !value.sandboxReady);
 }
 

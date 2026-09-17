@@ -792,10 +792,31 @@ function parseSpawnConfig(value: unknown): AgentSpawnConfigSnapshot {
 			}),
 		}),
 		tools,
+		...(parsed.integrationAuthority === undefined ? {} : {
+			integrationAuthority: parseIntegrationAuthority(parsed.integrationAuthority),
+		}),
 		...(budget === undefined ? {} : { budget }),
 		forkTurns,
 	} satisfies AgentSpawnConfigSnapshot;
 	return deepFreeze(config);
+}
+
+function parseIntegrationAuthority(value: unknown): NonNullable<AgentSpawnConfigSnapshot["integrationAuthority"]> {
+	if (!isRecord(value)) throw new StorageFailure("agent integration authority is invalid");
+	const tools = recordField(value, "toolFingerprints");
+	if (Object.keys(tools).length > 512) throw new StorageFailure("agent integration authority is too large");
+	const fingerprint = (item: unknown): string => {
+		if (typeof item !== "string" || !/^[a-f0-9]{64}$/u.test(item)) {
+			throw new StorageFailure("agent integration fingerprint is invalid");
+		}
+		return item;
+	};
+	return Object.freeze({
+		configurationFingerprint: fingerprint(value.configurationFingerprint),
+		toolFingerprints: Object.freeze(Object.fromEntries(Object.entries(tools).map(([name, hash]) => [
+			boundedString(name, "integration tool name", 256), fingerprint(hash),
+		]))),
+	});
 }
 
 function providerRoute(value: unknown): AgentSpawnConfigSnapshot["provider"]["provider"] {

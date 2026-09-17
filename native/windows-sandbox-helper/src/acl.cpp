@@ -1,9 +1,36 @@
 #include "acl.hpp"
 #include "win32.hpp"
+#include "path-guard.hpp"
+#include "state.hpp"
 #include <aclapi.h>
 
 namespace mycli::sandbox {
 namespace {
+bool HasPathAccess(const std::filesystem::path& path, PSID account_sid, DWORD permissions) {
+    PACL acl = nullptr;
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    const PathGuard guard{path};
+    const DWORD status = GetSecurityInfo(
+        guard.leaf(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+        nullptr, nullptr, &acl, nullptr, &descriptor);
+    if (status != ERROR_SUCCESS) {
+        SetLastError(status);
+        throw Win32Error("read ancestor directory security");
+    }
+    TRUSTEE_W trustee{};
+    BuildTrusteeWithSidW(&trustee, account_sid);
+    DWORD granted = 0;
+    const DWORD access_status = acl == nullptr ? ERROR_SUCCESS
+        : GetEffectiveRightsFromAclW(acl, &trustee, &granted);
+    const bool allowed = acl == nullptr || (granted & permissions) == permissions;
+    if (descriptor != nullptr) LocalFree(descriptor);
+    if (access_status != ERROR_SUCCESS) {
+        SetLastError(access_status);
+        throw Win32Error("check ancestor directory access");
+    }
+    return allowed;
+}
+
 void UpdatePathAcl(
     const std::filesystem::path& root,
     PSID capability_sid,
@@ -12,25 +39,23 @@ void UpdatePathAcl(
     DWORD inheritance) {
     PACL old_acl = nullptr;
     PSECURITY_DESCRIPTOR descriptor = nullptr;
-    const auto path = root.wstring();
-    DWORD status = GetNamedSecurityInfoW(
-        const_cast<LPWSTR>(path.c_str()), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+    const PathGuard guard{root, READ_CONTROL | WRITE_DAC};
+    DWORD status = GetSecurityInfo(
+        guard.leaf(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
         nullptr, nullptr, &old_acl, nullptr, &descriptor);
-    if (status != ERROR_SUCCESS) throw std::runtime_error("GetNamedSecurityInfoW failed");
-    PACL base_acl = old_acl;
-    PACL revoked_acl = nullptr;
-    if (mode == DENY_ACCESS) {
-        EXPLICIT_ACCESSW revoke{};
-        revoke.grfAccessMode = REVOKE_ACCESS;
-        revoke.Trustee.TrusteeForm = TRUSTEE_IS_SID;
-        revoke.Trustee.TrusteeType = TRUSTEE_IS_UNKNOWN;
-        revoke.Trustee.ptstrName = static_cast<LPWSTR>(capability_sid);
-        status = SetEntriesInAclW(1, &revoke, old_acl, &revoked_acl);
-        if (status != ERROR_SUCCESS) {
-            if (descriptor != nullptr) LocalFree(descriptor);
-            throw std::runtime_error("failed to canonicalize sandbox ACL");
-        }
-        base_acl = revoked_acl;
+    if (status != ERROR_SUCCESS) {
+        SetLastError(status);
+        throw Win32Error("read filesystem sandbox ACL");
+    }
+    if (old_acl == nullptr) {
+        LocalFree(descriptor);
+        throw std::runtime_error("sandbox cannot safely modify a null DACL");
+    }
+    try {
+        if (mode != REVOKE_ACCESS) RecordSandboxAcl(root, capability_sid);
+    } catch (...) {
+        LocalFree(descriptor);
+        throw;
     }
     EXPLICIT_ACCESSW access{};
     access.grfAccessPermissions = permissions;
@@ -40,16 +65,18 @@ void UpdatePathAcl(
     access.Trustee.TrusteeType = TRUSTEE_IS_UNKNOWN;
     access.Trustee.ptstrName = static_cast<LPWSTR>(capability_sid);
     PACL updated_acl = nullptr;
-    status = SetEntriesInAclW(1, &access, base_acl, &updated_acl);
+    status = SetEntriesInAclW(1, &access, old_acl, &updated_acl);
     if (status == ERROR_SUCCESS) {
-        status = SetNamedSecurityInfoW(
-            const_cast<LPWSTR>(path.c_str()), SE_FILE_OBJECT,
+        status = SetSecurityInfo(
+            guard.leaf(), SE_FILE_OBJECT,
             DACL_SECURITY_INFORMATION, nullptr, nullptr, updated_acl, nullptr);
     }
     if (updated_acl != nullptr) LocalFree(updated_acl);
-    if (revoked_acl != nullptr) LocalFree(revoked_acl);
     if (descriptor != nullptr) LocalFree(descriptor);
-    if (status != ERROR_SUCCESS) throw std::runtime_error("setting writable ACL failed");
+    if (status != ERROR_SUCCESS) {
+        SetLastError(status);
+        throw Win32Error("set filesystem sandbox ACL");
+    }
 }
 }  // namespace
 
@@ -58,38 +85,65 @@ void GrantWritableRoot(const std::filesystem::path& root, PSID capability_sid) {
         root,
         capability_sid,
         FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE | DELETE,
-        SET_ACCESS,
+        GRANT_ACCESS,
         SUB_CONTAINERS_AND_OBJECTS_INHERIT);
 }
 
 void GrantReadableRoot(const std::filesystem::path& root, PSID account_sid) {
-    UpdatePathAcl(
-        root,
-        account_sid,
-        FILE_GENERIC_READ | FILE_GENERIC_EXECUTE,
-        SET_ACCESS,
-        SUB_CONTAINERS_AND_OBJECTS_INHERIT);
+    // Node and other runtimes stat every ancestor while resolving absolute paths.
+    // Grant only traversal/metadata on private parents, without enumerating their
+    // children or inheriting access into sibling directories. Public ancestors
+    // already grant these rights and need no DACL modification by the host.
+    constexpr DWORD parent_permissions = FILE_TRAVERSE | FILE_READ_ATTRIBUTES;
+    auto parent = root.parent_path();
+    while (!parent.empty()) {
+        if (!HasPathAccess(parent, account_sid, parent_permissions)) {
+            UpdatePathAcl(parent, account_sid, parent_permissions, GRANT_ACCESS, NO_INHERITANCE);
+        }
+        const auto next = parent.parent_path();
+        if (next == parent) break;
+        parent = next;
+    }
+    constexpr DWORD read_permissions = FILE_GENERIC_READ | FILE_GENERIC_EXECUTE;
+    if (!HasPathAccess(root, account_sid, read_permissions)) {
+        // Preserve grants used by concurrent commands. The restricted token
+        // supplies each command's write boundary, not a mutable account DACL.
+        UpdatePathAcl(root, account_sid, read_permissions, GRANT_ACCESS,
+            SUB_CONTAINERS_AND_OBJECTS_INHERIT);
+    }
 }
 
 void DenyReadPath(const std::filesystem::path& path, PSID capability_sid) {
     UpdatePathAcl(
         path,
         capability_sid,
-        FILE_GENERIC_READ,
+        FILE_GENERIC_READ | FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_EA |
+            FILE_WRITE_ATTRIBUTES | DELETE | FILE_DELETE_CHILD | WRITE_DAC | WRITE_OWNER,
         DENY_ACCESS,
         std::filesystem::is_directory(path)
             ? SUB_CONTAINERS_AND_OBJECTS_INHERIT
             : NO_INHERITANCE);
 }
 
-void DenyWritePath(const std::filesystem::path& path, PSID capability_sid) {
+void DenyDeleteChildPath(const std::filesystem::path& path, PSID sid) {
+    UpdatePathAcl(path, sid, FILE_DELETE_CHILD, DENY_ACCESS, NO_INHERITANCE);
+}
+
+void DenyWritePath(const std::filesystem::path& path, PSID capability_sid, bool inherit) {
+    // FILE_GENERIC_WRITE also contains READ_CONTROL and SYNCHRONIZE, which
+    // readers request too. Deny only mutation rights so git can read metadata.
     UpdatePathAcl(
         path,
         capability_sid,
-        FILE_GENERIC_WRITE | DELETE | FILE_DELETE_CHILD,
+        FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES |
+            DELETE | FILE_DELETE_CHILD | WRITE_DAC | WRITE_OWNER,
         DENY_ACCESS,
-        std::filesystem::is_directory(path)
+        inherit && std::filesystem::is_directory(path)
             ? SUB_CONTAINERS_AND_OBJECTS_INHERIT
             : NO_INHERITANCE);
+}
+
+void RevokeSandboxAccess(const std::filesystem::path& path, PSID sid) {
+    UpdatePathAcl(path, sid, 0, REVOKE_ACCESS, NO_INHERITANCE);
 }
 }  // namespace mycli::sandbox

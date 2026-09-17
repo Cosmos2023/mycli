@@ -132,19 +132,48 @@ test("discovers enabled MCP servers lazily, isolates failures, and closes client
 	assert.equal(first, second);
 	assert.deepEqual(created, ["alpha", "broken"]);
 	assert.deepEqual(first.registrations.map((item) => item.id), ["mcp:alpha:read_file"]);
-	assert.deepEqual(first.resources.map((item) => item.serverId), ["alpha"]);
+	assert.deepEqual(first.resources.map((item) => item.serverId), ["alpha", "broken"]);
 	assert.deepEqual(first.servers.map((item) => [item.serverId, item.status]), [
 		["alpha", "ok"],
-		["broken", "failed"],
+		["broken", "partial"],
 		["disabled", "disabled"],
 	]);
 	assert.equal(first.servers[0]?.toolCount, 1);
 	assert.equal(first.servers[1]?.failureCategory, "transport_error");
 	assert.equal(JSON.stringify(first).includes("private-server-output"), false);
-	assert.deepEqual(closed, ["broken"]);
+	assert.deepEqual(closed, []);
 
 	await Promise.all([manager.close(), manager.close()]);
 	assert.deepEqual(closed, ["broken", "alpha"]);
+});
+
+test("a server with an invalid tool schema cannot poison another server's catalog", async (t) => {
+	const closed: string[] = [];
+	const manager = new McpManager({
+		configs: [config("valid"), config("invalid")],
+		createClient: (server) => ({
+			...client(server.id, closed),
+			listTools: async () => [{
+				serverId: server.id,
+				name: "fetch",
+				description: "Fetch a page",
+				inputSchema: {
+					type: "object",
+					properties: { url: { type: "string", format: server.id === "valid" ? "uri" : "private-format" } },
+					required: ["url"],
+				},
+				supportsParallelToolCalls: false,
+			}],
+		}),
+	});
+	t.after(() => manager.close());
+
+	const discovery = await manager.refresh(new AbortController().signal);
+	assert.deepEqual(discovery.registrations.map((registration) => registration.id), ["mcp:valid:fetch"]);
+	assert.equal(discovery.servers.find((server) => server.serverId === "invalid")?.failureCategory, "schema_error");
+	assert.equal(discovery.servers.find((server) => server.serverId === "valid")?.status, "ok");
+	assert.equal(JSON.stringify(discovery).includes("private-format"), false);
+	assert.deepEqual(closed, []);
 });
 
 test("discovers servers and each server catalog concurrently while preserving stable order", async () => {
@@ -366,7 +395,7 @@ test("close waits for an in-flight catalog save before returning", async () => {
 		},
 		createClient: () => client("unused", []),
 	});
-	const refresh = manager.refresh(new AbortController().signal);
+	const refresh = assert.rejects(manager.refresh(new AbortController().signal), { name: "AbortError" });
 	await saveStarted.promise;
 	let closeSettled = false;
 	const closing = manager.close().then(() => { closeSettled = true; });
@@ -425,3 +454,75 @@ function config(id: string, enabled = true): McpServerConfig {
 		timeoutMs: 1_000,
 	};
 }
+
+test("refresh coalesces callers, isolates their cancellation, and recovers without replacing owned clients", async (t) => {
+	const started = deferred<void>();
+	const release = deferred<void>();
+	let lists = 0;
+	let creates = 0;
+	const closed: string[] = [];
+	const manager = new McpManager({ configs: [config("alpha")], createClient: () => {
+		creates += 1;
+		return { ...client("alpha", closed), listTools: async () => {
+			lists += 1;
+			if (lists === 1) { started.resolve(); await release.promise; throw new Error("offline"); }
+			return client("alpha", []).listTools(new AbortController().signal);
+		} };
+	} });
+	t.after(() => manager.close());
+	const controller = new AbortController();
+	const cancelled = assert.rejects(manager.refresh(controller.signal), { name: "AbortError" });
+	const first = manager.refresh(new AbortController().signal);
+	await started.promise;
+	controller.abort();
+	await cancelled;
+	release.resolve();
+	assert.equal((await first).servers[0]?.status, "partial");
+	assert.equal((await manager.refresh(new AbortController().signal)).servers[0]?.status, "ok");
+	assert.equal(lists, 2);
+	assert.equal(creates, 1);
+	assert.deepEqual(closed, []);
+	await manager.close();
+	assert.deepEqual(closed, ["alpha"]);
+});
+
+test("resource and schema failures preserve healthy tools with scoped partial status", async (t) => {
+	const manager = new McpManager({ configs: [config("alpha")], createClient: () => ({
+		...client("alpha", []),
+		listResources: async () => { throw new Error("private service failure"); },
+		listTools: async () => [
+			...(await client("alpha", []).listTools(new AbortController().signal)),
+			{ serverId: "alpha", name: "bad", description: "", supportsParallelToolCalls: false, inputSchema: { type: "object", properties: { input: { format: "unknown-private-format" } } } },
+		],
+	}) });
+	t.after(() => manager.close());
+	const result = await manager.refresh(new AbortController().signal);
+	assert.deepEqual(result.registrations.map((tool) => tool.id), ["mcp:alpha:read_file"]);
+	assert.equal(result.servers[0]?.status, "partial");
+	assert.equal(result.servers[0]?.failures?.length, 2);
+	assert.equal(JSON.stringify(result).includes("private"), false);
+	assert.equal((await result.registrations[0]!.adapter.execute({}, { callId: "call", ownerSessionId: "session", publishLifecycle: () => undefined, signal: new AbortController().signal })).success, true);
+});
+
+test("canceling the last discovery waiter and then refreshing does not permanently close the manager", async (t) => {
+	const started = deferred<void>();
+	let lists = 0;
+	const manager = new McpManager({ configs: [config("alpha")], createClient: () => ({
+		...client("alpha", []), listTools: async (signal) => {
+			lists += 1;
+			if (lists === 1) {
+				started.resolve();
+				await new Promise<void>((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+			}
+			return [];
+		},
+	}) });
+	t.after(() => manager.close());
+	const controller = new AbortController();
+	const cancelled = assert.rejects(manager.refresh(controller.signal), { name: "AbortError" });
+	await started.promise;
+	controller.abort();
+	await cancelled;
+	assert.equal((await manager.refresh(new AbortController().signal)).servers[0]?.status, "ok");
+	assert.equal(lists, 2);
+});

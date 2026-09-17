@@ -14,9 +14,10 @@ import {
 	encodeSessionContentBlob,
 	MODEL_INPUT_CONTENT_BLOB_MARKER_JSON,
 	openRuntimeSessionStore,
-	SCHEMA_V14_VERSION,
+	SCHEMA_V15_VERSION,
 	subagentRunId,
 	type RuntimeSessionStore,
+	type TranscriptSnapshotV2,
 } from "@mycli/storage";
 import { renderMycliShell } from "mycli-shell-tui";
 import type { GatewayEvent } from "../../../../tui/mycli-shell/src/transport/gateway-client.ts";
@@ -345,7 +346,7 @@ test("Node backend advertises a refreshed update only on the next startup", asyn
 	await second.close();
 });
 
-test("fresh schema-v14 bootstrap loads the virtual session transcript without persisting it", async (t) => {
+test("fresh schema-v15 bootstrap loads the virtual session transcript without persisting it", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-virtual-session-"));
 	const home = join(root, "home");
 	const workspace = join(root, "workspace");
@@ -400,7 +401,7 @@ test("fresh schema-v14 bootstrap loads the virtual session transcript without pe
 
 	const database = new DatabaseSync(join(home, ".mycli", "sessions.db"), { readOnly: true });
 	try {
-		assert.equal(database.prepare("SELECT version FROM schema_version").get()?.version, SCHEMA_V14_VERSION);
+		assert.equal(database.prepare("SELECT version FROM schema_version").get()?.version, SCHEMA_V15_VERSION);
 		assert.equal(database.prepare("SELECT COUNT(*) AS count FROM sessions").get()?.count, 0);
 	} finally {
 		database.close();
@@ -522,14 +523,15 @@ test("native Azure environment auth reaches in-process and Worker requests with 
 		const workspace = join(root, "workspace");
 		await mkdir(home);
 		await mkdir(workspace);
-		const captured: Array<{ url: string; key: string | undefined; model: unknown }> = [];
+		const captured: Array<{ url: string; key: string | undefined; model: unknown; reasoning: unknown }> = [];
 		const server = createServer((request, response) => {
 			let body = "";
 			request.setEncoding("utf8");
 			request.on("data", (chunk) => { body += chunk; });
 			request.on("end", () => {
+				const payload = JSON.parse(body) as Record<string, unknown>;
 				captured.push({ url: request.url ?? "", key: request.headers["api-key"] as string | undefined,
-					model: (JSON.parse(body) as Record<string, unknown>).model });
+					model: payload.model, reasoning: payload.reasoning });
 				response.writeHead(200, { "content-type": "text/event-stream" });
 				if (captured.length === 1) {
 					response.end('event: error\ndata: {"type":"error","error":{"code":"stream_read_error","type":"upstream_error","message":"Upstream request failed"}}\n\n');
@@ -549,7 +551,7 @@ test("native Azure environment auth reaches in-process and Worker requests with 
 		const sessionId = `azure-${adapter}`;
 		const backend = await startNodeBackend({ cwd: workspace, args: ["--session", sessionId], env: {
 			HOME: home, MYCLI_PROVIDER: "azure-openai-responses", MYCLI_AGENT_EXECUTION_ADAPTER: adapter,
-			MYCLI_THINKING_ENABLED: "false", MYCLI_REQUEST_MAX_RETRIES: "0", MYCLI_STREAM_MAX_RETRIES: "1",
+			MYCLI_REASONING_EFFORT: "low", MYCLI_REQUEST_MAX_RETRIES: "0", MYCLI_STREAM_MAX_RETRIES: "1",
 			AZURE_OPENAI_BASE_URL: `http://127.0.0.1:${address.port}/openai/v1`, AZURE_OPENAI_API_KEY: "fixture-azure-key",
 			AZURE_OPENAI_API_VERSION: "2025-04-01-preview", AZURE_OPENAI_DEPLOYMENT_NAME_MAP: "gpt-5.5=fixture-deployment",
 		} });
@@ -567,6 +569,7 @@ test("native Azure environment auth reaches in-process and Worker requests with 
 		assert.equal(captured.length, 2);
 		assert.equal(captured[0]?.key, "fixture-azure-key");
 		assert.equal(captured[0]?.model, "fixture-deployment");
+		assert.equal((captured[0]?.reasoning as { effort: string }).effort, "low");
 		assert.equal(new URL(captured[0]!.url, "http://fixture.invalid").searchParams.get("api-version"), "2025-04-01-preview");
 		await backend.close();
 		const store = openRuntimeSessionStore({ dbPath: join(home, ".mycli", "sessions.db") });
@@ -714,7 +717,8 @@ test("Worker-backed root composes sessions, provider streaming, transcripts, and
 		providerToolNames(capture.requestBody?.tools),
 			[
 				"Read", "Edit", "Patch", "Write", "request_permissions", "update_plan", "web_fetch",
-				"tool_search", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "Skill",
+				"create_goal", "get_goal", "update_goal",
+				"list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "Skill",
 				"spawn_agent", "send_message", "followup_task", "interrupt_agent", "list_agents",
 				"wait_agent", "web_search",
 			],
@@ -785,10 +789,23 @@ test("Worker-backed root composes sessions, provider streaming, transcripts, and
 	const snapshot = JSON.parse(await readFile(
 		join(home, ".mycli", "sessions", "integration-session", "session.json"),
 		"utf8",
-	)) as Record<string, unknown>;
+	)) as TranscriptSnapshotV2;
 	assert.equal(snapshot.schema_version, 2);
 	assert.equal(snapshot.session_id, "integration-session");
 	assert.equal(snapshot.state, "idle");
+	assert.equal(snapshot.session?.thread_id, "integration-session");
+	assert.equal(snapshot.session?.summary_count, 0);
+	assert.equal(snapshot.session?.latest_turn_status, "completed");
+	assert.equal(snapshot.last_request?.turn_id, submittedTurnId);
+	assert.equal(snapshot.last_request?.provider, "openai");
+	assert.equal(snapshot.last_request?.protocol, "responses");
+	assert.equal(snapshot.last_request?.model, "gpt-test");
+	assert.ok(snapshot.last_request?.instruction_snapshot_id);
+	assert.ok(snapshot.last_request?.tool_set_snapshot_id);
+	assert.equal(snapshot.coverage?.included_items, snapshot.transcript.length);
+	assert.equal(snapshot.coverage?.history_truncated, false);
+	assert.equal(snapshot.coverage?.truncated_items, 0);
+	assert.doesNotMatch(JSON.stringify(snapshot), /test-key|encrypted_content|nativeTransport/u);
 	assert.equal(JSON.stringify(snapshot.transcript).includes("hello from node"), true);
 	const newSessionSnapshot = JSON.parse(await readFile(
 		join(home, ".mycli", "sessions", String(newSessionId), "session.json"),
@@ -802,6 +819,12 @@ test("Worker-backed root composes sessions, provider streaming, transcripts, and
 	);
 	const reopened = openRuntimeSessionStore({ dbPath: join(home, ".mycli", "sessions.db") });
 	try {
+		const request = reopened.modelInputLedger.loadLatestProviderRequestManifest("integration-session");
+		assert.equal(snapshot.last_request?.request_id, request?.requestId);
+		assert.equal(request?.schemaVersion, 3);
+		if (request?.schemaVersion === 3) {
+			assert.equal(snapshot.last_request?.model_input_event_count, request.timelineEventCount);
+		}
 		const userHistory = reopened.loadHistoryItems("integration-session")[0];
 		assert.equal(userHistory?.id, `${submittedTurnId}:user:integration-message`);
 		const continuation = reopened.loadState(
@@ -1359,7 +1382,7 @@ test("Explicit in-process rollback resumes default Worker state without duplicat
 		reopened.close();
 	}
 	const database = new DatabaseSync(dbPath, { readOnly: true });
-	assert.equal(database.prepare("SELECT version FROM schema_version").get()?.version, SCHEMA_V14_VERSION);
+	assert.equal(database.prepare("SELECT version FROM schema_version").get()?.version, SCHEMA_V15_VERSION);
 	const ownerCount = Number(database.prepare("SELECT COUNT(*) AS count FROM model_input_blobs").get()?.count);
 	const referenceCount = Number(database.prepare("SELECT COUNT(*) AS count FROM model_input_blob_refs").get()?.count);
 	assert.ok(ownerCount > 0);
@@ -2061,7 +2084,7 @@ for (const topology of AGENT_EXECUTION_TOPOLOGIES) test(
 	assert.equal(childRequests.length, 1);
 	assert.deepEqual(toolNames(childRequests[0]?.tools), [
 		"Read", "Edit", "Patch", "Write", "update_plan", "web_fetch",
-		"tool_search", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "Skill",
+		"list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "Skill",
 	]);
 	assert.equal(childRequests[0]?.model, "gpt-test");
 	const childAuthority = responsesAuthorityText(childRequests[0] ?? {});
@@ -2072,7 +2095,7 @@ for (const topology of AGENT_EXECUTION_TOPOLOGIES) test(
 	assert.match(childAuthority, /Assigned task: explore/u);
 	assert.match(
 		childAuthority,
-		/Tool scope: Edit, Patch, Read, Skill, Write, list_mcp_resource_templates, list_mcp_resources, read_mcp_resource, tool_search, update_plan, view_image, web_fetch/u,
+		/Tool scope: Edit, Patch, Read, Skill, Write, list_mcp_resource_templates, list_mcp_resources, read_mcp_resource, update_plan, view_image, web_fetch/u,
 	);
 	assert.match(childAuthority, /Permission profile: workspace/u);
 	assert.match(childAuthority, /Sandbox mode: workspace-write/u);
@@ -3154,7 +3177,7 @@ test("Node backend preserves a disabled parent run profile without marking the c
 			permission: "workspace",
 			sandboxMode: "workspace-write",
 			filesystem: "workspace_write",
-			network: "disabled",
+			network: "enabled",
 			writableRoots: [await realpath(workspace)],
 		});
 	} finally {
@@ -4100,13 +4123,15 @@ test("Worker-backed root exposes Shell only on turns accepted after workspace tr
 
 	assert.deepEqual(requestTools[0], [
 		"Read", "Edit", "Patch", "Write", "update_plan", "web_fetch",
-		"tool_search", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "Skill",
+		"create_goal", "get_goal", "update_goal",
+		"list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "Skill",
 		"spawn_agent", "send_message", "followup_task", "interrupt_agent", "list_agents",
 		"wait_agent", "web_search",
 	]);
 	assert.deepEqual(requestTools[1], [
 		"Read", "Edit", "Patch", "Write", "update_plan", "web_fetch",
-		"tool_search", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "Shell", "WriteStdin", "Skill", "spawn_agent", "send_message",
+		"create_goal", "get_goal", "update_goal",
+		"list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "Shell", "WriteStdin", "Skill", "spawn_agent", "send_message",
 		"followup_task", "interrupt_agent", "list_agents", "wait_agent", "web_search",
 	]);
 	writeRequest(backend, "shutdown-shell-policy", "shutdown", {});
@@ -5003,7 +5028,7 @@ test("Worker-backed root retains provider-free slash commands in the coordinator
 	assert.equal(displayValue(normalizedResult, "kind"), "notice");
 	assert.equal(resultValue(normalizedResult, "phase"), "complete");
 	assert.equal(resultValue(normalizedResult, "status"), "already_normalized");
-	assert.equal(resultValue(normalizedResult, "schema_version"), SCHEMA_V14_VERSION);
+	assert.equal(resultValue(normalizedResult, "schema_version"), SCHEMA_V15_VERSION);
 	writeRequest(backend, "provider-free-shutdown", "shutdown", {});
 	assert.equal(await backend.completion, 0);
 	const normalized = openRuntimeSessionStore({ dbPath });
@@ -5064,7 +5089,7 @@ test("Node backend reports v14 content blobs complete and collects explicit orph
 	const complete = await runCommand("/session maintenance --apply-content-blobs");
 	assert.equal(resultValue(complete, "phase"), "complete");
 	assert.equal(resultValue(complete, "status"), "already_blob_backed");
-	assert.equal(resultValue(complete, "schema_version"), SCHEMA_V14_VERSION);
+	assert.equal(resultValue(complete, "schema_version"), SCHEMA_V15_VERSION);
 	assert.doesNotMatch(JSON.stringify(complete), /private backend content|content-event/u);
 
 	const orphan = encodeSessionContentBlob("private backend orphan ".repeat(500));
@@ -5521,7 +5546,7 @@ test("Node backend persists canonical TUI control state without exposing credent
 	const modelList = await waitFor(() => response(firstMessages, "models"));
 	assert.equal(resultValue(modelList, "provider"), "openai");
 	const listedModels = resultValue(modelList, "models") as Array<Record<string, unknown>>;
-	assert.deepEqual(listedModels.map((entry) => entry.model), ["gpt-5", "gpt-selected"]);
+	assert.deepEqual(listedModels.map((entry) => entry.model), ["gpt-5.5", "gpt-selected"]);
 	assert.equal(listedModels[1]?.context_window_tokens, 200_000);
 	assert.equal(listedModels[1]?.max_output_tokens, 50_000);
 
@@ -6668,3 +6693,114 @@ async function waitFor<T>(read: () => T | undefined | false, timeoutMs = 3_000):
 	}
 	throw new Error("timed out waiting for Node backend");
 }
+
+test("selected skills reach one provider request and disabled selections cannot be invoked on later turns", async (t) => {
+ const root = await mkdtemp(join(tmpdir(), "mycli-selected-skill-"));
+ const home = join(root, "home"); const workspace = join(root, "workspace");
+ await mkdir(join(workspace, ".mycli", "skills"), { recursive: true }); await mkdir(home);
+ await writeFile(join(workspace, ".mycli", "skills", "review.md"), "---\nname: review\ndescription: Inspect changes\n---\nSELECTED_SKILL_BODY_72641\n");
+ await new WorkspaceTrustStore({ homeDir: home }).save(workspace, "trusted");
+ const requests: Record<string, unknown>[] = [];
+ const server = createServer((request, reply) => {
+  let body = ""; request.setEncoding("utf8"); request.on("data", (chunk) => { body += chunk; });
+  request.on("end", () => { requests.push(JSON.parse(body) as Record<string, unknown>); reply.writeHead(200, { "content-type": "text/event-stream" }); writeResponsesText(reply, "Reviewed.", `skill-response-${requests.length}`); reply.end("data: [DONE]\n\n"); });
+ });
+ await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+ const address = server.address(); assert.ok(address && typeof address === "object");
+ const backend = await startNodeBackend({ cwd: workspace, args: ["--session", "selected-skill", "--model", "gpt-test"], env: {
+  HOME: home, MYCLI_API_KEY: "test-key", MYCLI_BASE_URL: `http://127.0.0.1:${address.port}/v1`, MYCLI_PROVIDER: "openai", MYCLI_PROTOCOL: "responses",
+  MYCLI_THINKING_ENABLED: "false", MYCLI_MEMORY_ENABLED: "false", MYCLI_STREAM_MAX_RETRIES: "0", MYCLI_AGENT_EXECUTION_ADAPTER: "worker",
+ } });
+ t.after(async () => { await backend.close(); await new Promise<void>((resolve) => server.close(() => resolve())); await rm(root, { recursive: true, force: true }); });
+ const messages: Record<string, unknown>[] = [];
+ createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => { messages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>); });
+ await waitFor(() => event(messages, "runtime.ready"));
+ const context = { session_id: "selected-skill", generation: 1 };
+ writeRequest(backend, "list-skills", "skills.list", context);
+ const listing = await waitFor(() => response(messages, "list-skills"));
+ const skills = resultValue(listing, "skills") as Record<string, unknown>[];
+ const skill = skills.find((entry) => entry.name === "review")!; assert.ok(skill);
+ assert.doesNotMatch(JSON.stringify(listing), /SELECTED_SKILL_BODY/);
+ const reference = { id: skill.id, name: skill.name, revision: skill.revision };
+ writeRequest(backend, "invoke-skill", "turn.submit", { ...context, client_turn_id: "skill-first", client_user_message_id: "skill-first", message: "Use $review", skill_references: [reference] });
+ await waitFor(() => finalMessageCount(messages) === 1 || event(messages, "turn.failed"), 10000);
+ assert.equal(requests.length, 1); assert.match(JSON.stringify(requests[0]), /SELECTED_SKILL_BODY_72641/);
+ writeRequest(backend, "disable-skill", "skills.config.write", { ...context, id: skill.id, skill_revision: skill.revision, revision: resultValue(listing, "revision"), enabled: false });
+ const disabled = await waitFor(() => response(messages, "disable-skill")); assert.equal(disabled.error, undefined);
+ writeRequest(backend, "invoke-disabled", "turn.submit", { ...context, client_turn_id: "skill-second", client_user_message_id: "skill-second", message: "Use $review again", skill_references: [reference] });
+ await waitFor(() => messages.some((message) => message.method === "turn.failed" && paramValue(message, "client_turn_id") === "skill-second"), 10000);
+ assert.equal(requests.length, 1, "disabled selection must fail before another model request");
+});
+
+test("TUI review uses read-only tools and releases its runtime before ordinary chat", async (t) => {
+ const { execFileSync } = await import("node:child_process");
+ const root = await mkdtemp(join(tmpdir(), "mycli-tui-review-"));
+ const home = join(root, "home"); const workspace = join(root, "workspace");
+ const nested = join(workspace, "src");
+ await mkdir(nested, { recursive: true }); await mkdir(home);
+ execFileSync("git", ["init", "-q", workspace], { env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" } });
+ await writeFile(join(workspace, "sample.ts"), "export const value = 1;\n");
+ const gitEnv = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
+ execFileSync("git", ["-C", workspace, "add", "sample.ts"], { env: gitEnv });
+ execFileSync("git", ["-C", workspace, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "baseline"], { env: gitEnv });
+ await writeFile(join(workspace, "sample.ts"), "export const value = 2;\n");
+ await new WorkspaceTrustStore({ homeDir: home }).save(nested, "trusted");
+ const requests: Record<string, unknown>[] = [];
+ const server = createServer((request, reply) => {
+  let body = ""; request.setEncoding("utf8"); request.on("data", (chunk) => { body += chunk; });
+  request.on("end", () => {
+   requests.push(JSON.parse(body) as Record<string, unknown>); reply.writeHead(200, { "content-type": "text/event-stream" });
+   if (requests.length === 1 || requests.length === 5) writeResponsesTool(reply, `review-read-call-${requests.length}`, "Read", { file_path: "sample.ts", offset: 1, limit: 10 }, `review-read-${requests.length}`);
+   else if (requests.length === 3) writeResponsesTool(reply, "review-write-call", "Write", { file_path: join(workspace, "forbidden.txt"), content: "must never be written" }, "review-write");
+   else writeResponsesText(reply, "Review complete.", `review-${requests.length}`);
+   reply.end("data: [DONE]\n\n");
+  });
+ });
+ await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+ const address = server.address(); assert.ok(address && typeof address === "object");
+ const backend = await startNodeBackend({ cwd: nested, args: ["--session", "review-session", "--model", "gpt-test"], env: {
+  HOME: home, MYCLI_API_KEY: "test-key", MYCLI_BASE_URL: `http://127.0.0.1:${address.port}/v1`, MYCLI_PROVIDER: "openai", MYCLI_PROTOCOL: "responses", MYCLI_THINKING_ENABLED: "false", MYCLI_MEMORY_ENABLED: "false", MYCLI_STREAM_MAX_RETRIES: "0",
+ } });
+ t.after(async () => { await backend.close(); await new Promise<void>((resolve) => server.close(() => resolve())); await rm(root, { recursive: true, force: true }); });
+ const messages: Record<string, unknown>[] = [];
+ createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => { messages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>); });
+ await waitFor(() => event(messages, "runtime.ready"));
+ writeRequest(backend, "rename-empty", "command.run", { command: "/rename Empty review session", surface: "tui", session_id: "review-session", generation: 1 });
+ const emptyRenamed = await waitFor(() => response(messages, "rename-empty"));
+ assert.equal(resultValue(emptyRenamed, "session_title"), "Empty review session");
+ assert.equal(requests.length, 0);
+ writeRequest(backend, "review-submit", "turn.submit", { session_id: "review-session", generation: 1, client_turn_id: "review-turn", client_user_message_id: "review-turn", message: "Review uncommitted changes.", review: { kind: "uncommitted" } });
+ await waitFor(() => finalMessageCount(messages) === 1 || event(messages, "turn.failed") || response(messages, "review-submit")?.error, 10000);
+ assert.equal(response(messages, "review-submit")?.error, undefined);
+ assert.equal(finalMessageCount(messages), 1, JSON.stringify(messages.filter((message) => message.method === "turn.failed")));
+ assert.deepEqual((requests[0]!.tools as { name: string }[]).map((tool) => tool.name), ["Read"]);
+ assert.match(JSON.stringify(requests[0]), /sample.ts/);
+ const workingRead = (requests[1]!.input as Record<string, unknown>[]).find((item) => item.type === "function_call_output" && item.call_id === "review-read-call-1");
+ assert.match(JSON.stringify(workingRead), /export const value = 2/);
+ writeRequest(backend, "malicious-review", "turn.submit", { session_id: "review-session", generation: 1, client_turn_id: "malicious-review", client_user_message_id: "malicious-review", message: "Review again.", review: { kind: "uncommitted" } });
+ const maliciousResponse = await waitFor(() => response(messages, "malicious-review"));
+ assert.equal(maliciousResponse.error, undefined, JSON.stringify(maliciousResponse));
+ await waitFor(() => messages.some((message) => message.method === "turn.status" && paramValue(message, "terminal") === true && paramValue(message, "client_turn_id") === "malicious-review"), 10000);
+ assert.equal(existsSync(join(workspace, "forbidden.txt")), false);
+ const completedBeforeHistorical = finalMessageCount(messages);
+ writeRequest(backend, "historical-review", "turn.submit", { session_id: "review-session", generation: 1, client_turn_id: "historical-review", client_user_message_id: "historical-review", message: "Review the initial commit.", review: { kind: "commit", ref: "HEAD" } });
+ await waitFor(() => finalMessageCount(messages) === completedBeforeHistorical + 1, 10000);
+ const historicalRead = (requests[5]!.input as Record<string, unknown>[]).find((item) => item.type === "function_call_output" && item.call_id === "review-read-call-5");
+ assert.match(JSON.stringify(historicalRead), /export const value = 1/);
+ assert.doesNotMatch(JSON.stringify(historicalRead), /export const value = 2/);
+ const completedBeforeNormal = finalMessageCount(messages);
+ writeRequest(backend, "normal-after-review", "turn.submit", { session_id: "review-session", generation: 1, client_turn_id: "normal-turn", client_user_message_id: "normal-turn", message: "Continue ordinary chat." });
+ await waitFor(() => finalMessageCount(messages) === completedBeforeNormal + 1, 10000);
+ assert.ok((requests.at(-1)!.tools as { name: string }[]).some((tool) => tool.name === "Shell"));
+ // The final message and terminal status precede runtime cleanup; /rename requires idle.
+ await waitFor(() => messages.some((message) => message.method === "turn.status" && paramValue(message, "terminal") === true && paramValue(message, "client_turn_id") === "normal-turn"), 10000);
+ const normalTerminalIndex = messages.findIndex((message) => message.method === "turn.status" && paramValue(message, "terminal") === true && paramValue(message, "client_turn_id") === "normal-turn");
+ await waitFor(() => messages.slice(normalTerminalIndex + 1).some((message) => message.method === "status.changed" && paramValue(message, "turn_running") === false), 10000);
+ writeRequest(backend, "rename-reviewed", "command.run", { command: "/rename Reviewed session", surface: "tui", session_id: "review-session", generation: 1 });
+ const renamed = await waitFor(() => response(messages, "rename-reviewed"));
+ assert.equal(renamed.error, undefined, JSON.stringify(renamed));
+ assert.equal(resultValue(renamed, "session_title"), "Reviewed session");
+ writeRequest(backend, "preview-reviewed", "session.preview", { session_id: "review-session", generation: 1, target_session_id: "review-session" });
+ const preview = await waitFor(() => response(messages, "preview-reviewed"));
+ assert.match(String(resultValue(preview, "text")), /Continue ordinary chat/);
+});

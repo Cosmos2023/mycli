@@ -28,7 +28,7 @@ enable/disable. OpenAI-hosted Apps, ACP, provider plugins, and an LLM facade are
 - Recognize `.codex-plugin/plugin.json` and `.claude-plugin/plugin.json`. Resolve component paths
   beneath the real package root. Default components are `skills/`, `.mcp.json`, `hooks/hooks.json`
   and `.app.json`. Apps produce `plugin_apps_unavailable`; they never appear usable.
-- One startup discovery is shared across bundle skills, MCP, hooks and PluginRuntime. Disabled or
+- One discovery per configuration generation is shared across bundle skills, MCP, hooks and PluginRuntime. Disabled or
   untrusted repository bundles contribute nothing. Invalid component entries remain diagnostic
   visible and give the bundle `partial` status while valid entries can load.
 - Skill references use `plugin:skill` or `plugin@marketplace:skill`; `isSkillReferenceName` in core
@@ -53,6 +53,129 @@ enable/disable. OpenAI-hosted Apps, ACP, provider plugins, and an LLM facade are
 - Regressions cover package defaults, realpath aliases/escapes/cycles, cancellation, failed update,
   concurrent commits, qualified names, actual MCP/hook execution, trust/enablement, CLI routing,
   and skill instructions surviving runtime context validation.
+
+## Interactive Package Management
+
+### Scope / Trigger
+
+Changes to the plugin browser, package metadata, typed plugin RPCs or cancellable package work.
+
+### Signatures
+
+- `PluginCatalogService.list(signal, marketplace?) -> PluginCatalog`.
+- `PluginCatalogService.inspect(target, revision, signal) -> PluginDetail`.
+- `PluginCatalogService.change(change, signal) -> PluginPackageResponse`.
+- Gateway: `plugin.catalog`, `plugin.inspect`, `plugin.operation.start/get/cancel`.
+- TUI: `MycliShellPluginManager` in `model.ts`; application owns the gateway adapter and selectors
+  consume only this port and contract types.
+
+### Contracts
+
+- `PluginCatalogService` reads metadata only. Reuse `pluginDeclarations` for CLI/resource and TUI
+  capability names. Browsing never starts hosts, MCP clients, hooks or model calls.
+- `plugin.catalog` lists bounded metadata (2,048 entries / 6 MiB), registered marketplaces, safe
+  issues, trust visibility and explicit omissions. Named-marketplace queries narrow large lists.
+  `plugin.inspect` validates the selected revision and returns bounded full capability names on demand.
+- Preserve stable qualified IDs and source/configuration/marketplace revisions. A changed revision
+  requires refreshed user selection; package manager commit still checks the previous cache key.
+  A marketplace replaced during staging cannot authorize an install from the retired catalog.
+- `plugin.operation.start/get/cancel` separates long package work from the gateway response deadline.
+  The controller owns one mutation, 32 retained outcomes, original session/generation, a five-minute
+  staging timer and cleanup. Matching retained IDs deduplicate; different payload reuse fails.
+- Closing/switching/shutdown cancels pending work. Successful commit wins a late cancellation;
+  unknown transport outcome is never automatically retried. An attachment disconnect alone keeps
+  normal backend ownership. Observer clients only list/inspect/query outcomes.
+- UI installed/enablement labels describe package configuration. Runtime health stays separately
+  available; metadata-only inspection must not imply verified live capability activation.
+- Tests use temporary homes/local packages and prove partial marketplace failure, stale revision,
+  concurrent marketplace replacement, cancellation, no host startup and retained installed packages
+  after marketplace removal. Keep full gateway/TUI journeys provider-free.
+
+### Validation & Error Matrix
+
+| Input/state | Outcome |
+| --- | --- |
+| Invalid action, source bound or missing ownership/revision | Contract rejection before dispatch |
+| Session/generation changed | `session_changed`; no package mutation |
+| Selection revision changed | `plugin_catalog_changed`; refresh and review again |
+| Marketplace/package replaced during staging | `plugin_install_conflict`; remove uncommitted stage |
+| Another operation is running | `gateway_overloaded`, `dispatched=false` |
+| Cancel before commit / cancel after commit | `cancelled` after cleanup / preserve `completed` |
+| Result/connection is lost | Unknown outcome; inspect the catalog, never replay automatically |
+
+### Good / Base / Bad Cases
+
+- Good: retain original session/generation for polling and cancellation after a UI session switch.
+- Base: an empty catalog offers source installation and Add Marketplace without a model turn.
+- Bad: await Git cloning inside an ordinary long-lived RPC response or start plugin hosts to list metadata.
+
+### Tests Required
+
+- `plugin-catalog.integration.test.ts`: metadata-only discovery, trust, source revision/commit races,
+  malformed marketplace isolation, declared names and large catalog narrowing.
+- `plugin-gateway.integration.test.ts`: typed installation, responsive status, operation identity,
+  cancellation, successful commit precedence and session transition cancellation.
+- Plugin selector/client/runtime tests: explicit actions, removal confirmation, deferred detail,
+  original session ownership, draft retention, close/resize/Unicode/monochrome behavior.
+- Run architecture, generated contract/catalog drift and error-emitter inventory checks.
+
+### Wrong vs Correct
+
+Wrong: a selector imports its callback type from `application/plugin-manager-client.ts` and thereby
+depends on the application layer. Correct: put `MycliShellPluginManager` in `model.ts`; both the
+selector and application adapter depend on that stable port.
+
+## MCP Authentication And Live Configuration
+
+- `pluginMcpServers(discovery, env)` normalizes bundle MCP declarations without executing code.
+  `discoverConfiguredMcpServers(options, discovery?)` is the shared authority for runtime and MCP
+  management. Preserve plugin discovery diagnostics and per-server normalization failures.
+- Preserve stable `pluginMcpServerId(pluginId, serverName)` identities. Add structured plugin
+  ID/source/raw-server provenance and accept the readable `pluginId/serverName` selector in
+  list/inspect, login/logout and revocation. An exact standalone ID override wins and does not
+  inherit plugin aliases or credentials. Required plugin failures use the stable internal ID.
+- Normalize bundle OAuth `clientId`/`callbackPort` aliases with canonical snake-case keys winning.
+  The per-server callback setting is a documented mycli extension to the inspected Codex behavior.
+  OAuth management starts no plugin worker, hook, model or unrelated MCP client.
+- Bind plugin credentials to plugin ID/source/raw server plus normal endpoint/header/OAuth
+  identity, excluding the immutable package cache path. Bind MCP tool approvals to the full
+  configuration/package/schema fingerprint; a preserved OAuth login does not preserve approval.
+- `loadRuntimeIntegrationConfiguration` fingerprints effective plugin discovery, MCP config and
+  the private OAuth directory modification stamp. Read no credential values into the fingerprint
+  or diagnostics. Unchanged configurations keep their clients. Standalone skill/hook file edits
+  are not watched independently by this package-change mechanism.
+- `RuntimeIntegrationComposition.prepareRun(owner, signal)` serializes configuration refresh
+  before catalog capture, then retains ownership. `finishRun(owner)` releases it. Session/turn
+  owner keys are collision-safe; plugin commands acquire their own temporary owner.
+- Each session owns its content, clients, Skill adapter, hook runner and refresh queue. Only that
+  session's active/suspended turns and plugin commands defer its replacement. A waiting child must
+  not block its parent's next turn or idle inspection. MCP elicitation retains its calling client.
+  Explicit workspace trust changes keep their existing immediate trust-gating behavior.
+- The backend owns one shared Agent supervisor. Session composition cleanup never closes it.
+  Async runtime preparation coalesces by session; transcript inspection starts no integration
+  processes. Resume reuses a live binding. Shutdown fences new preparation, cancels discovery,
+  closes the supervisor, and drains all session content before Workers and stores.
+- A child starts separate clients from its parent's captured configuration and pins that content.
+  Persist only configuration and full tool-definition/approval-scope fingerprints in child spawn
+  authority. On reload, changed or unavailable authority disables integrations before startup;
+  legacy name-only children retain built-in tools. A fresh spawn can inherit updated integrations.
+  Schema changes cannot borrow a same-name grant; Skill authority includes the rendered catalog.
+- Gateway inspection and plugin commands select one session owner; command execution retains that
+  owner through await. Extension events from other sessions are filtered, and session activation
+  refreshes the selected catalog. Read-only history has no executable integration binding.
+- On a configuration change, finish MCP discovery and validate required servers before publishing
+  replacement tools/skills/hooks/commands/resources. Candidate failure closes candidate clients,
+  retains the previous content and rejects the refresh. Optional server failures stay isolated.
+  Once published, retire/close prior content; stale callbacks cannot change the new catalog.
+- Idle integration slash inspections and `resource.list` invoke the same refresh boundary. Keep
+  `/plugins`, `/mcp`, `/skills`, `/hooks` and diagnostic `/tools` distinct. `/mcp` uses readable
+  plugin selectors, preserving the opaque ID in its inspection detail.
+- Cancellation must not add a run owner after preparation; failure must not strand an owner.
+  Shutdown aborts candidate discovery/loading, drains replacement work, and fences publication.
+  Immutable package snapshots remain retained on disk; automatic GC is not implemented.
+- Regressions cover real loopback login/logout, trust/disable/overrides, credential/approval
+  identity, package lifecycle, multiple owners, continuation/interruption cleanup, failed/cancelled
+  preparation, concurrent refresh, shutdown, and a same-backend SDK/gateway update during approval.
 
 ## Manifest Contract
 

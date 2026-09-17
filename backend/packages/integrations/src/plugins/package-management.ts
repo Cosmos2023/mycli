@@ -33,21 +33,28 @@ export interface PluginPackageManagerOptions {
 	readonly stageSource?: typeof stagePluginSource;
 }
 
+/** Captured by interactive management before a source is reviewed by the user. */
+export interface PluginPackageExpectation {
+	readonly pluginCacheKey?: string;
+	readonly marketplaceCacheKey?: string;
+}
+
 export class PluginPackageManager {
 	readonly #options: PluginPackageManagerOptions;
 	readonly #stage: typeof stagePluginSource;
 
 	constructor(options: PluginPackageManagerOptions) { this.#options = options; this.#stage = options.stageSource ?? stagePluginSource; }
 
-	async execute(request: PluginPackageRequest, signal: AbortSignal): Promise<PluginPackageResponse> {
+	async execute(request: PluginPackageRequest, signal: AbortSignal, expectation?: PluginPackageExpectation): Promise<PluginPackageResponse> {
 		signal.throwIfAborted();
 		try {
-			if (request.action === "marketplace") return await this.#marketplace(request, signal);
+			if (request.action === "marketplace") return await this.#marketplace(request, signal, expectation);
 			if (request.action === "available") return await this.#available(request.marketplace);
-			if (request.action === "add") return await this.#install(request, signal);
+			if (request.action === "add") return await this.#install(request, signal, undefined, expectation);
 			if (!isPluginId(request.pluginId)) throw new PluginPackageError("invalid_plugin_id");
 			const registry = await readPluginPackageRegistry(this.#options.homeDir);
 			const previous = registry.plugins.find((item) => item.id === request.pluginId);
+			if (expectation?.pluginCacheKey !== undefined && previous?.cacheKey !== expectation.pluginCacheKey) throw new PluginPackageError("plugin_install_conflict");
 			if (request.action === "enable" || request.action === "disable") {
 				const enabled = request.action === "enable";
 				const discovery = await discoverPlugins(this.#options);
@@ -57,16 +64,16 @@ export class PluginPackageManager {
 					return { ...success(request.action, `Plugin ${request.pluginId} remains disabled by repository configuration.`),
 						ok: false, issues: ["plugin_disabled_by_configuration"] };
 				}
-				return success(request.action, `Plugin ${request.pluginId} ${enabled ? "enabled" : "disabled"}. Restart active sessions to apply.`);
+				return success(request.action, `Plugin ${request.pluginId} ${enabled ? "enabled" : "disabled"}. Changes apply before the next idle turn or catalog inspection.`);
 			}
 			if (!previous) throw new PluginPackageError("plugin_not_managed");
-			if (request.action === "update") return await this.#install({ action: "add", source: previous.id }, signal, previous);
+			if (request.action === "update") return await this.#install({ action: "add", source: previous.id }, signal, previous, expectation);
 			await updatePluginPackageRegistry(this.#options.homeDir, signal, (state) => {
 				if (state.plugins.find((item) => item.id === previous.id)?.cacheKey !== previous.cacheKey) throw new PluginPackageError("plugin_install_conflict");
 				return { ...state, plugins: state.plugins.filter((item) => item.id !== previous.id) };
 			});
 			// Active sessions retain the immutable snapshot until they close.
-			return success("remove", `Plugin ${previous.id} removed. Restart active sessions to apply.`);
+			return success("remove", `Plugin ${previous.id} removed. Changes apply before the next idle turn or catalog inspection.`);
 		} catch (error) {
 			if (signal.aborted) throw error;
 			const code = error instanceof PluginPackageError ? error.code : "plugin_package_operation_failed";
@@ -74,8 +81,9 @@ export class PluginPackageManager {
 		}
 	}
 
-	async #install(request: Extract<PluginPackageRequest, { readonly action: "add" }>, signal: AbortSignal, previous?: InstalledPluginPackage): Promise<PluginPackageResponse> {
+	async #install(request: Extract<PluginPackageRequest, { readonly action: "add" }>, signal: AbortSignal, previous?: InstalledPluginPackage, expectation?: PluginPackageExpectation): Promise<PluginPackageResponse> {
 		let source: PluginPackageSource;
+		let marketplaceCacheKey: string | undefined;
 		let marketplace = request.marketplace ?? previous?.marketplace;
 		let name: string | undefined;
 		if (request.source.includes("@") && !request.source.startsWith("git@") && !request.source.includes("/")) {
@@ -88,6 +96,8 @@ export class PluginPackageManager {
 			name ??= previous?.id.split("@")[0];
 			const selected = (await readPluginPackageRegistry(this.#options.homeDir)).marketplaces.find((item) => item.name === marketplace);
 			if (!selected) throw new PluginPackageError("plugin_marketplace_not_configured");
+			if (expectation?.marketplaceCacheKey !== undefined && selected.cacheKey !== expectation.marketplaceCacheKey) throw new PluginPackageError("plugin_install_conflict");
+			marketplaceCacheKey = selected.cacheKey;
 			const catalog = await loadMarketplace(pluginCacheRoot(this.#options.homeDir, selected.cacheKey));
 			const entry = catalog.entries.find((item) => item.name === name);
 			if (!entry || !entry.available) throw new PluginPackageError("plugin_not_available");
@@ -107,13 +117,14 @@ export class PluginPackageManager {
 			const installed: InstalledPluginPackage = { id, cacheKey, enabled: previous?.enabled ?? true, source,
 				...(manifest.version ? { version: manifest.version } : {}), ...(marketplace ? { marketplace } : {}) };
 			await updatePluginPackageRegistry(this.#options.homeDir, signal, (state) => {
+				if (marketplace && state.marketplaces.find((item) => item.name === marketplace)?.cacheKey !== marketplaceCacheKey) throw new PluginPackageError("plugin_install_conflict");
 				const current = state.plugins.find((item) => item.id === id);
 				if (previous ? current?.cacheKey !== previous.cacheKey : current !== undefined) throw new PluginPackageError("plugin_install_conflict");
 				return { ...state, plugins: [...state.plugins.filter((item) => item.id !== id), installed] };
 			});
 			committed = true;
 			const enabled = (await discoverPlugins(this.#options)).enablement.isEnabled(id);
-			return { ...success(previous ? "update" : "add", `Plugin ${id} ${previous ? "updated" : "installed"}. Restart active sessions to apply.`),
+			return { ...success(previous ? "update" : "add", `Plugin ${id} ${previous ? "updated" : "installed"}. Changes apply before the next idle turn or catalog inspection.`),
 				issues: manifest.issues, plugins: [{ pluginId: id, enabled, status: manifest.issues.length ? "partial" : "installed", version: installed.version }] };
 		} finally {
 			if (!committed) await rm(root, { recursive: true, force: true });
@@ -137,11 +148,12 @@ export class PluginPackageManager {
 		return { ...success("list", `plugins: ${plugins.length} available entries`), plugins };
 	}
 
-	async #marketplace(request: Extract<PluginPackageRequest, { readonly action: "marketplace" }>, signal: AbortSignal): Promise<PluginPackageResponse> {
+	async #marketplace(request: Extract<PluginPackageRequest, { readonly action: "marketplace" }>, signal: AbortSignal, expectation?: PluginPackageExpectation): Promise<PluginPackageResponse> {
 		const state = await readPluginPackageRegistry(this.#options.homeDir);
 		if (request.operation === "list") return { ...success("marketplace", `marketplaces: ${state.marketplaces.length}`),
 			marketplaces: state.marketplaces.map((item) => ({ name: item.name, source: item.source.kind })) };
 		const previous = state.marketplaces.find((item) => item.name === request.target);
+		if (expectation?.marketplaceCacheKey !== undefined && previous?.cacheKey !== expectation.marketplaceCacheKey) throw new PluginPackageError("plugin_install_conflict");
 		if (request.operation === "remove") {
 			if (!previous) throw new PluginPackageError("plugin_marketplace_not_configured");
 			await updatePluginPackageRegistry(this.#options.homeDir, signal, (current) => {

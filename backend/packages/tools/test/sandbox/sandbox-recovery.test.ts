@@ -63,11 +63,11 @@ test("Windows sandbox recovery requires confirmation and verifies setup and rese
 		isExecutable: () => true,
 		windowsHandshake: async () => ({
 			name: "mycli-windows-sandbox",
-			protocolVersion: 1,
+			protocolVersion: 2,
 			setupComplete,
 			sandboxReady,
 		}),
-		runWindowsOperation: async ({ action }: { readonly action: "setup" | "reset" }) => {
+		runWindowsOperation: async ({ action }: { readonly action: "setup" | "reset" | "repair" | "uninstall" }) => {
 			operations.push(action);
 			setupComplete = action === "setup";
 			sandboxReady = action === "setup";
@@ -102,7 +102,7 @@ test("Windows sandbox recovery classifies cancellation partial setup and helper 
 		...base,
 		windowsHandshake: async () => ({
 			name: "mycli-windows-sandbox",
-			protocolVersion: 1,
+			protocolVersion: 2,
 			setupComplete: false,
 			sandboxReady: false,
 		}),
@@ -115,7 +115,7 @@ test("Windows sandbox recovery classifies cancellation partial setup and helper 
 		...base,
 		windowsHandshake: async () => ({
 			name: "mycli-windows-sandbox",
-			protocolVersion: 1,
+			protocolVersion: 2,
 			setupComplete,
 			sandboxReady: false,
 		}),
@@ -131,7 +131,7 @@ test("Windows sandbox recovery classifies cancellation partial setup and helper 
 		...base,
 		windowsHandshake: async () => ({
 			name: "mycli-windows-sandbox",
-			protocolVersion: 2,
+			protocolVersion: 1,
 			setupComplete: false,
 			sandboxReady: false,
 		}),
@@ -155,7 +155,7 @@ test("Windows sandbox recovery classifies cancellation partial setup and helper 
 });
 
 test("Windows reset fails verification when the post-operation helper becomes incompatible", async () => {
-	let protocolVersion = 1;
+	let protocolVersion = 2;
 	let setupComplete = true;
 	let sandboxReady = true;
 	const response = await runSandboxRecovery("reset", true, {
@@ -169,7 +169,7 @@ test("Windows reset fails verification when the post-operation helper becomes in
 			sandboxReady,
 		}),
 		runWindowsOperation: async () => {
-			protocolVersion = 2;
+			protocolVersion = 1;
 			setupComplete = false;
 			sandboxReady = false;
 			return "completed";
@@ -179,4 +179,36 @@ test("Windows reset fails verification when the post-operation helper becomes in
 	assert.equal(response.status, "failed");
 	assert.equal(response.code, "verification_failed");
 	assert.equal(response.after.helperCompatible, false);
+});
+
+test("repair and uninstall preview all effects and require verified cleanup", async () => {
+	for (const action of ["repair", "uninstall"] as const) {
+		let calls = 0;
+		let ready = true;
+		let present = true;
+		const probes = {
+			platform: "win32" as const, windowsHelperPath: WINDOWS_HELPER, isExecutable: () => true,
+			windowsHandshake: async () => ({ name: "mycli-windows-sandbox", protocolVersion: 2,
+				setupComplete: ready, sandboxReady: ready, managedStatePresent: present }),
+			runWindowsOperation: async () => { ++calls; ready = action === "repair"; present = ready; return "completed" as const; },
+		};
+		const preview = await runSandboxRecovery(action, false, probes);
+		assert.equal(calls, 0);
+		assert.equal(preview.status, "confirmation_required");
+		assert.equal(preview.preview.privilege, "windows_uac");
+		assert.ok(preview.preview.effects.includes("clean_windows_sandbox_acls"));
+		assert.ok(preview.preview.effects.includes("stop_windows_sandbox_processes"));
+		const result = await runSandboxRecovery(action, true, probes);
+		assert.equal(calls, 1);
+		assert.equal(result.code, `${action}_completed`);
+		const canceled = await runSandboxRecovery(action, true, { ...probes, runWindowsOperation: async () => "canceled" });
+		assert.equal(canceled.status, "canceled");
+	}
+	const leftover = await runSandboxRecovery("uninstall", true, {
+		platform: "win32", isExecutable: () => true,
+		windowsHandshake: async () => ({ name: "mycli-windows-sandbox", protocolVersion: 2,
+			setupComplete: false, sandboxReady: false, managedStatePresent: true }),
+		runWindowsOperation: async () => "completed",
+	});
+	assert.equal(leftover.code, "verification_failed");
 });

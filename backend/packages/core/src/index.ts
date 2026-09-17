@@ -1,6 +1,10 @@
 export { TurnTransitionError } from "./errors.ts";
+export { GoalStateError, goalReference, matchesGoal, goalObjective, goalTokenBudget, createSessionGoal, changeGoalStatus, goalUsageTokens, addGoalCount } from "./lifecycle/session-goal.ts";
+export type { GoalRef, GoalStatus } from "./lifecycle/session-goal.ts";
 export { isSkillReferenceName } from "./skill-reference.ts";
 export { TOOL_RESULT_OUTPUT_MAX_CHARS } from "./conversation/tool-output.ts";
+export { toolDiscovery, parseToolDiscoveries } from "./conversation/tool-discovery.ts";
+export type { ToolDiscovery } from "./conversation/tool-discovery.ts";
 export {
 	PROVIDER_NATIVE_APIS,
 	parseProviderNativeTransportSnapshot,
@@ -244,3 +248,5 @@ export type {
 	ToolSetSnapshot,
 	TurnContextSection,
 } from "./conversation/model-input.ts";
+export { parseExtensionApprovalScope, extensionApprovalKey } from "./lifecycle/extension-approval.ts";
+export type { ExtensionApprovalScope } from "./lifecycle/extension-approval.ts";

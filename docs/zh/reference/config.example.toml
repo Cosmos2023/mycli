@@ -1,0 +1,166 @@
+# mycli 配置示例（参考版本 1）
+# 所有设置均已注释，默认仍使用内置/provider 默认值。
+# 凭据必须存于 ~/.mycli/auth.json，或通过环境变量提供。
+
+# 视口缩小时清除残留终端单元格。
+# 允许值： true, false
+# tui_clear_on_shrink = true
+
+# 选择自动、真彩色、256 色、16 色或无颜色输出。
+# 允许值： "auto", "truecolor", "256", "16", "none"
+# tui_color_mode = "auto"
+
+# 选择自动、Unicode 或纯 ASCII 界面字符。
+# 允许值： "auto", "unicode", "ascii"
+# tui_glyph_mode = "auto"
+
+# 支持时使用终端光标定位输入法候选框。
+# 允许值： true, false
+# tui_hardware_cursor = false
+
+# 隐藏助手响应中的推理块。
+# 允许值： true, false
+# tui_hide_thinking = true
+
+# 增强状态和选择样式的语义对比。
+# 允许值： true, false
+# tui_high_contrast = false
+
+# 使用静态进度指示代替终端动画帧。
+# 允许值： true, false
+# tui_reduced_motion = false
+
+# 控制页脚显示的会话和模型状态信息量。
+# 允许值： "off", "compact", "full"
+# tui_statusbar_mode = "full"
+
+# 控制子 Agent 任务摘要的显示密度。
+# 允许值： "compact", "normal", "detailed"
+# tui_subagent_density = "normal"
+
+# 终端未聚焦时，在轮次完成或需要用户处理时发送通知。
+# 允许值： true, false
+# tui_terminal_notifications = true
+
+# Agent 轮次运行时显示精简进度。
+# 允许值： true, false
+# tui_terminal_progress = true
+
+# 选择终端颜色主题。
+# 允许值： "dark", "light"
+# tui_theme = "dark"
+
+# 控制已完成工具详情默认折叠还是展开。
+# 允许值： "collapsed", "expanded"
+# tui_tool_details_default = "collapsed"
+
+# 控制对话详情密度，并始终保留工具活动可见。
+# 允许值： "default", "verbose", "focus"
+# view_mode = "default"
+
+[context]
+# 判断是否自动压缩时，保留这些提示词 token 作为空闲容量。
+# compaction_l4_buffer_tokens = 13000
+
+# 旧版兼容设置；本地上下文压缩不再使用。
+# compaction_l4_carry_cost_per_1k = 0
+
+# 旧版兼容设置；本地上下文压缩不再使用。
+# compaction_l4_carry_turns = 1
+
+# 旧版兼容设置；本地上下文压缩不再使用。
+# compaction_l4_expected_summary_tokens = 500
+
+# 旧版兼容设置；本地上下文压缩不再使用。
+# compaction_l4_input_cost_per_1k = 0
+
+# 旧版兼容设置；本地上下文压缩不再使用。
+# compaction_l4_min_savings_ratio = 0
+
+# 旧版兼容设置；本地上下文压缩不再使用。
+# compaction_l4_output_cost_per_1k = 0
+
+# 可选：为压缩摘要指定不同模型。
+# compaction_l4_summarizer_model = "replace-me"
+
+# 估算提示词用量达到当前上下文窗口的这一比例时，启动自动压缩。
+# compaction_l4_trigger_ratio = 0.9
+
+# 旧版兼容设置；本地上下文压缩不再使用。
+# compaction_rehydration_file_max_item_tokens = 5000
+
+# 旧版兼容设置；本地上下文压缩不再使用。
+# compaction_rehydration_file_max_total_tokens = 50000
+
+# 旧版兼容设置；本地上下文压缩不再使用。
+# compaction_rehydration_max_files = 5
+
+# 计算压缩预算时，为下一次模型响应预留上下文容量。
+# compaction_reserved_output_tokens = 13000
+
+# 限制压缩后保留的用户消息文本（默认 20000 token）；边界消息截断时附带标记。
+# compaction_tail_max_tokens = 20000
+
+# 旧版兼容设置；本地上下文压缩不再使用。
+# compaction_tail_turns = 2
+
+# 设置用于触发压缩的提示词 token 上限。
+# compaction_token_limit = 9600
+
+# 设置在重放前压缩超大工具结果的大小阈值。
+# compression_threshold_tokens = 8000
+
+[features]
+# 当前运行时支持时，暴露结构化权限请求工具。
+# request_permissions_tool = false
+
+[memory]
+# 为当前 Agent 运行时启用持久记忆发现和注入。
+# enabled = false
+
+[model]
+# 设置配置的 provider 使用的 HTTP(S) API 端点。
+# api_base_url = "https://api.openai.com/v1"
+
+# 选择凭据存储引用，不将凭据放入 TOML。
+# auth_ref = "openai"
+
+# 选择新运行时请求使用的 provider 模型。
+# name = "gpt-5.5"
+
+# 选择模型请求使用的 provider 传输协议。
+# 允许值： "responses", "chat_completions", "anthropic_messages"
+# protocol = "responses"
+
+# 选择稳定配置或明确配置的 provider 路由。
+# 允许值： "openai", "codex", "deepseek", "qwen", "anthropic", "openrouter", "groq", "together", "moonshotai", "nvidia", "cerebras", "compatible"
+# provider = "openai"
+
+# 覆盖所选兼容端点是否接受图片输入。
+# supports_images = false
+
+[reasoning]
+# 为支持推理强度控制的模型选择请求强度。
+# 允许值： "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"
+# effort = "medium"
+
+# 为提供推理能力的 provider 启用或关闭模型推理。
+# enabled = true
+
+[request]
+# 选择传给 pi-ai、与 provider 无关的提示词缓存保留偏好。
+# 允许值： "none", "short", "long"
+# cache_retention = "short"
+
+# 限制每次模型请求组装的提示词 token 数。
+# max_prompt_tokens = 12000
+
+# 限制模型开始输出前发生失败的重试次数。
+# request_max_retries = 4
+
+# 限制模型响应流中断后的重试次数。
+# stream_max_retries = 5
+
+[updates]
+# 交互启动后启用后台缓存更新检查。
+# check_on_startup = true

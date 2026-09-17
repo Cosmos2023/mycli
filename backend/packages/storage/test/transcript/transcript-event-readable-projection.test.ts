@@ -19,6 +19,64 @@ import {
 
 const NOW = "2026-08-14T00:00:00.000Z";
 
+test("snapshot coverage distinguishes an empty session from hidden events and bounded tool output", async (t) => {
+	const { repository } = await repositoryFixture(t);
+	assert.deepEqual(repository.loadReadableTranscriptSnapshot("session-1"), {
+		items: [], coverage: {
+			source: "sqlite", mode: "recent_readable_history", event_limit: 2_000, item_limit: 500,
+			text_limit_chars: 8_000, included_events: 0, included_items: 0, omitted_items_in_window: 0,
+			has_older_events: false, history_truncated: false, truncated_items: 0,
+			first_event_sequence: null, last_event_sequence: null,
+		},
+	});
+	append(repository, 1, "user_input", "user", { text: "inspect", clientUserMessageId: "user", source: "submit" }, true);
+	append(repository, 1, "display_activity", "hidden", { activityType: "capability" }, false);
+	append(repository, 1, "assistant_tool_call_batch", "call", {
+		text: "", calls: [{ callId: "read", name: "Read", argumentsJson: '{"file_path":"app.ts","offset":1,"limit":500}' }],
+	}, true);
+	append(repository, 1, "tool_result", "result", {
+		result: { callId: "read", toolName: "Read", output: "x".repeat(10_000), success: true }, summary: "Read app.ts",
+	}, true);
+	const canonical = repository.loadConversationItems("session-1");
+	const snapshot = repository.loadReadableTranscriptSnapshot("session-1");
+	assert.equal(snapshot.items.length, 2);
+	assert.deepEqual(snapshot.items[1]?.metadata?.input, { file_path: "app.ts", offset: 1, limit: 500 });
+	assert.deepEqual(snapshot.coverage, {
+		source: "sqlite", mode: "recent_readable_history", event_limit: 2_000, item_limit: 500,
+		text_limit_chars: 8_000, included_events: 4, included_items: 2, omitted_items_in_window: 0,
+		has_older_events: false, history_truncated: false, truncated_items: 1,
+		first_event_sequence: 1, last_event_sequence: 4,
+	});
+	assert.deepEqual(repository.loadConversationItems("session-1"), canonical);
+});
+
+test("snapshot coverage reports omitted partial turns and inherited history at the raw event limit", async (t) => {
+	const { repository } = await repositoryFixture(t);
+	append(repository, 1, "user_input", "old-user", { text: "old", clientUserMessageId: "old", source: "submit" }, true);
+	for (let index = 0; index < 2_000; index++) {
+		append(repository, 1, "display_activity", `hidden-${index}`, { activityType: "capability" }, false);
+	}
+	const partial = repository.loadReadableTranscriptSnapshot("session-1");
+	assert.equal(partial.items.length, 0);
+	assert.equal(partial.coverage.included_events, 0);
+	assert.equal(partial.coverage.history_truncated, true);
+	assert.equal(partial.coverage.has_older_events, true);
+	assert.equal(partial.coverage.first_event_sequence, null);
+	append(repository, 2, "user_input", "new-user", { text: "new", clientUserMessageId: "new", source: "submit" }, true);
+	append(repository, 2, "assistant_output", "new-answer", { text: "done" }, true);
+	append(repository, 2, "turn_lifecycle", "completed", { phase: "completed", message: "Completed" }, false);
+	const snapshot = repository.loadReadableTranscriptSnapshot("session-1");
+	assert.deepEqual(snapshot.items.map((item) => item.text), ["new", "done"]);
+	assert.equal(snapshot.coverage.included_events, 3);
+	assert.equal(snapshot.coverage.first_event_sequence, 2_002);
+	assert.equal(snapshot.coverage.last_event_sequence, 2_004);
+	assert.equal(snapshot.coverage.omitted_items_in_window, 0);
+	assert.equal(snapshot.coverage.has_older_events, true);
+	assert.equal(snapshot.coverage.history_truncated, true);
+	repository.forkSession({ sourceSessionId: "session-1", targetSessionId: "branch", forkEventId: "completed" });
+	assert.deepEqual(repository.loadReadableTranscriptSnapshot("branch"), snapshot);
+});
+
 test("projects reasoning, plans, approvals, clarifications, shell activity, and merged tools", () => {
 	const events = [
 		event(1, "user_input", {
@@ -415,6 +473,14 @@ test("keeps complete history across compactions and pages it at whole turn bound
 	const recent = fixture.repository.loadRecentReadableTranscript("session-1");
 	assert.equal(recent.length, 500);
 	assert.equal(recent[0]?.text, "turn-11-user");
+	const snapshot = fixture.repository.loadReadableTranscriptSnapshot("session-1");
+	assert.deepEqual(snapshot.items, recent);
+	assert.equal(snapshot.coverage.included_events, 523);
+	assert.equal(snapshot.coverage.included_items, 500);
+	assert.equal(snapshot.coverage.omitted_items_in_window, 20);
+	assert.equal(snapshot.coverage.has_older_events, false);
+	assert.equal(snapshot.coverage.history_truncated, true);
+	assert.equal(snapshot.coverage.truncated_items, 0);
 
 	const paged: typeof complete[number][] = [];
 	let before: number | undefined;

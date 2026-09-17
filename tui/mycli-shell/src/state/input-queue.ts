@@ -1,3 +1,4 @@
+import { parseSkillReferences } from "@mycli/contracts";
 import type { MycliShellLocalImageAttachment, MycliShellQueuedInputPreview } from "../model.ts";
 import {
 	isInternalTaskNotification,
@@ -385,6 +386,7 @@ export function projectedQueueInputs(state: RuntimeShellState): {
 			clientUserMessageId: input.clientUserMessageId,
 			text: input.message,
 			hasImages: input.attachments.length > 0,
+			...(input.skillReferences?.length ? { skillReferences: input.skillReferences } : {}),
 			...(input.attachments.length > 0
 				? { localImages: input.attachments.map((attachment) => ({ ...attachment })) }
 				: {}),
@@ -401,6 +403,7 @@ export function projectedQueueInputs(state: RuntimeShellState): {
 		...(input.state ? { state: input.state } : {}),
 		text: input.message,
 		hasImages: input.attachments.length > 0,
+			...(input.skillReferences?.length ? { skillReferences: input.skillReferences } : {}),
 		...(input.attachments.length > 0
 			? { localImages: input.attachments.map((attachment) => ({ ...attachment })) }
 			: {}),
@@ -469,6 +472,7 @@ function queuedInputPreviews(items: unknown, fallback: unknown): RuntimeQueuedIn
 				...(stringValue(record.state) ? { state: stringValue(record.state)! } : {}),
 				message: message.trim(),
 				attachments: localImageAttachments(record.local_images),
+				...(record.skill_references ? { skillReferences: parseSkillReferences(record.skill_references) } : {}),
 				...(stringValue(record.source) ? { source: stringValue(record.source)! } : {}),
 			};
 		})

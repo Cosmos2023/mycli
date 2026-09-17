@@ -763,6 +763,22 @@ test("commits compact replacement, summary, checkpoint, and continuation togethe
 	assert.deepEqual(boundary.replacement_messages, [pythonMessage("user", "[compact-summary]\nsummary")]);
 });
 
+test("legacy compaction preserves long summary text through save and reopen", async (t) => {
+	const fixture = await databaseFixture(t);
+	const store = createStore(fixture.dbPath);
+	const summary = "documentation ".repeat(16_000).trim();
+	const content = `[compact-summary]\n${summary}`;
+	store.reserveTurn(submission(fixture.root, "s1", NOW));
+	try {
+		store.commitCompaction({ sessionId: "s1", summary,
+			replacementMessages: [pythonMessage("user", content)], checkpoint: compactCheckpoint() });
+	} finally { store.close(); }
+	const reopened = createStore(fixture.dbPath);
+	t.after(() => reopened.close());
+	assert.deepEqual(reopened.loadConversation("s1"), [{ role: "user", content }]);
+	assert.deepEqual(reopened.loadSessionSummaries("s1"), [summary]);
+});
+
 test("multiple compactions keep complete readable history and restore only the latest model window", async (t) => {
 	const fixture = await databaseFixture(t);
 	const store = createStore(fixture.dbPath);

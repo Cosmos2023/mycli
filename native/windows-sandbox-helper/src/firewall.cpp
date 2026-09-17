@@ -369,6 +369,18 @@ void SetupOfflineFirewall(
     if (!marker) throw std::runtime_error("failed to persist firewall setup marker");
 }
 
+void RemoveSandboxFirewall(const std::wstring& sid) {
+    const ComApartment apartment;
+    auto policy = OpenFirewallPolicy();
+    auto rules = OpenFirewallRules(policy.get());
+    for (const auto& spec : RuleSpecs(sid)) {
+        const auto rule = FindRule(rules.get(), spec.name);
+        if (rule.get() == nullptr) continue;
+        const BStr name{spec.name};
+        RequireComSuccess(rules->Remove(name.get()), "remove sandbox firewall rule");
+    }
+}
+
 void ResetOfflineFirewallState(
     const std::filesystem::path& state_directory) {
     std::error_code error;

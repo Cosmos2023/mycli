@@ -1,4 +1,11 @@
+import { runtimeStateWithResources } from "../state/extension-feedback.ts";
+import { randomUUID } from "node:crypto";
+import type { ReviewSelection } from "@mycli/contracts";
+import { createHookManagerClient } from "./hook-manager-client.ts";
+import { parseSkillReferences } from "@mycli/contracts";
+import { createSkillManagerClient } from "./skill-manager-client.ts";
 import process from "node:process";
+import { createPluginManagerClient } from "./plugin-manager-client.ts";
 import { parseGatewayParams, readErrorContext, type GatewayMethod, type GatewayParams, type GatewayResult } from "@mycli/contracts";
 import { GatewayClient, GatewayRequestError, type GatewayEvent } from "../transport/gateway-client.ts";
 import { loadEarlierProviderAttemptHistory } from "../state/provider-attempt-history.ts";
@@ -165,15 +172,11 @@ const sessionTransitions = new SessionTransitionController({
 const uiActions = createMycliUiActionDispatcher(async (action) => {
 	switch (action.type) {
 		case "submit":
-			return submitTurn(action.text, { localImages: action.localImages ?? [] });
+			return submitTurn(action.text, { localImages: action.localImages ?? [], skillReferences: action.skillReferences }, undefined, { collaborationMode: action.collaborationMode, review: action.review, signal: action.signal });
 		case "follow_up":
-			return submitFollowUp(action.text, { localImages: action.localImages ?? [] });
+			return submitFollowUp(action.text, { localImages: action.localImages ?? [], skillReferences: action.skillReferences });
 		case "command":
 			return runCommand(action.command);
-		case "transcript.clear":
-			sessionTransitions.invalidate();
-			setRuntimeState({ ...runtimeState, transcript: [], transcriptNextBefore: null, providerAttemptsNextBefore: null });
-			return;
 		case "view.set":
 			viewModeOverride = action.mode;
 			setRuntimeState(runtimeStateWithSettingsSnapshot(runtimeState, withViewModeOverride({
@@ -269,6 +272,7 @@ function handleGatewayEvent(event: GatewayEvent): void {
 			resolution.restoreToComposer.map((input) => ({
 				text: input.message,
 				...(input.attachments.length ? { localImages: input.attachments } : {}),
+			...(input.skillReferences?.length ? { skillReferences: input.skillReferences } : {}),
 			})),
 			{
 				restoreSubmittedInput: params.input_rolled_back === true,
@@ -388,6 +392,7 @@ async function bootstrap(): Promise<void> {
 	await loadRetryHistory();
 	await loadCommands();
 	await loadSettings();
+	await loadResources();
 	await loadSessions().catch(() => undefined);
 	bootstrapped = true;
 }
@@ -398,8 +403,14 @@ async function loadSettings(): Promise<MycliShellSettingsSnapshot | undefined> {
 		const snapshot = withViewModeOverride(settingsSnapshotFromResult(result));
 		setRuntimeState(runtimeStateWithSettingsSnapshot(runtimeState, snapshot));
 		return snapshot;
-	} catch {
-		// Keep built-in defaults when the gateway does not support persistent settings.
+	} catch (error) {
+		// Only an explicitly unsupported service is a compatibility fallback.
+		if (!(error instanceof GatewayRequestError && error.code === "method_not_found")) {
+			setRuntimeState({ ...runtimeState, transcript: [...runtimeState.transcript.filter((item) => item.id !== "settings-load-warning"), {
+				id: "settings-load-warning", type: "warning", folded: false,
+				text: "Could not load saved interface settings. Keeping the current settings (built-in defaults at startup). Run mycli config validate, then reopen /settings.",
+			}] });
+		}
 		return undefined;
 	}
 }
@@ -454,9 +465,11 @@ async function submitTurn(
 	message: string,
 	attachments: MycliShellSubmitAttachments = {},
 	clientUserMessageId = nextClientTurnId("user"),
-	options: { collaborationMode?: "default" | "plan" } = {},
+	options: { collaborationMode?: "default" | "plan"; review?: ReviewSelection; signal?: AbortSignal } = {},
 ): Promise<void> {
+	options.signal?.throwIfAborted();
 	const text = message.trim();
+	if ((options.review || options.collaborationMode) && (backendTurnBusy || runtimeState.turnRunning || runtimeState.activeTurnId)) throw new Error("Wait for the current turn to finish first.");
 	if (!text) {
 		return;
 	}
@@ -470,6 +483,7 @@ async function submitTurn(
 		if (requestId) {
 			await respondClarification(requestId, text, {
 				requestId,
+				...(pendingClarification.elicitation ? { elicitation: pendingClarification.elicitation as NonNullable<MycliShellPendingClarification["elicitation"]> } : {}),
 				question: typeof pendingClarification.question === "string"
 					? pendingClarification.question
 					: "Clarification required",
@@ -506,17 +520,23 @@ async function submitTurn(
 	const localInput = runtimeLocalInput(clientUserMessageId, text, attachments);
 	setRuntimeState({ ...runtimeStateWithSubmittingMessage(runtimeState, localInput), activeClientTurnId: clientTurnId });
 	backendTurnBusy = true;
+	const cancelPreparation = (): void => {
+		if (sessionMutationContextIsCurrent(context) && runtimeState.activeClientTurnId === clientTurnId) void interruptTurn({ rollbackUserInput: true }).catch(() => undefined);
+	};
+	options.signal?.addEventListener("abort", cancelPreparation, { once: true });
 	try {
 		const result = await send(
 			"turn.submit",
-				{
+				parseGatewayParams("turn.submit", {
 					message: text,
 					client_turn_id: clientTurnId,
 					client_user_message_id: clientUserMessageId,
 					...sessionMutationFields(context),
 					...(options.collaborationMode ? { collaboration_mode: options.collaborationMode } : {}),
+					...(options.review ? { review: options.review } : {}),
+					...(attachments?.skillReferences?.length ? { skill_references: attachments.skillReferences } : {}),
 					...(attachments?.localImages?.length ? { local_images: attachments.localImages.map((image) => image.path) } : {}),
-				},
+				}),
 			{ recordErrors: false },
 		);
 		if (!sessionMutationContextIsCurrent(context) || latestSubmissionClientTurnId !== clientTurnId) return;
@@ -567,7 +587,7 @@ async function submitTurn(
 		);
 		backendTurnBusy = false;
 		throw error;
-	}
+	} finally { options.signal?.removeEventListener("abort", cancelPreparation); }
 }
 
 async function startPlanImplementation(
@@ -605,6 +625,7 @@ function runtimeLocalInput(
 		clientUserMessageId,
 		message,
 		attachments: [...(attachments?.localImages ?? [])],
+		...(attachments?.skillReferences?.length ? { skillReferences: attachments.skillReferences } : {}),
 	};
 }
 
@@ -643,7 +664,7 @@ async function dispatchNextLocalInput(): Promise<void> {
 	try {
 		await submitTurn(
 			next.input.message,
-			{ localImages: next.input.attachments },
+			{ localImages: next.input.attachments, skillReferences: next.input.skillReferences },
 			next.input.clientUserMessageId,
 		);
 	} catch {
@@ -689,14 +710,15 @@ async function queueFollowUp(input: QueuedTurnInput): Promise<void> {
 	);
 	setRuntimeState(runtimeStateWithLocalFollowUp(runtimeState, localInput));
 	try {
-		const result = await send("turn.follow_up", {
+		const result = await send("turn.follow_up", parseGatewayParams("turn.follow_up", {
 			message: input.message,
 			client_turn_id: input.clientUserMessageId,
 			...sessionMutationFields(context),
+			...(input.attachments?.skillReferences?.length ? { skill_references: input.attachments.skillReferences } : {}),
 			...(input.attachments?.localImages?.length
 				? { local_images: input.attachments.localImages }
 				: {}),
-		}, { recordErrors: false });
+		}), { recordErrors: false });
 		setRuntimeState(runtimeStateAcknowledgeQueuedInput(
 			runtimeState,
 			input.clientUserMessageId,
@@ -727,15 +749,16 @@ async function queueSteeringTurn(input: QueuedTurnInput): Promise<void> {
 	for (let attempt = 0; attempt < 2; attempt += 1) {
 		try {
 			if (!expectedTurnId) throw new GatewayRequestError({ method: "turn.steer", code: "invalid_params", message: "Active turn is unavailable." });
-			const result = await send("turn.steer", {
+			const result = await send("turn.steer", parseGatewayParams("turn.steer", {
 				message: input.message,
 				client_user_message_id: input.clientUserMessageId,
 				expected_turn_id: expectedTurnId,
 				...sessionMutationFields(context),
-				...(input.attachments?.localImages?.length
+				...(input.attachments?.skillReferences?.length ? { skill_references: input.attachments.skillReferences } : {}),
+			...(input.attachments?.localImages?.length
 					? { local_images: input.attachments.localImages }
 					: {}),
-			}, { recordErrors: false });
+			}), { recordErrors: false });
 			setRuntimeState(runtimeStateAcknowledgeQueuedInput(
 				runtimeState,
 				input.clientUserMessageId,
@@ -791,11 +814,25 @@ async function popLastQueuedFollowUp(): Promise<MycliShellQueuedInput | null> {
 	return {
 		text,
 		...(localImages.length > 0 ? { localImages } : {}),
+		...(item.skill_references ? { skillReferences: parseSkillReferences(item.skill_references) } : {}),
 	};
 }
 
 async function interruptTurn(options: { rollbackUserInput: boolean }): Promise<boolean> {
 	const context = currentSessionMutationContext();
+	const compaction = runtimeState.activeCompaction;
+	if (compaction?.source === "user_requested") {
+		setRuntimeState({ ...runtimeState, activeCompaction: { ...compaction, cancelling: true, text: "Cancelling compaction" } });
+		try {
+			const result = await send("turn.interrupt", { operation_id: compaction.id, ...sessionMutationFields(context) });
+			return result.accepted === true;
+		} catch (error) {
+			if (sessionMutationContextIsCurrent(context) && runtimeState.activeCompaction?.id === compaction.id) {
+				setRuntimeState({ ...runtimeState, activeCompaction: compaction });
+			}
+			throw error;
+		}
+	}
 	const requestedClientTurnId = runtimeState.activeClientTurnId;
 	const pendingClarification = runtimeState.pendingClarification;
 	const pendingClarificationTurnId = pendingClarification
@@ -950,6 +987,7 @@ async function resolveRequestedInterrupt(
 		restoreInputs.map((input) => ({
 			text: input.message,
 			...(input.attachments.length ? { localImages: input.attachments } : {}),
+			...(input.skillReferences?.length ? { skillReferences: input.skillReferences } : {}),
 		})),
 		{ restoreSubmittedInput: result.input_rolled_back === true },
 	);
@@ -1005,6 +1043,15 @@ async function respondClarification(
 	response: string,
 	clarification?: MycliShellPendingClarification,
 ): Promise<void> {
+	if (clarification?.elicitation) {
+		const value: unknown = JSON.parse(response);
+		if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("Invalid MCP response.");
+		const result = await send("mcp.elicitation.respond", parseGatewayParams("mcp.elicitation.respond", {
+			...value, request_id: requestId, session_id: clarification.elicitation.session_id,
+		}), { recordErrors: false });
+		if (!result.accepted) throw new Error("This MCP request is no longer pending.");
+		return;
+	}
 	try {
 		await send("clarify.respond", {
 			request_id: requestId,
@@ -1120,7 +1167,21 @@ async function loadProviderModels(providerId: string): Promise<MycliShellModel[]
 
 async function runCommand(command: string): Promise<void> {
 	const source = currentSessionMutationContext();
-	const result = await send("command.run", { command, surface: commandSurface });
+	const manual = /^\/compact(?:\s|$)/.test(command.trim());
+	const operationId = manual ? `compact_${randomUUID()}` : undefined;
+	if (manual) {
+		if (runtimeState.activeCompaction) throw new Error("Context compaction is already running.");
+		setRuntimeState({ ...runtimeState, activeCompaction: { id: operationId!, source: "user_requested", text: "Compacting context" } });
+	}
+	let result: Record<string, unknown>;
+	try {
+		result = await send("command.run", { command, surface: commandSurface,
+			...(operationId ? { operation_id: operationId } : {}), ...sessionMutationFields(source) });
+	} finally {
+		if (manual && sessionMutationContextIsCurrent(source) && runtimeState.activeCompaction?.id === operationId) {
+			setRuntimeState({ ...runtimeState, activeCompaction: null });
+		}
+	}
 	if (shuttingDown) return;
 	const destination = stringValue(result.session_id);
 	const generation = generationValue(result.generation);
@@ -1129,11 +1190,13 @@ async function runCommand(command: string): Promise<void> {
 		if (!await sessionTransitions.resume(result, undefined, source)) return;
 		if (runtimeState.sessionId !== destination
 			|| (generation !== null && runtimeState.sessionGeneration !== generation)) return;
-		setRuntimeState(runtimeStateWithSessionCommandNotice(runtimeState, command, result));
+		if (command.trim() === "/clear") runtime?.clearTerminalView();
+		else setRuntimeState(runtimeStateWithSessionCommandNotice(runtimeState, command, result));
 		await loadRetryHistory();
 		return;
 	}
 	if (!sessionMutationContextIsCurrent(source)) return;
+	if (manual && result.lifecycle_started === true) return;
 	const clientAction = clientActionFromResult(result);
 	if (clientAction && runtime) {
 		await runtime.handleClientAction(clientAction.action, clientAction.args);
@@ -1147,6 +1210,8 @@ async function runCommand(command: string): Promise<void> {
 		return;
 	}
 	setRuntimeState(runtimeStateWithCommandResult(runtimeState, command, result));
+	if (typeof result.session_title === "string") { setRuntimeState({ ...runtimeState, sessionTitle: result.session_title }); await loadSessions(); }
+	if (typeof result.submit_prompt === "string") await submitTurn(result.submit_prompt);
 	if (result.exit_requested === true) {
 		await shutdown(0);
 	}
@@ -1220,10 +1285,10 @@ async function loadSessionTree() {
 }
 
 async function loadResources() {
+	const context = currentSessionMutationContext();
 	const result = await send("resource.list", {});
 	const resources = resourcesFromResult(result);
-	runtimeState = { ...runtimeState, resources };
-	refreshRuntime();
+	if (sessionMutationContextIsCurrent(context) && !shuttingDown) setRuntimeState(runtimeStateWithResources(runtimeState, resources));
 	return resources;
 }
 
@@ -1302,6 +1367,14 @@ async function handleUnexpectedGatewayClose(error: Error): Promise<void> {
 	});
 	process.stderr.write(`[mycli-shell] ${errorSummary(errorContext)}`
 		+ (logPath ? " Diagnostics were written to ~/.mycli/logs/tui-errors.log.\n" : "\n"));
+	if (runtimeState.sessionId) {
+		const sessionId = runtimeState.sessionId;
+		if (/^[a-zA-Z0-9][a-zA-Z0-9_.:-]*$/u.test(sessionId)) {
+			process.stderr.write(`[mycli-shell] Resume this session: mycli session resume ${sessionId}\n`);
+		} else {
+			process.stderr.write("[mycli-shell] Reopen mycli and choose this session with /resume.\n");
+		}
+	}
 	process.exitCode = 1;
 }
 
@@ -1319,8 +1392,8 @@ async function handleFatalTuiError(error: unknown): Promise<void> {
 async function stopLocalRuntime(): Promise<void> {
 	shuttingDown = true;
 	sessionTransitions.invalidate();
-	if (runtime?.isStarted()) {
-		runtime.ui.stop();
+	if (runtime) {
+		runtime.stop();
 	}
 	if (nativeRuntime?.isStarted()) {
 		await nativeRuntime.stop({ notifyExit: false });
@@ -1401,6 +1474,37 @@ async function main(): Promise<void> {
 		onSettingsChange: saveSettings,
 		onSettingsKeymapReset: resetSettingsKeymap,
 		onResourceLoad: loadResources,
+		onWorkspaceDiffLoad: async (signal) => {
+			signal.throwIfAborted();
+			const result = await send("workspace.diff", parseGatewayParams("workspace.diff", sessionMutationFields(currentSessionMutationContext())), { recordErrors: false });
+			signal.throwIfAborted(); return result.text;
+		},
+		onSessionConversationPreview: async (sessionId, signal) => {
+			signal.throwIfAborted();
+			const result = await send("session.preview", parseGatewayParams("session.preview", { ...sessionMutationFields(currentSessionMutationContext()), target_session_id: sessionId }), { recordErrors: false });
+			signal.throwIfAborted(); return result.text;
+		},
+		hookManager: createHookManagerClient({
+			request: (method, params) => send(method, params, { recordErrors: false }),
+			context: () => {
+				if (!runtimeState.sessionId || runtimeState.sessionGeneration === null) throw new Error("No active hook management session.");
+				return { session_id: runtimeState.sessionId, generation: runtimeState.sessionGeneration };
+			},
+		}),
+		skillManager: createSkillManagerClient({
+			request: (method, params) => send(method, params, { recordErrors: false }),
+			context: () => {
+				if (!runtimeState.sessionId || runtimeState.sessionGeneration === null) throw new Error("No active skill management session.");
+				return { session_id: runtimeState.sessionId, generation: runtimeState.sessionGeneration };
+			},
+		}),
+		pluginManager: createPluginManagerClient({
+			request: (method, params) => send(method, params, { recordErrors: false }),
+			context: () => {
+				if (!runtimeState.sessionId || runtimeState.sessionGeneration === null) throw new Error("No active plugin management session.");
+				return { session_id: runtimeState.sessionId, generation: runtimeState.sessionGeneration };
+			},
+		}),
 		onTranscriptHistoryLoad: loadOlderTranscriptHistory,
 		commands: slashCommands,
 		commandNames: slashCommandNames,
@@ -1489,6 +1593,7 @@ function queueInputsFromUnknown(
 			) ?? `interrupt-restore-${kind}-${index}`,
 			message,
 			attachments: localImageAttachmentsFromGateway(record.local_images),
+			...(record.skill_references ? { skillReferences: parseSkillReferences(record.skill_references) } : {}),
 			kind,
 		}];
 	});

@@ -1,6 +1,6 @@
 # Plugin Behavior Compared With Codex
 
-Comparison source: the local `codex-main` source snapshot inspected on 2026-09-11. The downloaded
+Comparison source: the local `codex-main` source snapshot inspected on 2026-09-12. The downloaded
 snapshot has no Git revision metadata. This describes inspected code, not a claim about every Codex
 release. The package subset supported by mycli is documented below.
 
@@ -20,14 +20,36 @@ tool/hook/command registrations over JSON-lines. These are separate authoring fo
 The inspected Codex TUI has separate `/mcp`, `/plugins`, `/skills`, and `/hooks` commands, with no
 public `/tools` directory (`codex-rs/tui/src/slash_command.rs` and `chatwidget/slash_dispatch.rs`).
 mycli uses those separate domain entries too. `/mcp [verbose]` inspects server state and tools;
-`/plugins` lists packages, with capability details on Enter. MCP resources and plugin commands are
+`/plugins` browses packages, with capability details and management actions on Enter. MCP resources and plugin commands are
 not plugin packages and do not appear as separate plugin rows.
 
 mycli retains `/tools [list|sets]` as a search-only diagnostic inventory of actual callable tools.
 The old `/tools plugins`, `/tools hooks`, and `/tools extensions` forms return replacement hints.
-Codex's plugin browser also has marketplace tabs and installation/enablement actions
-(`chatwidget/plugins.rs`). mycli currently performs those operations through `mycli plugins` CLI
-commands; its TUI supports inspection, not the full Codex marketplace browser.
+`/skills` provides searchable invocation and persistent enablement. Selected skills carry their source
+identity in the composer and queued input. `/hooks` groups hooks by event, shows their command and
+source, and separates enablement from exact-command trust. Plugin hook trust belongs to its package.
+Codex's plugin browser has All Plugins, Installed, and marketplace tabs, search, capability details,
+and installation/enablement actions (`chatwidget/plugins.rs`). mycli follows that interaction for
+registered local/Git marketplaces. Left/Right selects a tab, typing searches, Enter opens details,
+and Space enables/disables when the search is empty. Details include source, version, declared
+capability names, issues, install/update/uninstall actions, and a Back action. Ctrl+A opens full-text
+inspection; Ctrl+R refreshes. Uninstall and marketplace removal require confirmation.
+
+Ctrl+N opens local/Git plugin installation. Add Marketplace reviews and registers a source. Each
+named marketplace has a Manage marketplace row for refresh/removal. A newly registered marketplace
+becomes the selected tab. Removing it preserves installed packages. These actions use the same
+package manager as the CLI and never need a model call.
+
+Catalog inspection reads metadata only. Enabled/disabled describes configuration, not verified
+process health; `/mcp` and the existing resource diagnostics retain runtime state. Untrusted repository
+plugins are hidden. A broken marketplace retains a visible issue while other catalogs remain usable.
+Remote packages without local manifests show capability details after installation.
+
+Catalog responses are bounded to 2,048 entries and 6 MiB. Large combined catalogs explicitly report
+omission; choose a named marketplace to narrow the list. Capability detail is loaded on demand,
+bounded to 1,024 lines with explicit omission. Closing, switching sessions or shutting down cancels
+pending package work and ignores late UI results. A completed atomic commit remains successful if
+it wins a cancellation race. Active turns adopt changes at their existing safe refresh boundary.
 
 ## Install And Manage
 
@@ -66,8 +88,34 @@ local Git transports and arbitrary Git transport helpers are rejected; use SSH a
 private repositories. Git execution disables user Git config, templates and hooks. It does not run
 package install scripts or download submodules; dependencies must already be available.
 
-Package changes apply when a new runtime session starts. In-session `/plugins` shows plugin
-state, `/skills` lists namespaced skills, and MCP tools enter the normal deferred tool catalog.
+Package changes apply before the next turn or an idle integration refresh. Skills and hook management
+read catalog metadata without starting extension hosts. Existing active or suspended turns keep their original integration content;
+each session refreshes independently, so a waiting child does not block its parent. A changed
+configuration completes MCP discovery before a new run captures its tools. Unchanged turns reuse the existing clients.
+In-session `/plugins` shows package state, `/skills` selects or configures namespaced skills, and MCP tools enter
+the session integration catalog with direct/deferred exposure and session discovery reuse.
+
+Plugin MCP servers use the common management and OAuth flow:
+
+```sh
+mycli mcp list
+mycli mcp inspect my-plugin/docs
+mycli mcp login my-plugin/docs
+mycli mcp logout my-plugin/docs
+mycli mcp revoke my-plugin/docs
+```
+
+Use `my-plugin@personal/docs` for a marketplace-qualified plugin. The readable selector and
+opaque internal server ID refer to the same effective configuration. `/mcp` identifies the owning
+plugin; `/plugins` shows its MCP selectors. Exact standalone server-ID overrides take precedence.
+Login/logout do not start plugin workers, hooks or unrelated MCP connections. Open an idle `/mcp`
+or start the next turn after login to rerun discovery. Logout removes saved credentials, without
+revoking remote tokens or reversing in-flight requests.
+
+Credentials remain usable across package-cache updates when plugin identity/source, declared
+server name, endpoint, headers and OAuth settings are unchanged. Tool approvals include the package
+snapshot and schema, so an update cannot reuse an old approval for changed content. Auth status
+`not_logged_in` reports the absence of saved credentials; anonymous servers can still be usable.
 
 ## Package Format
 
@@ -102,7 +150,10 @@ context and transcript display. Skill instructions carry their package root and 
 relative references can be resolved. MCP server ids are stable and isolated per plugin. Server
 descriptions retain plugin provenance. MCP JSON supports `mcpServers`, root substitutions
 `${CODEX_PLUGIN_ROOT}` / `${CLAUDE_PLUGIN_ROOT}`, `env_vars`, `http_headers`, `bearer_token_env_var`,
-`cwd`, and `tool_timeout_sec`, in addition to mycli's normal MCP fields. Missing environment values
+`cwd`, and `tool_timeout_sec`, in addition to mycli's normal MCP fields. OAuth `clientId` is normalized
+to `client_id`. Mycli also accepts `callbackPort` as `callback_port`, retaining per-server callback
+configuration; the inspected Codex implementation uses its global callback setting instead.
+Canonical keys take precedence when both spellings are present. Missing environment values
 produce configuration issues; values are not printed in management diagnostics.
 
 Command hooks support the existing `PreToolUse`, `PostToolUse`, `SessionStart`, `UserPromptSubmit`
@@ -147,7 +198,12 @@ plugins. Installed user packages are independent of repository trust.
 Updates and removal retain previous snapshots because active sessions may still read package
 files. Automatic snapshot garbage collection is not implemented, so repeated updates consume
 additional disk space. The registry, not the presence of a cache directory, determines which
-packages activate on the next session.
+packages activate on the next safe refresh. Replacements publish tools, skills, hooks, commands and
+resources together, then retire and close the previous clients/hosts. A required-MCP or composition
+failure preserves the previous content and blocks that refresh until configuration is corrected.
+Concurrent preparation/inspection requests share the serialized replacement; shutdown cancels
+pending discovery and prevents late publication. Explicit workspace trust changes retain their
+existing immediate trust-gating behavior.
 
 ## Applied Behaviors
 
@@ -158,10 +214,28 @@ packages activate on the next session.
 | Concurrent lifecycle | Plugin loading is serialized, rechecks cache, and publishes only for the current cache generation | New callers share one replacement process; retired/closed content cannot publish stale state |
 | Diagnosis | Plugin load errors and MCP invocation errors retain their owning plugin/server context | Existing canonical integration errors retain plugin, operation, phase, timeout, exit/signal, and one prior failure |
 | Status | Configured enablement is separate from successful activation | The plugin catalog tracks actual process state separately from configured enablement |
+| MCP authentication | Login/logout resolve the combined standalone and plugin MCP configuration | Common configured-server discovery serves runtime, list/inspect, login/logout and approval revocation |
+| Package activation | Effective plugin changes clear caches and queue MCP refresh before subsequent turns | Package/config/auth changes refresh each session independently before catalog capture or idle inspection |
 
 Codex loading/cache evidence is in `codex-rs/core-plugins/src/manager.rs` (`plugins_for_config` and
 cache-generation checks). Per-server MCP configuration errors are in
 `codex-rs/codex-mcp/src/plugin_config.rs`; calls use `codex-rs/codex-mcp/src/connection_manager.rs`.
+OAuth management uses `core/src/mcp.rs::McpManager::configured_servers` and `cli/src/mcp_cmd.rs`.
+Activation evidence is in `app-server/src/request_processors/plugins.rs::on_effective_plugins_changed`,
+`app-server/src/mcp_refresh.rs`, `core/src/session/handlers.rs`, and `core/src/session/mcp.rs`.
+Both inspected implementations own MCP connections per session and apply refresh at a safe boundary.
+The local Codex source snapshot has no verified release revision; this is source-level comparison.
+
+Mycli reuses a session's live runtime when switching away and back. Merely inspecting history starts
+no plugin process or MCP connection. A session's pending turn retains its original tools, Skill,
+hooks and resource service; other sessions may adopt a package update immediately. Agent scheduling
+remains backend-owned, and closing one child does not close sibling or parent integration clients.
+
+Children inherit captured configuration with separate clients. Their durable authority contains only
+configuration/tool fingerprints, never MCP credentials. If an unloaded child is reloaded after its
+configuration changed, integrations remain unavailable under the old authority; spawn a fresh child
+from the updated parent to use them. Legacy children without fingerprints keep their built-in tools.
+Hosted Apps/account synchronization, OS keychain storage and package cache GC remain separate work.
 
 ## mycli Process Recovery
 
@@ -178,21 +252,19 @@ session-bearing POST 404 confirms rejection before one bounded replay is allowed
 
 ## Verification
 
-Validated on macOS with Node 24 on 2026-09-11:
+Validated on macOS with Node 24 on 2026-09-12: the production build, lint, typecheck,
+contract/config drift and error-emitter inventory checks pass. All five CI suites pass
+437 files: 346 unit, 30 contract, 52 integration, 8 platform and 1 release.
 
-- Production workspace build, lint, typecheck, contract/config drift and error-emitter inventory
-  checks pass.
-- Unit/contract suites: 360 test files pass. The subsequent maximum-length qualified skill fix
-  passes 50 focused core/storage tests covering persistence and provider request projection.
-- Integration/platform/release suites: 51 files pass with the two previously recorded M7 cases
-  excluded, as documented in `openspec/changes/formalize-error-system/verification.md`.
-- Package tests exercise local marketplace lifecycle, rollback, concurrent installation,
-  cancellation, path isolation, real MCP calls, command hooks, activation and CLI routing.
-  Bash/zsh nested completion behavior is executed; all four shell scripts pass catalog coverage.
-- The existing pi-ai module-loading assertion failed once and passed both its isolated rerun and
-  the repeated integration suite. No provider code was changed for this task.
-- Packed CLI smoke reaches M8 but fails its visible-command count assertion: expected 36, actual
-  35. Running the M8 smoke directly confirms `session_ready=true` with 35 commands. This release
-  gate remains unresolved; plugin verification is not a claim that the entire release gate passes.
+Regression coverage uses temporary homes, loopback OAuth/MCP servers, deterministic providers and
+local plugin processes. It covers qualified login/logout, configuration precedence and redaction,
+credential reuse across immutable updates, approval invalidation, catalog refresh, active/suspended
+run retention, concurrent refresh, failed/cancelled preparation and shutdown. Plugin browser coverage
+also exercises metadata-only discovery, named capabilities, source revision races, bounded catalogs,
+explicit install/remove actions, cancellation after commit, session switching, deferred detail,
+draft retention, Unicode/narrow layouts and monochrome output. A real SDK/gateway
+journey updates a plugin during approval and executes both old and new versions in the same backend.
 
-Remote Git authentication and OpenAI-hosted Apps were not exercised against live services.
+Remote Git authentication, OpenAI-hosted Apps and real provider cache hits are outside this
+verification. Hosted marketplace/account synchronization, OS keychain
+storage and automatic package snapshot GC remain unsupported.

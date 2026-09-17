@@ -87,7 +87,10 @@
         },
         "source": {"$ref": "#/$defs/identifier"},
         "created_at": {"$ref": "#/$defs/identifier"},
-        "updated_at": {"$ref": "#/$defs/identifier"}
+        "updated_at": {"$ref": "#/$defs/identifier"},
+        "skill_references": {
+          "$ref": "#/$defs/SkillReferences"
+        }
       }
     },
     "input_queue_payload": {
@@ -209,6 +212,31 @@
           "enum": ["system", "developer", "user", "assistant", "tool"]
         },
         "content": {"$ref": "#/$defs/bounded_string"},
+        "tool_call_id": {"$ref": "#/$defs/nullable_identifier"},
+        "response_id": {"$ref": "#/$defs/nullable_identifier"},
+        "metadata": {"type": "object"},
+        "blocks": {
+          "type": "array",
+          "maxItems": 512,
+          "items": {"type": "object"}
+        },
+        "tool_calls": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {"type": "object"}
+        }
+      }
+    },
+    "compaction_message": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["role", "content"],
+      "properties": {
+        "role": {
+          "type": "string",
+          "enum": ["system", "developer", "user", "assistant", "tool"]
+        },
+        "content": {"type": "string"},
         "tool_call_id": {"$ref": "#/$defs/nullable_identifier"},
         "response_id": {"$ref": "#/$defs/nullable_identifier"},
         "metadata": {"type": "object"},
@@ -506,7 +534,7 @@
         "replacement_messages": {
           "type": "array",
           "maxItems": 4096,
-          "items": {"$ref": "#/$defs/message"}
+          "items": {"$ref": "#/$defs/compaction_message"}
         }
       }
     },
@@ -563,6 +591,37 @@
         "kind": {"const": "responses_continuation"},
         "version": {"const": 1},
         "payload": {"$ref": "#/$defs/responses_continuation_payload"}
+      }
+    },
+    "SkillReference": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "revision": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "revision"
+      ],
+      "additionalProperties": false
+    },
+    "SkillReferences": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "$ref": "#/$defs/SkillReference"
       }
     }
   }

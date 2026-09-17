@@ -143,9 +143,14 @@ export function toolExposureForSnapshot(
 	const additions = catalog.deferredTools.filter(
 		(tool) => activated.has(tool.name) && !directNames.has(tool.name),
 	);
-	return additions.length === 0
-		? catalog.directTools
-		: Object.freeze([...catalog.directTools, ...additions]);
+	if (additions.length === 0) return catalog.directTools;
+	const tools = [...catalog.directTools, ...additions];
+	const isExtension = (tool: ToolDefinition): boolean => tool.id.startsWith("mcp:") || tool.id.startsWith("plugin:");
+	// Exposure origin (direct, retained, newly found) must not reorder an unchanged tool set.
+	return Object.freeze([
+		...tools.filter((tool) => !isExtension(tool)),
+		...tools.filter(isExtension).sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0),
+	]);
 }
 
 function parseToolCatalogSnapshot(value: unknown): ToolCatalogSnapshot {
@@ -306,6 +311,8 @@ function executionPolicy(value: unknown): ExecutionPolicy {
 		filesystem: policy.filesystem,
 		network: policy.network,
 		...(networkDomains === undefined ? {} : { networkDomains }),
+		...(policy.deniedReadRoots === undefined ? {} : { deniedReadRoots: policyRootList(policy.deniedReadRoots, "denied read roots") }),
+		...(policy.deniedReadGlobs === undefined ? {} : { deniedReadGlobs: stringList(policy.deniedReadGlobs, "denied read globs", MAX_POLICY_LIST_ITEMS, 4_096) }),
 		...(policy.readableRoots === undefined
 			? {}
 			: { readableRoots: policyRootList(policy.readableRoots, "readable roots") }),

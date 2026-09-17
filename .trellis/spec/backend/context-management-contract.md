@@ -139,38 +139,64 @@
   memory section to avoid repeated provider-visible context.
 - Repeated compaction summary persistence -> skip duplicates by content hash and
   report skipped count in `context_summary_persistence`.
-- Pre-turn compaction summary input must exclude both the fresh current-turn
-  suffix and every completed turn retained verbatim as the exact tail. Its
-  replacement is summary + exact tail + fresh suffix, with each source item
-  represented once.
-- Mid-turn and context-overflow compaction run only after completed tool results
-  are durable. Their summary input includes the active user/tool phase, while
-  replacement history retains recent real user messages plus the new summary
-  and removes completed tool-call, tool-result, and provider-reasoning replay.
-  The append-only readable transcript remains unchanged. Active-turn compaction
-  must not rehydrate file contents into the provider-only replacement.
-- Pre-turn and user-requested compaction may rehydrate bounded workspace files.
-  Their reported `afterTokens` and savings ratio must include that provider-only
-  rehydration instead of measuring only the persisted replacement history.
+- Local compaction summarizes prior canonical history with its original roles and base instructions.
+  Pre-turn compaction excludes only the fresh incoming suffix. Manual and in-turn compaction
+  summarize the full active window; in-turn triggers run after tool results are durable.
+- Replacement history is recent real user-message text + handoff summary; pre-turn compaction
+  appends the unchanged fresh suffix afterward. Default retained user text is 20,000 tokens, with
+  a visible truncation marker at the boundary. Old summaries, assistant output, tool protocol and
+  old images are represented by the new summary rather than retained verbatim. Respect the storage
+  replacement batch bound as well. The original readable transcript remains append-only.
+- Local compaction never rereads files. `rehydration` stays empty for all sources. The next ordinary
+  provider request supplies current base/developer instructions and bootstraps runtime context in
+  the new timeline window. Recompute `afterTokens` without a minimum-savings acceptance gate.
+- Legacy full-turn retention, summary-size/economics, minimum-savings and file-rehydration config
+  keys remain parseable but do not affect local compaction. The retained user text budget remains
+  configurable through `context.compaction_tail_max_tokens`.
 - Provider replay state may persist a non-negative `tokenEstimate` derived from
   the successful provider step's `reasoning_tokens`. Compaction uses that value
   for opaque reasoning replay instead of tokenizing ciphertext. For legacy replay
   state without an estimate, token accounting recursively excludes opaque
   `encrypted_content` and signature fields while retaining readable summaries
   and metadata.
+- Token counting treats literal tokenizer markers (such as `<|endoftext|>`) in
+  documents, tool outputs and summaries as ordinary text. They must neither throw
+  an encoder error nor receive the special control-token count.
 - Once `compaction_started` is emitted, summary-generation failure or interruption
-  must emit a terminal `compaction_completed(status=failed)` event with unchanged
-  before/after token counts. A failed summary must not replace canonical history.
+  must emit a terminal `compaction_completed` event with unchanged before/after token
+  counts: `interrupted` for cancellation/ownership loss, `failed` for a real failure.
+  Started, progress and completed events carry the same unique operation ID; the
+  gateway publishes it as `checkpoint_id`. A failed summary must not replace canonical history.
 - Checkpoint acquisition, cleanup, and replacement commitment must compare the expected
   checkpoint inside the storage write transaction, on both normalized and legacy stores.
   A canceled or late compaction cannot delete or install over another window. Recheck
-  cancellation after file rehydration and before committing replacement history.
+  cancellation after summary generation and before committing replacement history.
 - An in-progress checkpoint prevents resending that same turn's uncertain summary request.
   A new turn may replace abandoned work and advance its window identity. Failed or skipped
   work restores the previous completed checkpoint only while still owning the current one.
 - Compaction uses `InProcessProviderStepExecutor` with the configured route's request and
   stream retry budgets. Summary text, reasoning, message completion, and output resets stay
   internal. Only compaction progress, safe failure, and reported usage cross the UI boundary.
+- Use the current reasoning effort and the model/user generation ceilings. Do not impose a separate
+  summary-token cap, force reasoning off, or issue an extra summarization request for a completed
+  long draft. Keep the concise handoff prompt as the final user message; tools are empty. Original
+  canonical developer/context items, tool pairs, images and provider replay go through the ordinary
+  provider projection rather than JSON reference-message wrapping.
+- On a confirmed context rejection, remove the oldest request-snapshot item and its paired tool
+  counterpart, then retry with fresh configured transport budgets. Estimated input that leaves no
+  generation room can be reduced before dispatch. Stop once only instructions and the handoff
+  prompt remain. Context trimming must not mutate durable history or the retained user-message
+  selection. Other failures use the shared executor's classification; no output-limit correction.
+- Check cancellation, checkpoint ownership and estimated Goal budget after durable attempt recording
+  and before every dispatch. Empty text uses `provider.empty_response`; incomplete streams cannot
+  install a replacement. Long completed summaries must survive checkpoint validation and persistence
+  without silent truncation. `runtime.compaction_summary_too_long` remains readable for old sessions
+  but is no longer emitted by local compaction.
+- Each generation records its actual canonical request fingerprint, effort and ceiling. Keep
+  provider attempts local to their retry chain (the shared attempt contract); separately record
+  an operation attempt number for diagnostics and usage attribution across generations. Failed
+  and successful usage must not deduplicate against each other. Input-trimming notices and typed final
+  errors survive replay; safe compaction traces retain failure context and reported usage.
 - Each summary request owns its checkpoint ID and fingerprint. `CompactionModelJournal`
   commits common `ProviderAttemptUpdate` records and per-attempt usage as append-only,
   non-model-visible display activities before dispatch/retry. The storage transaction checks
@@ -220,14 +246,13 @@
   raw rule patterns.
 - Good: active-turn compaction returns `rehydration=[]` and sends only retained
   user intent plus the compact summary to the next provider step.
-- Good: pre-turn compaction reports `afterTokens` from its rehydrated
-  `providerConversation`, even though persisted replacement items omit file bodies.
+- Good: a completed 10,000-token summary is installed once with retained user text, and its
+  actual replacement estimate is reported without an extra reduction request.
 - Base: a fresh workspace without context files has no workspace context section
   and no failure.
 - Bad: injecting `Ignore previous instructions...` raw from a project file.
 - Bad: rendering session summaries as ordinary current user text.
-- Bad: measuring compaction savings from persisted replacement items before
-  provider-only file rehydration is injected.
+- Bad: rejecting a completed summary using a summary-only token cap or rereading files after it.
 - Bad: doctor printing project context text, memory values, or trace payloads.
 
 ### 6. Tests Required
@@ -246,9 +271,9 @@
 - Runtime tests proving mid-turn compaction happens after tool-result
   persistence and before the next provider request, including a context-overflow
   fallback when the proactive threshold check does not compact.
-- Coordinator tests proving both active-turn sources omit rehydration, pre-turn
-  `afterTokens` equals the actual provider conversation estimate, and
-  `minSavingsRatio` uses that same estimate.
+- Coordinator tests covering all local sources, recent user retention and truncation, fresh-input
+  placement, empty rehydration, canonical request roles, context-overflow retry pairing, cancellation,
+  Goal accounting, long-summary persistence/reopen, and unchanged checkpoints on failure.
 - Runtime policy tests for sandbox enforcement denial ordering and bounded
   effect summaries.
 
@@ -257,15 +282,13 @@
 #### Wrong
 
 ```typescript
-const afterTokens = countItems(storedConversation);
-const providerConversation = injectRehydration(storedConversation, rehydration);
+if (counter.count(summary) > 4096) throw new Error("Summary too long");
 ```
 
 #### Correct
 
 ```typescript
-const rehydration = isActiveTurnCompaction(source) ? [] : await rehydrate();
-const providerConversation = injectRehydration(storedConversation, rehydration);
+const providerConversation = [...retainedUsers, compactionSummaryItem(summary), ...freshSuffix];
 const afterTokens = countItems(providerConversation);
 ```
 

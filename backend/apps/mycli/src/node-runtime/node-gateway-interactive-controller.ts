@@ -12,8 +12,8 @@ import { approvalPreviewPayload } from "./approval-preview.ts";
 
 type JsonObject = Record<string, unknown>;
 
-type InteractiveRequestMethod = "approval.request" | "clarify.request";
-type InteractiveResponseMethod = "approval.respond" | "clarify.respond";
+type InteractiveRequestMethod = "approval.request" | "clarify.request" | "mcp.elicitation.request";
+type InteractiveResponseMethod = "approval.respond" | "clarify.respond" | "mcp.elicitation.respond";
 
 interface QueuedInteractiveRequest {
 	readonly method: InteractiveRequestMethod;
@@ -104,7 +104,8 @@ export class NodeGatewayInteractiveController {
 		params: JsonObject,
 		fallbackOwnership: GatewayEventOwnership,
 	): void {
-		const requestMethod = method === "approval.respond" ? "approval.request" : "clarify.request";
+		const requestMethod = method === "approval.respond" ? "approval.request"
+			: method === "mcp.elicitation.respond" ? "mcp.elicitation.request" : "clarify.request";
 		const index = this.#requests.findIndex((request) => (
 			request.method === requestMethod
 			&& interactiveResponseMatchesRequest(request.params, params)
@@ -178,11 +179,11 @@ export function isApprovalChoice(
 }
 
 function isInteractiveRequestMethod(method: string): method is InteractiveRequestMethod {
-	return method === "approval.request" || method === "clarify.request";
+	return method === "approval.request" || method === "clarify.request" || method === "mcp.elicitation.request";
 }
 
 function isInteractiveResponseMethod(method: string): method is InteractiveResponseMethod {
-	return method === "approval.respond" || method === "clarify.respond";
+	return method === "approval.respond" || method === "clarify.respond" || method === "mcp.elicitation.respond";
 }
 
 function interactiveRequestIdentity(method: InteractiveRequestMethod, params: JsonObject): string {

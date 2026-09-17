@@ -1,3 +1,6 @@
+import { randomUUID } from "node:crypto";
+import { sanitizeRuntimeErrorDetail } from "@mycli/contracts";
+import type { RuntimeEvent, HookInvocation } from "@mycli/core";
 import type {
 	CanonicalToolCall,
 	HookExecution,
@@ -9,6 +12,7 @@ import type { ErrorContext } from "@mycli/contracts";
 
 export interface HookCoordinatorOptions {
 	readonly runner: HookRunnerContract;
+	readonly emit?: (event: RuntimeEvent) => void;
 	readonly sessionId: string;
 	readonly turnId: string;
 }
@@ -44,11 +48,13 @@ export interface HookPointResult {
 
 export class HookCoordinator {
 	readonly #runner: HookRunnerContract;
+	readonly #emit: ((event: RuntimeEvent) => void) | undefined;
 	readonly #sessionId: string;
 	readonly #turnId: string;
 
 	constructor(options: HookCoordinatorOptions) {
 		this.#runner = options.runner;
+		this.#emit = options.emit;
 		this.#sessionId = options.sessionId;
 		this.#turnId = options.turnId;
 	}
@@ -60,7 +66,7 @@ export class HookCoordinator {
 	): Promise<HookPointResult> {
 		let executions: readonly HookExecution[];
 		try {
-			executions = await this.#runner.run(this.#invocation(point, metadata), signal);
+			executions = await this.#run(this.#invocation(point, metadata), signal);
 		} catch (error) {
 			throwIfAborted(error, signal);
 			return Object.freeze({
@@ -85,7 +91,7 @@ export class HookCoordinator {
 	async beforeTool(call: CanonicalToolCall, signal: AbortSignal): Promise<BeforeToolHookResult> {
 		let executions: readonly HookExecution[];
 		try {
-			executions = await this.#runner.run(this.#invocation("pre_tool_use", {
+			executions = await this.#run(this.#invocation("pre_tool_use", {
 				callId: call.callId,
 		}, call), signal);
 		} catch (error) {
@@ -130,7 +136,7 @@ export class HookCoordinator {
 	): Promise<AfterToolHookResult> {
 		let executions: readonly HookExecution[];
 		try {
-			executions = await this.#runner.run(this.#invocation("post_tool_use", {
+			executions = await this.#run(this.#invocation("post_tool_use", {
 				callId: call.callId,
 				success: result.success,
 				summary: result.summary.slice(0, 512),
@@ -148,6 +154,36 @@ export class HookCoordinator {
 			),
 			...(failure?.action === "error" && failure.errorContext ? { errorContext: failure.errorContext } : {}),
 		});
+	}
+
+	async #run(input: HookInvocation, signal: AbortSignal): Promise<readonly HookExecution[]> {
+		const identity = { operationId: `hook_${randomUUID()}`, turnId: this.#turnId, point: input.point };
+		let visible = false;
+		const timer = setTimeout(() => {
+			visible = true;
+			this.#emit?.({ type: "hook_started", ...identity });
+		}, 200);
+		timer.unref();
+		try {
+			const executions = await this.#runner.run(input, signal);
+			const blocked = executions.find((execution) => execution.result.action === "error" || execution.result.action === "deny");
+			const status = signal.aborted ? "interrupted" : blocked?.result.action === "error" ? "failed"
+				: blocked?.result.action === "deny" ? "denied" : "completed";
+			if (visible || blocked) {
+				const message = blocked && "message" in blocked.result
+					? sanitizeRuntimeErrorDetail(`${blocked.hookId}: ${blocked.result.message}`) : undefined;
+				this.#emit?.({ type: "hook_completed", ...identity, status, ...(message ? { message } : {}) });
+			}
+			return executions;
+		} catch (error) {
+			const interrupted = signal.aborted || (error instanceof Error && error.name === "AbortError");
+			this.#emit?.({ type: "hook_completed", ...identity, status: interrupted ? "interrupted" : "failed",
+				...(interrupted ? {} : { message: "Hook execution failed. Open /hooks to inspect the configuration." }),
+			});
+			throw error;
+		} finally {
+			clearTimeout(timer);
+		}
 	}
 
 	#invocation(

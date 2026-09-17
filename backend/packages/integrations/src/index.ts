@@ -16,7 +16,9 @@ export type {
 	IntegrationLifecycleStackOptions,
 } from "./foundation/lifecycle.ts";
 export { defineIntegrationRegistration } from "./foundation/registration.ts";
+export { normalizeIntegrationToolNames } from "./foundation/tool-catalog.ts";
 export type { IntegrationRegistration } from "./foundation/registration.ts";
+export { IntegrationToolApprovalStore, IntegrationApprovalStoreError } from "./foundation/tool-approval-store.ts";
 export { HookAllowlistStore, HookAllowlistStoreError } from "./hooks/allowlist.ts";
 export {
 	hookCommandDigest,
@@ -66,7 +68,10 @@ export type {
 	McpCatalogCacheContract,
 	McpCatalogCacheOptions,
 } from "./mcp/catalog-cache.ts";
-export { discoverMcpConfig } from "./mcp/config.ts";
+export { discoverMcpConfig, parseMcpServerConfig, McpConfigError } from "./mcp/config.ts";
+export { discoverConfiguredMcpServers, mcpServerSelector } from "./mcp/configured-servers.ts";
+export { pluginMcpServers, pluginMcpServerId } from "./plugins/mcp-servers.ts";
+export { McpConfigStore } from "./mcp/config-store.ts";
 export type { DiscoverMcpConfigOptions } from "./mcp/config.ts";
 export {
 	classifyMcpFailure,
@@ -112,6 +117,8 @@ export { discoverPlugins } from "./plugins/discovery.ts";
 export { pluginBundleContributions } from "./plugins/bundle-contributions.ts";
 export type { PluginBundleContributions } from "./plugins/bundle-contributions.ts";
 export { PluginPackageManager } from "./plugins/package-management.ts";
+export { PluginCatalogService, packageIssue } from "./plugins/catalog.ts";
+export { pluginDeclarations } from "./plugins/declarations.ts";
 export type { PluginPackageRequest, PluginPackageResponse } from "./plugins/package-management.ts";
 export type { DiscoverPluginsOptions } from "./plugins/discovery.ts";
 export {
@@ -167,13 +174,18 @@ export type {
 export { renderSkillCatalog } from "./skills/catalog.ts";
 export { builtinSkillRoot } from "./skills/builtin-root.ts";
 export type { RenderSkillCatalogOptions } from "./skills/catalog.ts";
-export { SkillRegistry } from "./skills/registry.ts";
+export { SkillRegistry, skillIdentity, skillRevision } from "./skills/registry.ts";
+export { SkillManagementService, SkillSelectionError } from "./skills/management.ts";
+export type { SkillManagementRow, SkillManagementSnapshot } from "./skills/management.ts";
+export { IntegrationEnablementStore, IntegrationEnablementError, integrationEnabled, integrationSourceIdentity } from "./foundation/enablement-store.ts";
+export type { IntegrationEnablementKind, IntegrationEnablementEntry, IntegrationEnablementSnapshot } from "./foundation/enablement-store.ts";
 export type { SkillRegistryOptions } from "./skills/registry.ts";
 export {
 	createSkillToolRegistration,
 	type SkillLookup,
 	SKILL_TOOL_DEFINITION,
 	skillInvocationArtifactFromMetadata,
+	skillInstructionArtifact,
 	SkillTool,
 } from "./skills/skill-tool.ts";
 export type { SkillToolOptions } from "./skills/skill-tool.ts";
@@ -257,3 +269,11 @@ export {
 export { ListMcpResourcesTool, ListMcpResourceTemplatesTool, ReadMcpResourceTool } from "./mcp/resource-tools.ts";
 export type { McpResourceService, McpResourceListing, McpResourcePage, McpResourceTemplateDescriptor,
 	McpResourceTemplatePage, McpResourceTemplateListing } from "./mcp/types.ts";
+export { McpRequiredServerError } from "./mcp/manager.ts";
+export { loginMcpOAuth } from "./mcp/oauth-login.ts";
+export { McpOAuthStore, McpOAuthError } from "./mcp/oauth-store.ts";
+export { policyMcpFetch } from "./mcp/http-fetch.ts";
+export type { McpElicitationPrompt, McpElicitationHandler, McpInvocationContext } from "./mcp/elicitation.ts";
+
+export { HookBrowserService, HookSelectionError, configuredHookIdentity, configuredHookEnablement, pluginHookIdentity } from "./hooks/browser-service.ts";
+export type { HookBrowserRow, HookBrowserSnapshot } from "./hooks/browser-service.ts";

@@ -23,6 +23,42 @@ connection failures use the same context in the private log and never mutate
 conversation history. Preserve the first backend diagnostic through cleanup.
 See `error-handling.md` and `docs/errors.md` for examples and version fences.
 
+## Scenario: Operation Feedback And Terminal Attention
+
+- Manual `/compact` claims session control until its promise settles. The caller supplies
+  `command.run.operation_id`; the gateway creates one for older callers. Its scoped
+  `turn.interrupt.operation_id` cancels only that operation. It does not create a user turn,
+  restore queued turn input, or generate a Worked duration. Esc/Ctrl+C route to the operation
+  from the moment of submission, including while runtime configuration is being resolved.
+- All compactions publish lifecycle events with `checkpoint_id`. The UI tracks a separate
+  active operation and clock, matches progress/completion by ID, preserves successive results,
+  and never reopens a completed operation on replay. Manual command results without lifecycle
+  events still explain no-op/failure outcomes. Clear optimistic state on rejected submission.
+- Confirmed model choices name provider/model, reasoning effort and scope. Informational
+  notices use neutral styling; warnings and errors retain their own severity. An idle Ctrl+C
+  exit hint belongs to the composer and expires after two seconds or ordinary input.
+- Approval responses keep a bounded decision/subject/scope row in the live UI transcript.
+  Unmatched, duplicate or late responses must not resume activity or clear another request.
+- MCP resource snapshots supply startup counts and names. A new failed/partial state emits one
+  warning with `/mcp`; identical refreshes do not repeat it. Catalog refreshes are session fenced.
+- Hooks exceeding 200 ms publish owned `hook.started` / `hook.completed` events. Quick successes
+  are silent; failures surface even without a start event. Pre-tool failures retain the existing
+  tool error path. Hook text is bounded and sanitized; raw exceptions never reach the terminal.
+- Goal interruption reasons are typed, persisted in the terminal lifecycle/outbox and display
+  activity, and projected through the Worker and gateway. Budget exhaustion and missing provider
+  usage have separate guidance; provider strings must not classify an interruption.
+- `tui.terminal_notifications` defaults to true. Focus reporting gates OSC 9 attention messages;
+  a 150 ms window coalesces events, prioritizing requests over completion. Notifications contain
+  generic status only. Focus gain, disabling, session replacement and runtime stop cancel pending
+  notifications. Terminal stop also disables focus reporting. Terminal support determines delivery.
+- A disconnected local gateway still ends the TUI and supplies the existing session resume command.
+  Automatic gateway reconnection and account-quota warnings require separate runtime/provider data.
+
+Validation: owned manual cancellation and admission, no-op/rejection cleanup, repeated/late
+compaction events, clock restoration, transient hints, approval scopes, MCP refresh deduplication,
+Hook failure privacy, Goal Worker-to-replay reasons, focus/coalescing/disposal, and configuration
+round trips. Existing layout, queue, selector and transcript replay tests must continue to pass.
+
 ## Scenario: TUI Module Ownership
 
 ### 1. Scope / Trigger
@@ -132,8 +168,9 @@ See `error-handling.md` and `docs/errors.md` for examples and version fences.
   fatal `tool_protocol_error`.
 - Permission mapping is fixed: `read-only` uses read-only filesystem and no
   network/writable roots; `workspace` uses workspace-write with the canonical
-  workspace writable and no network; `full-access` uses explicit
-  danger-full-access with unrestricted filesystem and network.
+  workspace writable and networking enabled; `full-access` uses explicit
+  danger-full-access with unrestricted filesystem and network. Managed network restrictions
+  cap every profile. Permission rows must describe the same defaults as the execution policy.
 - `full-access` skips routine approval only after valid tool parsing and
   explicit exec-policy `deny` / `ask` / `allow` evaluation. It auto-allows
   otherwise-unmatched valid Shell segments, known request-policy extensions,
@@ -257,7 +294,14 @@ and tool execution. A later permission change does not affect a running turn.
 
 ## Scenario: Command Inspection Lists
 
-- `/mcp`, `/plugins`, `/skills`, `/hooks`, and diagnostic `/tools` have independent bounded list displays.
+- `/mcp`, `/plugins`, `/skills`, `/hooks`, and diagnostic `/tools` have independent bounded displays.
+  TUI `/plugins` dispatches `open_plugins` to a dedicated package browser; CLI slash inspection
+  retains its resource display. All/Installed/named-marketplace tabs, search, detail and management
+  share one disposable selector. Detail loads on demand and cannot expose actions for stale metadata.
+  Preserve query, selection and composer draft, use DecisionPanel geometry/inspection, and require
+  explicit removal confirmation. Ctrl+N reviews a local/Git source; Ctrl+R refreshes. Async operations
+  use typed gateway ports with original session/generation and explicit cancellation on disposal.
+  Generation changes/shutdown dispose the selector before late responses can publish.
   The default palette and settings center expose integration domains separately. `/tools` is search-only
   and lists callable tools, never plugin packages or MCP resources. Its only subactions are `list` and `sets`.
   `/tools plugins`, `/tools hooks`, and `/tools extensions` are retired with canonical replacement hints.
@@ -656,6 +700,8 @@ and tool execution. A later permission change does not affect a running turn.
     `compaction.completed` may carry a sanitized `failure` and reported `usage`;
     retry progress must not reset ordinary assistant text. Manual command results
     include the safe failure and usage, and failed request details survive replay.
+    Live compaction failures use the canonical `errorContext` summary and fall back to its
+    public details when `additionalDetails` is absent, matching restored error notices.
   - A force-finalized in-process Promise may still unwind after the gateway has
     released the active turn, but its callbacks are generation/turn fenced and
     its storage writes cannot replace the terminal interrupted record.
@@ -979,6 +1025,14 @@ and tool execution. A later permission change does not affect a running turn.
 - TUI session input ownership is split between reducer snapshots for optimistic input and shell
   snapshots for the draft, local image descriptors, last submitted input, activity signature, and
   Enter-to-`turn.started` pending state.
+- Composer snapshots own both visible text and its paste bindings. Bracketed pastes over 1,000
+  Unicode code points or 10 lines collapse in the editor; Enter and follow-up expand bindings once
+  before UI dispatch. Full-text replacement and history navigation must not reuse old bindings.
+  Session switching and rejected submission preserve the source draft without overwriting newer
+  input or another session. Unsent text and paste bodies remain in TUI memory; there is no draft
+  file store, startup restore, or shutdown write. A new runtime opens an empty composer even for
+  a resumed session. Unsent drafts do not enter canonical transcript or exports. Regression
+  coverage lives in `editor-pastes.test.ts` and `application/composer-paste.test.ts`.
 
 ### 3. Contracts
 
@@ -1329,8 +1383,10 @@ finally {
     local TUI state. Completion popup, approval, clarification, and running-turn
     modes expose the actions needed for the active interaction. Normal idle
     input omits permanent `enter send` and `ctrl+p commands` footer text; the
-    cwd/session context remains on the left while context/model status is
-    right-aligned on the same row. The header, command palette, and `/help`
+    first footer row shows mode/trust, model and reasoning on the left with context usage
+    on the right; the second shows workspace/branch and session. Compact mode keeps the
+    first row (workspace fallback when model context is absent), and off hides both.
+    Work summaries remain above the input in every statusbar mode. The header, command palette, and `/help`
     retain command discoverability without spending a persistent footer row on
     obvious actions.
   - `/help` should be handled as a Node-local command that opens the existing
@@ -1669,8 +1725,8 @@ finally {
   warning severity, and has identical live and resumed projection.
 - Rendering tests proving contextual input hints change with completion,
   approval, clarification, and running modes, while normal idle input omits
-  permanent send/command footer hints and aligns context/model status at the
-  right edge of the cwd/session row.
+  permanent send/command footer hints and separates the model/context row from workspace/session.
+  Work summaries, live activity and session metadata never duplicate each other's labels.
 - Local-command tests proving `/help` opens an overlay while non-local commands
   still route to the gateway.
 - Reducer/transcript tests proving Node TUI consumes `tool.start`,
@@ -2983,10 +3039,13 @@ const recoveredApproval = approvalIdentity;
 - Before summary provider IO, persist an `in_progress` checkpoint with a deterministic request
   fingerprint. A completed checkpoint increments `window_number`; `history_item_count` is the raw
   durable history length, not provider-projection length.
-- The local summary request output budget is
-  `min(model_max_output, max(4096, compaction_l4_expected_summary_tokens))` when a model output
-  limit exists, otherwise `max(4096, compaction_l4_expected_summary_tokens)`. The 4096-token floor
-  leaves room for reasoning-model internal tokens while the generated summary remains bounded.
+- The stored summary limit is `max(4096, compaction_l4_expected_summary_tokens)`, capped by the
+  configured output limit when present. The executor separately bounds generation by the model
+  ceiling, context room and remaining Goal budget, adding reasoning room only when needed.
+  Historical instructions/tools are reference data. An initial output-limit failure can use one
+  corrective generation, and a completed oversized draft can use one final reduction. Neither
+  correction has transport retries. Only a validated summary may replace history; a final
+  `runtime.compaction_summary_too_long` retains bounded estimated length and limit details.
 - A successful compact uses one `commitCompaction()` transaction for replacement messages,
   summary, completed checkpoint, and Responses continuation invalidation. Raw history and rollouts
   are never deleted.
@@ -5160,7 +5219,7 @@ const environment = Object.fromEntries(keys.flatMap((key) => {
 - The native live viewport and scrollback delta collection share the committed history boundary.
   A shorter approval, composer, pending-input, or footer surface must not move already committed
   rows back into the live frame or make them eligible for another append. Released space is padded
-  until later transcript output fills it; ordinary chrome changes never clear native scrollback.
+  below live activity and above the composer; ordinary chrome changes never clear native scrollback.
 - A bounded committed boundary also retains its source component, section/index, and intra-component
   row offset. A full cache rebuild may reset logical row origins without replacing that component.
   Rebase the committed and pending coordinates only when the source identity and boundary row still
@@ -5173,12 +5232,30 @@ const environment = Object.fromEntries(keys.flatMap((key) => {
 - Shell chrome containers may reuse rendered lines between viewport-height measurement and their
   later layout pass only when `activeRenderFrameId` and width both match. The cache is unavailable
   outside the root render call and must not survive into the next frame.
-- Live turn activity belongs to the composer status area, outside the transcript viewport. Keep
+- Live turn activity follows the transcript viewport, before Goal/work summaries, queued input,
+  background agents and the editor. It belongs to the live transcript area outside history. Keep
   one blank row before and after it, one width-bounded header row, and at most two detail rows.
+  The viewport's available height is a maximum, not a minimum: render only actual visible content
+  rows, preserving source whitespace without padding short transcripts to the height budget.
+  `TranscriptAreaComponent` groups the viewport with live status, then pads the remaining height
+  below status. The work summary, queued input, editor and session footer stay at the bottom.
+  History collection still reads only the viewport. Test both the last output-to-activity row
+  distance and the editor's bottom anchor through short output, streaming, resize and turn stops.
   Transcript scrolling, Shell streaming, and queued-input changes must retain this placement;
   native history collection must never commit activity rows. Completed-turn duration remains in
   the transcript. Status-only changes and spinner ticks must not rebuild or invalidate transcript
   content, and a `turnRunning` change must update activity even when the phase label is unchanged.
+- Goal, task and background Shell summaries live below turn activity in a separate cached composer
+  container. They share one width-bounded row; extension statuses use at most one additional row
+  with deduplication and an overflow count. Include this container in transcript, pending-input and
+  decision-panel height budgets, and keep it out of native history. Background agent previews also
+  stay above the editor. Work-only updates must not rebuild the session footer or transcript.
+  Reuse the activity's trailing blank row when the summary follows it; activity visibility changes
+  must invalidate summary spacing even when Goal and background-work data are unchanged.
+- Session footer rows use an inset and stay clear of the terminal's wrap column. Reserve mode/trust
+  and context before reasoning/model detail; drop a long branch before shortening workspace/session.
+  Goal controls and usage shrink before the Goal state label. Match ASCII/Unicode glyph policy and
+  strip terminal controls from metadata before applying semantic theme styles.
 - Assistant streaming reuses existing Markdown components and marks only the owning container
   dirty. Recursive invalidation is reserved for theme or layout invalidation because it discards
   the Markdown token cache.
@@ -7089,3 +7166,92 @@ return gateway.send("session.resume", {
 	metadata_revision: preview.session.metadata_revision,
 });
 ```
+
+
+## Scenario: Interactive slash workflows (2026-09-12)
+
+### 1. Scope / Trigger
+
+Changes to slash workflow dispatch, integration management, selected skill input, Git review,
+or session previews. Backend owns durable mutations; TUI selectors use contracts and gateway clients.
+
+### 2. Signatures
+
+- `skills.list({session_id, generation}) -> {revision, skills}`.
+- `skills.config.write({session_id, generation, id, skill_revision, revision, enabled})` returns the catalog.
+- `hooks.list({session_id, generation}) -> {revision, hooks}`.
+- `hooks.config.write({session_id, generation, id, hook_revision, revision, action})`, where action is
+  `enable | disable | trust | revoke`, returns the catalog.
+- `workspace.diff({session_id, generation}) -> {text, truncated}`.
+- `session.preview({session_id, generation, target_session_id}) -> {text, truncated}`.
+- `turn.submit` accepts optional `review: {kind: "uncommitted"} | {kind: "base" | "commit", ref}
+  | {kind: "custom", instructions}`. Submit/steer/follow-up accept `skill_references`.
+- `command.run` accepts optional session/generation ownership, including `/clear`, `/rename [title]`,
+  `/plan [task]`, and `/init`; TUI callers supply ownership.
+
+### 3. Contracts
+
+- `/clear` shares `/new` backend lifecycle. Clear terminal/scrollback only after a successful session
+  transition; preserve the source session and visible transcript on failure.
+- Skill selection carries bounded `{id,name,revision}` references. Preserve them through composer
+  snapshots, submit/steer/follow-up, queue conflicts/restoration, canonical user-input events and
+  selected instruction loading. Empty reference lists must retain legacy submission fingerprints.
+  Each input supports at most eight distinct references. Interrupted inputs with incompatible
+  same-name identities or a combined selection above that limit remain separate queue records.
+  Restoring them into a draft preserves all identities and requires explicit reselection before
+  submitting an ambiguous or excessive selection; it must not silently select the last source.
+- `skills.list` / `skills.config.write` and `hooks.list` / `hooks.config.write` carry current session
+  ID and generation. Settings writes use source/content revisions and atomic enablement CAS.
+  Selected skills are validated against the active run's captured registry before provider input.
+- `/hooks` separates availability from exact-command allowlist trust. Plugin handlers identify their
+  source and preserve plugin authority. Inspection must not launch a host or model. Trust/enablement
+  updates apply on later turns, including externally changed skill and hook files.
+  Bundle hook handlers honor their default enabled state unless an explicit captured override exists.
+- `workspace.diff` and `session.preview` are read-only, owned by the requesting session/generation,
+  bounded, cancellable views. Async results cannot replace another selector/session.
+- `/review` reuses runtime composition in review mode with only Read exposed and native web search
+  disabled. Its runtime shares the active queue but has a separate lifecycle. Dispose it before
+  publishing terminal completion, then release the active claim without another asynchronous gap.
+  Historical Read resolves pinned Git blobs; normal chat restores normal tools. Read and custom file
+  listings use the Git root even when the session started in a subdirectory; session ownership and
+  configuration stay rooted in the original workspace.
+- `/plan <task>` carries attachments and Plan mode in one turn admission. `/init` checks AGENTS.md
+  before requesting generation and tells the agent to recheck immediately before writing.
+- `/rename` materializes preferences for a new empty session before calling `SessionService.rename`.
+- Diff text is limited to 256 KiB. Preview reads at most 20 transcript items, includes the last eight
+  user/assistant messages and at most 2,000 characters each, and marks shortening explicitly.
+- Maintain the slash matrix checksum, M8 capability counts and command documentation together.
+
+### 4. Validation & Error Matrix
+
+- Stale session/generation -> `session_changed`; cancel pending work on transitions and trust changes.
+- Changed skill/source/settings revision -> `invalid_params` in management; a stale submitted skill
+  fails with `config_error` before contacting a provider. Invalid steering leaves the active turn alive.
+- Invalid settings/allowlist file -> `config_error`; preserve malformed files instead of overwriting them.
+- Bad Git reference, excessive context, or empty review -> `invalid_params` with actionable detail.
+- Existing AGENTS.md (including a symlink) -> notice without generation.
+
+### 5. Good / Base / Bad Cases
+
+- Good: disable a hook while a turn runs; that turn retains its configuration, the next turn uses the change.
+- Base: select a skill and submit `$name`; its selected source and revision reach durable user input.
+- Bad: merge text but omit selected skill references, or load revision paths relative to a nested cwd.
+- Bad: signal review completion while runtime cleanup still prevents a new submission.
+
+### 6. Tests Required
+
+- `node-gateway.test.ts`: failed clear preserves history; stale ownership and cancellation; rejected skill steering.
+- `node-backend.integration.test.ts`: skill body reaches provider once, disabled selections fail before another
+  request; nested workspace and historical review reads; writes denied; immediate next review/chat; empty rename.
+- `queue-state.test.ts`: skills survive recovery and merging; conflicting or excessive selections remain separate.
+- `plugin-bundle.integration.test.ts`: disabled hooks never execute without a captured override.
+- TUI selector/runtime tests: draft bindings, late-load disposal, trust confirmation, Plan attachments,
+  narrow/CJK reflow, and refresh ownership. Git/init tests preserve source files and separate staged/unstaged diffs.
+
+### 7. Wrong vs Correct
+
+Wrong: `publishCompleted(); await closeReview(); releaseExecution();` exposes an unusable idle state.
+
+Correct: capture the review terminal event, await review cleanup, then publish the event and release
+execution synchronously. Guard optional cleanup with `if (closeReview)` so ordinary turns do not acquire
+an unnecessary `await undefined` gap.

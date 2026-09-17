@@ -57,6 +57,10 @@ the registry.
 * Registry: always `https://registry.npmjs.org/`; npm cache is `.npm-cache/release`.
 * CI: a `v<semver>` tag on `main`, protected `npm` environment, Windows helper artifact,
   `id-token: write`, and optional `NPM_TOKEN` only for bootstrap/fallback authentication.
+* Windows helper artifacts require native protocol/primitives plus real Shell integration with
+  both `MYCLI_WINDOWS_SANDBOX_SETUP_TESTS=1` and `MYCLI_WINDOWS_SANDBOX_MAINTENANCE_TESTS=1`.
+  A skipped repair/uninstall suite does not satisfy release acceptance. Local disposable Windows
+  machines may run the same gate; cross compilation alone is insufficient.
 * Stable versions publish under `latest`; prereleases publish under `next`.
 * Evidence: `.github/workflows/release-compatibility.yml` runs one installed-artifact job each on
   macOS, Ubuntu, and Windows. Every job owns separate bounded `*-packed.json` and `*-upgrade.json`
@@ -112,6 +116,9 @@ the registry.
 * Package smoke: no `src/`, `test/`, TypeScript config, Python runtime, or embedded generic ripgrep;
   all vendored workspace files are present, and release CI additionally requires the Windows
   sandbox helper inside the app artifact.
+* Native-provider packed fixtures select reasoning settings supported by their catalog model.
+  Do not inherit a synthetic model's disabled-thinking setting: that can reject the request before
+  any transport or retry is exercised. Assert the native request count and durable retry sequence.
 * Ripgrep resolver tests must cover platform-package priority and explicitly pass
   `platformPackageRoot: null` when exercising user-vendor fallback or isolated environment
   sanitization on a development install that contains the optional package.

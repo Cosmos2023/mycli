@@ -1,10 +1,12 @@
 {
   "name": "@mycli/gateway",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "types": "./dist/index.d.ts",
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "exports": {
     ".": {
       "mycli-source": "./src/index.ts",
@@ -22,6 +24,10 @@
     "test": "node --import tsx --test \"test/**/*.test.ts\" --test-reporter=dot",
     "typecheck": "tsc --noEmit"
   },
-  "dependencies": { "@mycli/contracts": "0.1.0" },
-  "engines": { "node": ">=22.19.0" }
+  "dependencies": {
+    "@mycli/contracts": "0.1.1"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
 }

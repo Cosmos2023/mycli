@@ -1,8 +1,13 @@
 import type { AssistantMessageEvent } from "@earendil-works/pi-ai";
 import type { ProviderEvent, WebSearchAction } from "@mycli/core";
+import { PiAiStreamQueue, streamBufferFailure } from "./pi-ai-stream-queue.ts";
 
 type WebSearchEvent = Extract<ProviderEvent, { type: "web_search_started" | "web_search_completed" }>;
-export type PiAiStreamEvent = AssistantMessageEvent | WebSearchEvent;
+// SDK partial snapshots grow in place. The bridge retains only consumed deltas
+// and the final message; intermediate SDK bookkeeping has no provider output.
+export type PiAiStreamEvent = WebSearchEvent
+	| { readonly type: "text_delta" | "thinking_delta"; readonly delta: string }
+	| Extract<AssistantMessageEvent, { type: "done" | "error" }>;
 
 interface SearchState {
 	action: WebSearchAction;
@@ -16,18 +21,21 @@ const MAX_SEARCH_DETAIL_CHARS = 2_048;
 
 export class PiAiWebSearchStream {
 	readonly #calls = new Map<string, SearchState>();
-	readonly #stream: ReadableStream<PiAiStreamEvent>;
-	#controller!: ReadableStreamDefaultController<PiAiStreamEvent>;
-	#closed = false;
+	readonly #queue = new PiAiStreamQueue<PiAiStreamEvent>();
 
-	constructor() {
-		this.#stream = new ReadableStream<PiAiStreamEvent>({
-			start: (controller) => { this.#controller = controller; },
-		}, { highWaterMark: 0 });
+	async observe(event: Readonly<Record<string, unknown>>): Promise<void> {
+		await this.#queue.drained();
+		if (this.#queue.closed) return;
+		try {
+			this.#observe(event);
+		} catch (error) {
+			this.#queue.fail(error);
+			throw error;
+		}
+		await this.#queue.drained();
 	}
 
-	observe(event: Readonly<Record<string, unknown>>): void {
-		if (this.#closed) return;
+	#observe(event: Readonly<Record<string, unknown>>): void {
 		switch (event.type) {
 			case "response.web_search_call.in_progress":
 			case "response.web_search_call.searching":
@@ -56,44 +64,43 @@ export class PiAiWebSearchStream {
 
 	async *merge(source: AsyncIterable<AssistantMessageEvent>, signal: AbortSignal): AsyncGenerator<PiAiStreamEvent> {
 		const iterator = source[Symbol.asyncIterator]();
-		const reader = this.#stream.getReader();
-		let failure: { error: unknown } | undefined;
-		const cancel = (): void => {
-			this.#closed = true;
-			void reader.cancel(signal.reason).catch(() => undefined);
-		};
+		const cancel = (): void => this.#queue.stop();
 		signal.addEventListener("abort", cancel, { once: true });
 		if (signal.aborted) cancel();
-		// Drain SDK events promptly so slow consumers cannot reorder them behind native activities.
 		const producer = (async (): Promise<void> => {
 			try {
-				while (!this.#closed) {
-					const result = await iterator.next();
-					if (result.done) break;
-					this.#push(result.value);
-					if (result.value.type === "done" || result.value.type === "error") break;
+				while (!this.#queue.closed) {
+					await this.#queue.drained();
+					if (this.#queue.closed) break;
+					const result = await this.#queue.waitForNext(iterator.next());
+					if (!result || result.done || this.#queue.closed) break;
+					const event = result.value;
+					if (event.type === "text_delta" || event.type === "thinking_delta") {
+						this.#push({ type: event.type, delta: event.delta });
+					} else if (event.type === "done" || event.type === "error") {
+						this.#push(event);
+						break;
+					}
 				}
 			} catch (error) {
-				failure = { error };
+				this.#queue.fail(error);
 			} finally {
-				if (!this.#closed) this.#controller.close();
-				this.#closed = true;
+				this.#queue.close();
+				// The provider aborts transport first. A noncooperative iterator must
+				// not hold cancellation or an early consumer return hostage.
+				try { void Promise.resolve(iterator.return?.()).catch(() => undefined); } catch { /* Already stopped. */ }
 			}
 		})();
 		try {
 			while (true) {
-				const result = await reader.read();
+				const result = await this.#queue.take();
 				if (result.done) break;
 				yield result.value;
 			}
-			if (failure) throw failure.error;
 		} finally {
-			this.#closed = true;
+			this.#queue.stop();
 			signal.removeEventListener("abort", cancel);
-			await reader.cancel();
-			reader.releaseLock();
 			await producer;
-			try { await iterator.return?.(); } catch { /* The provider owns upstream cancellation. */ }
 			this.#calls.clear();
 		}
 	}
@@ -112,7 +119,7 @@ export class PiAiWebSearchStream {
 		if (typeof value !== "string" || !value.trim() || value.length > 256) return undefined;
 		const existing = this.#calls.get(value);
 		if (existing) return existing;
-		if (this.#calls.size >= MAX_SEARCH_CALLS) return undefined;
+		if (this.#calls.size >= MAX_SEARCH_CALLS) throw streamBufferFailure();
 		const state: SearchState = { action: { type: "other" }, finished: false, emitted: false };
 		this.#calls.set(value, state);
 		this.#push({ type: "web_search_started", callId: value });
@@ -127,7 +134,7 @@ export class PiAiWebSearchStream {
 	}
 
 	#push(event: PiAiStreamEvent): void {
-		if (!this.#closed) this.#controller.enqueue(event);
+		this.#queue.push(event);
 	}
 }
 

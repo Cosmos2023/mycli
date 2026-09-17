@@ -2,8 +2,8 @@
   "schema_version": 1,
   "baseline": "python-m7-final",
   "gateway": {
-	"rpc_count": 45,
-    "event_count": 45,
+	"rpc_count": 59,
+    "event_count": 49,
     "required_rpc": [
       "session.bootstrap",
 	  "session.new",
@@ -15,6 +15,7 @@
       "turn.submit",
       "approval.respond",
       "clarify.respond",
+      "mcp.elicitation.respond",
       "turn.steer",
       "turn.follow_up",
 	  "turn.queue.restore.ack",
@@ -28,7 +29,9 @@
 	  "provider.list",
 	  "provider.attempts.load",
 	  "settings.keymap.reset",
-      "shutdown"
+      "shutdown",
+      "goal.get",
+      "goal.update"
     ],
     "required_events": [
       "runtime.ready",
@@ -36,6 +39,8 @@
       "item.completed",
       "approval.request",
       "clarify.request",
+      "mcp.elicitation.request",
+      "mcp.elicitation.respond",
 	  "interactive.cancelled",
       "turn.queue.updated",
       "shell.started",
@@ -43,13 +48,15 @@
       "subagent.updated",
       "turn.completed",
       "turn.status",
-      "provider.attempt.updated"
+      "provider.attempt.updated",
+      "hook.started",
+      "hook.completed"
     ]
   },
   "slash_commands": {
-	"command_count": 38,
+	"command_count": 44,
 	"retired_command_count": 39,
-	"sha256": "fe1281e5dfe79ddcf0415e40a73001996781692ed6f3f8926b88262f5ca9d349"
+    "sha256": "4655da16c262aa5ee0ce336eda45ecee4fd00121efcdb8131a091d23c9c09238"
   },
   "tools": {
     "retained": [
@@ -57,7 +64,10 @@
       "Edit",
       "Patch",
       "Write",
-      "AskUserQuestion"
+      "AskUserQuestion",
+      "create_goal",
+      "get_goal",
+      "update_goal"
     ],
     "explicitly_retired": [
       "LS",

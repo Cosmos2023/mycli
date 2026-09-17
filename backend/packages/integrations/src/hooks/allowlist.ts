@@ -86,7 +86,7 @@ export class HookAllowlistStore {
 		return status(true, "matched", commandDigest);
 	}
 
-	async approve(spec: ConfiguredHookSpec): Promise<HookApprovalRecord> {
+	async approve(spec: ConfiguredHookSpec, signal?: AbortSignal): Promise<HookApprovalRecord> {
 		return this.#withLock(async () => {
 			const loaded = await this.#loadInternal();
 			if (loaded.issues.length > 0) {
@@ -95,12 +95,12 @@ export class HookAllowlistStore {
 			const approved = approvalRecord(spec, this.#now());
 			const records = loaded.records.filter((item) => !sameIdentity(item, approved));
 			records.push(approved);
-			await this.#write(records);
+			await this.#write(records, signal);
 			return approved;
-		});
+		}, signal);
 	}
 
-	async revoke(spec: ConfiguredHookSpec): Promise<boolean> {
+	async revoke(spec: ConfiguredHookSpec, signal?: AbortSignal): Promise<boolean> {
 		return this.#withLock(async () => {
 			const loaded = await this.#loadInternal();
 			if (loaded.issues.length > 0) {
@@ -111,9 +111,9 @@ export class HookAllowlistStore {
 				item.scope !== spec.scope || item.identity !== identity
 			));
 			const removed = records.length !== loaded.records.length;
-			if (removed || loaded.exists) await this.#write(records);
+			if (removed || loaded.exists) await this.#write(records, signal);
 			return removed;
-		});
+		}, signal);
 	}
 
 	#directory(): string {
@@ -159,13 +159,15 @@ export class HookAllowlistStore {
 		return frozenLoaded(true, records, []);
 	}
 
-	async #withLock<Value>(operation: () => Promise<Value>): Promise<Value> {
+	async #withLock<Value>(operation: () => Promise<Value>, signal?: AbortSignal): Promise<Value> {
+		signal?.throwIfAborted();
 		await mkdir(this.#directory(), { recursive: true, mode: 0o700 });
 		await chmod(this.#directory(), 0o700);
 		const lockPath = join(this.#directory(), LOCK_FILE);
 		const startedAt = Date.now();
 		let handle: Awaited<ReturnType<typeof open>>;
 		while (true) {
+			signal?.throwIfAborted();
 			try {
 				handle = await open(lockPath, "wx", 0o600);
 				break;
@@ -194,7 +196,7 @@ export class HookAllowlistStore {
 		}
 	}
 
-	async #write(records: readonly HookApprovalRecord[]): Promise<void> {
+	async #write(records: readonly HookApprovalRecord[], signal?: AbortSignal): Promise<void> {
 		const sorted = [...records].sort((left, right) => (
 			left.identity < right.identity ? -1 : left.identity > right.identity ? 1 : 0
 		));
@@ -213,6 +215,7 @@ export class HookAllowlistStore {
 			await handle.sync();
 			await handle.close();
 			handle = undefined;
+			signal?.throwIfAborted();
 			await rename(temporaryPath, this.#path());
 			await chmod(this.#path(), 0o600);
 			await syncDirectory(this.#directory());

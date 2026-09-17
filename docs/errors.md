@@ -12,6 +12,9 @@ source, and stable diagnostic identity. Explaining an error makes no model call.
 | `auth.model_access_denied` | The account cannot use this model | Check access or select another model |
 | `provider.quota_exceeded` | The account has exhausted its quota | Check provider billing |
 | `provider.rate_limited` | The provider is throttling requests | Respect the displayed bounded retry delay |
+| `provider.output_limit` | Generation reached the output limit before completion, including reasoning tokens | Check the output ceiling or choose a model that supports less reasoning |
+| `provider.empty_response` | The provider completed without an answer or tool call | Retry or select another model |
+| `runtime.compaction_summary_too_long` | Legacy summary-size rejection, retained for old session replay | Current local compaction has no separate summary-size gate |
 | `runtime.retry_exhausted` | Automatic retries have stopped | Inspect the retained underlying cause |
 | `policy.sandbox_initialization_failed` | The Shell sandbox could not start | Run `mycli doctor` and inspect platform readiness |
 | `gateway.admission_rejected` | This request was refused before execution | Wait for capacity and retry the request |
@@ -37,12 +40,12 @@ Runtime storage emergencies also use the existing private runtime trace.
 
 ## Compatibility
 
-Version 1 defines 66 concrete reasons across 12 domains. Existing runtime
+Version 1 defines 69 concrete reasons across 12 domains. Existing runtime
 records retain their 17 broad error codes. Old `unsupported_capability` records
 do not prove an image mismatch, and old `interrupted` records do not prove a
 user cancellation.
 
-Current runtime stores use database format 14. Opening format 12 or 13 advances
+Current runtime stores use database format 15 (including durable session goals). Opening format 12, 13, or 14 advances
 the format transactionally without rewriting transcript events. This small
 forward migration follows the existing runtime-store opening path; it does not
 create an automatic backup. Take a consistent backup before upgrading when an

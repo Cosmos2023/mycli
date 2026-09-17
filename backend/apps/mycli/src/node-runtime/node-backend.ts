@@ -1,4 +1,11 @@
+import { SessionGoalService, SessionGoalUsageTracker, sessionGoalContext } from "@mycli/runtime";
+import { GoalTool } from "@mycli/tools";
+import { GatewayFailure } from "./node-gateway-errors.ts";
+import { loadGitWorkspaceDiff, repositoryInitPrompt, prepareInteractiveReview, workspaceWorkflowFailure } from "./workspace-slash-workflows.ts";
+import { SelectedSkillContext } from "./selected-skill-context.ts";
 import { randomUUID } from "node:crypto";
+import { PluginCatalogService } from "@mycli/integrations";
+import { McpElicitationBroker } from "./mcp-elicitation-broker.ts";
 import type { GatewayTransport, JsonObject } from "@mycli/gateway";
 import { GitReviewReadTool } from "../review/git-read-tool.ts";
 import { readdir, realpath, stat } from "node:fs/promises";
@@ -13,7 +20,6 @@ import {
 	CachedUpdateService,
 	detectTerminalCapabilities,
 	ExecPolicyStore,
-	listProviderProfiles,
 	loadManagedExecutionPolicy,
 	modelInputTokenLimit,
 	parseConfigProfileName,
@@ -60,6 +66,7 @@ import {
 	rootAgentPath,
 } from "@mycli/core";
 import {
+	IntegrationToolApprovalStore,
 	skillInvocationArtifactFromMetadata,
 	ListMcpResourcesTool,
 	ReadMcpResourceTool,
@@ -75,7 +82,6 @@ import {
 import {
 	ProviderRegistry,
 	captureProviderNativeEnvironment,
-	inspectNativeProviderAuth,
 	resolveProviderNativeTransport,
 	type ProviderRouteDescriptor,
 } from "@mycli/providers";
@@ -93,6 +99,7 @@ import {
 	MemoryContextService,
 	MemoryStore,
 	NodeTurnRuntime,
+	planExtensionToolExposure,
 	resolveAgentExecutionAdapters,
 	loadWorkspaceInstructions,
 	ProviderContinuationCoordinator,
@@ -148,6 +155,8 @@ import {
 	startNodePtyTransport,
 	startPipeTransport,
 	ToolRouter,
+	ExtensionToolCatalog,
+	type ExtensionCatalogTool,
 	ToolSearchTool,
 	ViewImageTool,
 	KillShellTool,
@@ -163,11 +172,15 @@ import {
 	WriteTool,
 } from "@mycli/tools";
 import type { ToolDefinition } from "@mycli/core";
+import { loadRuntimeIntegrationConfiguration } from "./integration-configuration.ts";
+import { captureChildIntegrationAuthority, inheritedIntegrationRegistrations } from "./child-integration-authority.ts";
+import { createRuntimeSubagentServices } from "./runtime-subagent-services.ts";
 import {
 	createRuntimeIntegrationComposition,
 	partitionRuntimeToolRegistrations,
 	type IntegrationCommandService,
 	type RuntimeIntegrationComposition,
+	type CreateRuntimeIntegrationCompositionOptions,
 } from "./integration-composition.ts";
 import {
 	createNodeGateway,
@@ -215,6 +228,7 @@ import {
 	ProviderModelDirectory,
 	type ProviderModelDirectorySnapshot,
 } from "./provider-model-directory.ts";
+import { authProviderPayload, providerCredentialReadiness } from "./provider-credentials.ts";
 import { MYCLI_PACKAGE_NAME, MYCLI_VERSION } from "../version.ts";
 import { NodeRuntimeRegistry } from "./node-runtime-registry.ts";
 import {
@@ -266,6 +280,7 @@ interface RecoverInterruptedTurnOptions {
 export interface StartNodeBackendOptions {
 	readonly signal?: AbortSignal;
 	readonly approvalMode?: "live" | "suspend";
+	readonly enableGoals?: boolean;
 	readonly executionMode?: "review";
 	readonly reviewRevision?: string;
 	readonly cwd: string;
@@ -281,14 +296,19 @@ export interface StartNodeBackendOptions {
 type ComposedNodeRuntime = NodeGatewayRuntime & Pick<
 	NodeTurnRuntime,
 	"bindProviderStepExecutor"
->;
+> & {
+	readonly integrations: RuntimeIntegrationComposition;
+	readonly goalUsage: SessionGoalUsageTracker;
+	readonly workspaceRoot: string;
+	toolNames(): readonly string[];
+	closeExtensions(): Promise<void>;
+};
 
 const DEFAULT_AGENT_MAX_RESIDENTS = 4;
 const DEFAULT_AGENT_MAX_DEPTH = 1;
 const DEFAULT_AGENT_WORKER_INTERRUPT_TIMEOUT_MS = 12_000;
 const DEFAULT_PERMISSION_PROFILE: PermissionProfile = "workspace";
 const PROVIDER_CONNECTIVITY_TIMEOUT_MS = 15_000;
-const MIN_COMPACTION_SUMMARY_OUTPUT_TOKENS = 4_096;
 
 export async function startNodeBackend(options: StartNodeBackendOptions): Promise<NodeBackend> {
 	const startupProfiler = new StartupProfiler({
@@ -521,8 +541,9 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			delegate: inProcessChildRuntimeFactory,
 		})
 		: inProcessChildRuntimeFactory;
-	const runtimeRegistry = new NodeRuntimeRegistry<NodeGatewayRuntime>();
+	const runtimeRegistry = new NodeRuntimeRegistry<ComposedNodeRuntime>();
 	const agentInteractiveRequests = new AgentInteractiveRequestBroker();
+	const mcpElicitations = new McpElicitationBroker();
 	const agentActivityBus = new AgentActivityBus();
 	let agentSupervisor: AgentSupervisor | undefined;
 	let publishSubagentProjection: (value: Readonly<Record<string, unknown>>) => void = () => undefined;
@@ -589,10 +610,10 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 		threadStore: store.agentThreads,
 		queueForSession: (sessionId) => runtimeRegistry.get(sessionId)?.queueCoordinator,
 		committedQueueIds: (sessionId) => store.loadCommittedQueueIds(sessionId),
-		triggerReceiver: async (receiver, item) => {
+		triggerReceiver: async (receiver, item, sourceTurnId) => {
 			await agentSupervisor?.followUp(
 				receiver.threadId,
-				item.sourceCallId ?? item.messageId,
+				sourceTurnId ?? item.sourceCallId ?? item.messageId,
 				item.payload.kind === "message" ? item.payload.text : "Agent follow-up",
 			);
 		},
@@ -696,129 +717,121 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 		},
 	});
 	startupProfiler.mark("runtime_components_ready");
-	let integrationComposition: RuntimeIntegrationComposition;
-	try {
-		integrationComposition = await createRuntimeIntegrationComposition({
-			disabled: options.executionMode === "review",
-			builtinManifest: toolManifest,
-			workspaceRoot: config.workspaceRoot,
-			homeDir,
-			env: options.env,
-			projectConfigurationEnabled: startupTrustState === "trusted",
-			parentSessionId: config.sessionId,
-			parentTurnId: () => "parent-turn-unavailable",
-			parentTools: ({ parentSessionId, parentTurnId }) => {
-				const runSnapshot = runtimeRegistry.get(parentSessionId)
-					?.runExecutionSnapshot?.(parentTurnId);
-				return runSnapshot
-					? toolExposureForSnapshot(
-						runSnapshot.toolCatalog,
-						store.loadToolActivations(parentSessionId, parentTurnId),
-					).map((tool) => tool.name)
-					: Object.freeze([]);
-			},
-			createSubagentSupervisor: (supervisorOptions) => {
-					agentSupervisor = new AgentSupervisor({
-						lifecycleStore: store.agentLifecycle,
-						threadStore: store.agentThreads,
-					taskStore: store.subagentTasks,
-					runtimeFactory: childRuntimeFactory,
-					maxResidents: DEFAULT_AGENT_MAX_RESIDENTS,
-					maxDepth: DEFAULT_AGENT_MAX_DEPTH,
-					onEvent: consumeAgentEvent,
-					...supervisorOptions,
-					...(agentExecutionAdapters.subagent === "worker"
-						&& supervisorOptions.shutdownTimeoutMs === undefined
-						? { shutdownTimeoutMs: DEFAULT_AGENT_WORKER_INTERRUPT_TIMEOUT_MS }
-						: {}),
-				});
-				return agentSupervisor;
-			},
-			maxAgentDepth: DEFAULT_AGENT_MAX_DEPTH,
-			resolveSubagentSpawnContext: async (input) => {
-				const overview = store.loadSession(input.parentSessionId);
-				const parentThreadId = overview?.threadId ?? input.parentSessionId;
-				const parentAgent = store.agentThreads.get(parentThreadId);
-				const workspaceRoot = overview?.workspaceRoot ?? config.workspaceRoot;
-				const parentRuntime = runtimeRegistry.get(input.parentSessionId);
-				const parentRunSnapshot = parentRuntime
-					?.runExecutionSnapshot?.(input.parentTurnId);
-				const parentPreferences = parentRuntime?.sessionPreferences?.();
-				const resolved = await resolveWorkspaceModelRuntimeConfig({
-					homeDir,
-					workspaceRoot,
-					env: options.env,
-					overrides: sessionPreferenceOverrides(
-						input.childSessionId,
-						parentPreferences ?? defaultPreferences,
-					),
-				});
-				const executionPolicy = narrowAgentExecutionPolicy(
-					agentExecutionPolicyForRun(parentRunSnapshot),
-				);
-				return Object.freeze({
-					parentThreadId,
-					rootThreadId: parentAgent?.rootThreadId ?? parentThreadId,
-					parentPath: parentAgent?.path ?? rootAgentPath(),
-					config: Object.freeze({
-						workspaceRoot,
-						cwd: workspaceRoot,
-						environment: agentEnvironmentSnapshot(options.env),
-						executionPolicy,
-						provider: Object.freeze({
-							provider: resolved.provider,
-							protocol: resolved.protocol,
-							model: resolved.model,
-							reasoningEffort: resolved.thinkingEnabled
-								? resolved.reasoningEffort
-								: "none",
-						}),
-						instructions: Object.freeze({
-							project: productSystemPrompt.content,
-						}),
-						tools: Object.freeze([...input.tools]),
-						forkTurns: "none" as const,
-					}),
-				});
-			},
-			agentActivity,
-				agentMailbox,
-			resolveAgentRouteContext,
-			onStartupStage: (stage) => { startupProfiler.mark(stage); },
+	const integrationOptions: CreateRuntimeIntegrationCompositionOptions = {
+		onMcpElicitation: mcpElicitations.request,
+		disabled: options.executionMode === "review",
+		...(managedExecutionPolicy ? { managedExecutionPolicy } : {}),
+		builtinManifest: toolManifest,
+		workspaceRoot: config.workspaceRoot,
+		homeDir,
+		env: options.env,
+		projectConfigurationEnabled: startupTrustState === "trusted",
+		parentSessionId: config.sessionId,
+		parentTurnId: () => "parent-turn-unavailable",
+		parentTools: ({ parentSessionId, parentTurnId }) => {
+			const runSnapshot = runtimeRegistry.get(parentSessionId)
+				?.runExecutionSnapshot?.(parentTurnId);
+			return runSnapshot
+				? toolExposureForSnapshot(
+					runSnapshot.toolCatalog,
+					store.loadToolActivations(parentSessionId, parentTurnId),
+				).map((tool) => tool.name)
+				: Object.freeze([]);
+		},
+		createSubagentSupervisor: (supervisorOptions) => {
+				agentSupervisor = new AgentSupervisor({
+					lifecycleStore: store.agentLifecycle,
+					threadStore: store.agentThreads,
+				taskStore: store.subagentTasks,
+				runtimeFactory: childRuntimeFactory,
+				maxResidents: DEFAULT_AGENT_MAX_RESIDENTS,
+				maxDepth: DEFAULT_AGENT_MAX_DEPTH,
+				onEvent: consumeAgentEvent,
+				...supervisorOptions,
+				...(agentExecutionAdapters.subagent === "worker"
+					&& supervisorOptions.shutdownTimeoutMs === undefined
+					? { shutdownTimeoutMs: DEFAULT_AGENT_WORKER_INTERRUPT_TIMEOUT_MS }
+					: {}),
 			});
-		publishSubagentProjection = (value) => { integrationComposition.publishSubagent(value); };
-		resourceOwner.bindIntegration(() => integrationComposition.close());
-		startupProfiler.mark("integrations_ready");
+			return agentSupervisor;
+		},
+		maxAgentDepth: DEFAULT_AGENT_MAX_DEPTH,
+		resolveSubagentSpawnContext: async (input) => {
+			const overview = store.loadSession(input.parentSessionId);
+			const parentThreadId = overview?.threadId ?? input.parentSessionId;
+			const parentAgent = store.agentThreads.get(parentThreadId);
+			const workspaceRoot = overview?.workspaceRoot ?? config.workspaceRoot;
+			const parentRuntime = runtimeRegistry.get(input.parentSessionId);
+			const parentRunSnapshot = parentRuntime
+				?.runExecutionSnapshot?.(input.parentTurnId);
+			const parentPreferences = parentRuntime?.sessionPreferences?.();
+			const resolved = await resolveWorkspaceModelRuntimeConfig({
+				homeDir,
+				workspaceRoot,
+				env: options.env,
+				overrides: sessionPreferenceOverrides(
+					input.childSessionId,
+					parentPreferences ?? defaultPreferences,
+				),
+			});
+			const executionPolicy = narrowAgentExecutionPolicy(
+				agentExecutionPolicyForRun(parentRunSnapshot),
+			);
+			const integrationAuthority = captureChildIntegrationAuthority(parentRuntime?.integrations, parentRunSnapshot, input.tools);
+			return Object.freeze({
+				parentThreadId,
+				rootThreadId: parentAgent?.rootThreadId ?? parentThreadId,
+				parentPath: parentAgent?.path ?? rootAgentPath(),
+				config: Object.freeze({
+					workspaceRoot,
+					cwd: workspaceRoot,
+					environment: agentEnvironmentSnapshot(options.env),
+					executionPolicy,
+					provider: Object.freeze({
+						provider: resolved.provider,
+						protocol: resolved.protocol,
+						model: resolved.model,
+						reasoningEffort: resolved.thinkingEnabled
+							? resolved.reasoningEffort
+							: "none",
+					}),
+					instructions: Object.freeze({
+						project: productSystemPrompt.content,
+					}),
+					tools: Object.freeze([...input.tools]),
+					...(integrationAuthority ? { integrationAuthority } : {}),
+					forkTurns: "none" as const,
+				}),
+			});
+		},
+		agentActivity,
+			agentMailbox,
+		resolveAgentRouteContext,
+		onStartupStage: (stage) => { startupProfiler.mark(stage); },
+	};
+	let sharedSubagents: ReturnType<typeof createRuntimeSubagentServices> | undefined;
+	try {
+		sharedSubagents = options.executionMode === "review" ? undefined : createRuntimeSubagentServices({
+			createSupervisor: integrationOptions.createSubagentSupervisor,
+			parentSessionId: config.sessionId,
+			parentTurnId: integrationOptions.parentTurnId,
+			parentTools: integrationOptions.parentTools,
+			resolveSpawnContext: integrationOptions.resolveSubagentSpawnContext,
+			agentActivity, mailbox: agentMailbox, resolveAgentRouteContext,
+			maxAgentDepth: DEFAULT_AGENT_MAX_DEPTH,
+		});
 	} catch (error) {
+		await agentSupervisor?.close().catch(() => undefined);
 		await resourceOwner.close().catch(() => undefined);
 		throw error;
 	}
-	const partitionedRegistrations = partitionRuntimeToolRegistrations(integrationComposition.registrations);
-	const directExtensionRegistrations = partitionedRegistrations.direct;
-	const directExtensionDefinitions = Object.freeze(directExtensionRegistrations
-		.map((registration) => registration.definition));
-	const currentDeferredRegistrations = () => partitionRuntimeToolRegistrations(
-		integrationComposition.registrations,
-	).deferred;
-	let allToolExposure = runtimeToolExposure(
-		toolManifest,
-		directExtensionDefinitions,
-		currentDeferredRegistrations(),
-		requestPermissionsToolEnabled,
-	);
-	const mutatingAgentTools = mutatingTools(integrationComposition.manifest);
-	const refreshRuntimeExtensions = (): void => {
-		allToolExposure = runtimeToolExposure(
-			toolManifest,
-			directExtensionDefinitions,
-			currentDeferredRegistrations(),
-			requestPermissionsToolEnabled,
-		);
-		for (const name of mutatingTools(integrationComposition.manifest)) mutatingAgentTools.add(name);
-		runtimeRegistry.refreshExtensions();
-	};
-	const unsubscribeRuntimeExtensions = integrationComposition.subscribeExtensions(() => {
-		refreshRuntimeExtensions();
+	const extensionListeners = new Set<(sessionId: string, version: number) => void>();
+	publishSubagentProjection = (value) => { sharedSubagents?.publish(value); };
+	resourceOwner.bindIntegration(async () => {
+		runtimeRegistry.stop();
+		extensionListeners.clear();
+		try { await sharedSubagents?.close(); }
+		finally { await runtimeRegistry.close(); }
 	});
 	const contextItemCoordinator = new ContextItemCoordinator({
 		extractArtifact: skillInvocationArtifactFromMetadata,
@@ -831,6 +844,9 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 		initialContinuation?: unknown,
 		runtimeOptions: {
 			readonly allowedTools?: readonly string[];
+			readonly registryId?: string;
+			readonly review?: { readonly workspaceRoot: string; readonly revision?: string };
+			readonly queueCoordinator?: QueueCoordinator;
 			readonly instructions?: string;
 			readonly developerInstructions?: readonly string[];
 			readonly subagentContext?: ChildRuntimeCreateInput;
@@ -841,8 +857,15 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				readonly agentCheckpoint?: NodeTurnRuntimeOptions["agentCheckpoint"];
 				readonly isMutatingTool?: NodeTurnRuntimeOptions["isMutatingTool"];
 			} = {},
-		): ComposedNodeRuntime => {
-			const allowedTools = options.executionMode === "review" ? ["Read"] : runtimeOptions.allowedTools;
+		): Promise<ComposedNodeRuntime> => runtimeRegistry.getOrCreate(runtimeOptions.registryId ?? sessionId, async (signal) => {
+			const reviewMode = options.executionMode === "review" || runtimeOptions.review !== undefined;
+			const reviewRevision = runtimeOptions.review?.revision ?? options.reviewRevision;
+			const readRoot = runtimeOptions.review?.workspaceRoot ?? workspaceRoot;
+			const allowedTools = reviewMode ? ["Read"] : runtimeOptions.allowedTools;
+			const goal = !reviewMode && !runtimeOptions.subagentContext && options.enableGoals !== false
+				? new SessionGoalService({ sessionId, workspaceRoot, threadId, store: store.goals }) : undefined;
+			goal?.restore();
+			const goalUsage = new SessionGoalUsageTracker(goal);
 			let sessionPreferences = runtimeOptions.subagentContext
 				? undefined
 				: loadSessionPreferences(store, sessionId);
@@ -877,7 +900,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					},
 				};
 				const resolveEffective = async (inputTokenLimit?: number): Promise<NodeRuntimeConfig> => {
-					const resolved = await resolveWorkspaceModelRuntimeConfig({
+					const rawResolved = await resolveWorkspaceModelRuntimeConfig({
 						...configInput,
 						...(inputTokenLimit === undefined
 							? {}
@@ -886,6 +909,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 								maxPromptTokensCeiling: inputTokenLimit,
 							}),
 					});
+					const resolved: NodeRuntimeConfig = reviewMode ? Object.freeze({ ...rawResolved, webSearchMode: "disabled" }) : rawResolved;
 					return !runtimeOptions.provider ? resolved : Object.freeze({
 						...resolved,
 						provider: runtimeOptions.provider.provider,
@@ -902,6 +926,44 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			const executionPolicyConstraints = runtimeOptions.executionPolicy
 				? inheritedAgentExecutionPolicyConstraints(runtimeOptions.executionPolicy)
 				: managedExecutionPolicy;
+			const projectConfigurationEnabled = (!runtimeOptions.executionPolicy || runtimeOptions.executionPolicy.trusted)
+				&& await workspaceTrustStore.load(workspaceRoot) === "trusted";
+			const childContext = runtimeOptions.subagentContext;
+			const inheritedAuthority = childContext?.config.integrationAuthority;
+			const parentConfiguration = childContext && projectConfigurationEnabled
+				? runtimeRegistry.get(childContext.parentSessionId)?.integrations.configuration : undefined;
+			const childConfiguration = childContext
+				? parentConfiguration?.fingerprint === inheritedAuthority?.configurationFingerprint && parentConfiguration
+					? parentConfiguration
+					: await loadRuntimeIntegrationConfiguration({ workspaceRoot, homeDir, env: runtimeEnvironment,
+						includeRepository: projectConfigurationEnabled })
+				: undefined;
+			const integrationAuthorized = !childContext || (inheritedAuthority !== undefined
+				&& inheritedAuthority.configurationFingerprint === childConfiguration?.fingerprint);
+			const integrationComposition = await createRuntimeIntegrationComposition({
+				...integrationOptions,
+				workspaceRoot, env: runtimeEnvironment, signal,
+				managedExecutionPolicy: executionPolicyConstraints,
+				projectConfigurationEnabled,
+				disabled: integrationOptions.disabled || reviewMode || !integrationAuthorized,
+				configuration: childConfiguration,
+				pinConfiguration: childContext !== undefined,
+				subagentServices: sharedSubagents,
+				onStartupStage: sessionId === config.sessionId ? integrationOptions.onStartupStage : undefined,
+			});
+			let unsubscribeExtensions: (() => void) | undefined;
+			try {
+			const currentRegistrations = () => childContext
+				? inheritedIntegrationRegistrations(integrationComposition, inheritedAuthority) : integrationComposition.registrations;
+			const currentSkillCatalog = (): string => currentRegistrations().some((registration) => registration.source === "skill")
+				? integrationComposition.skillCatalog : "";
+			const directExtensionRegistrations = partitionRuntimeToolRegistrations(currentRegistrations()).direct;
+			const directExtensionDefinitions = Object.freeze(directExtensionRegistrations.map((registration) => registration.definition));
+			const currentDeferredRegistrations = () => partitionRuntimeToolRegistrations(currentRegistrations()).deferred;
+			const currentToolExposure = (): readonly ToolDefinition[] => filterToolDefinitions(runtimeToolExposure(
+				toolManifest, directExtensionDefinitions, currentDeferredRegistrations(), requestPermissionsToolEnabled), allowedTools);
+			let allToolExposure = currentToolExposure();
+			const mutatingAgentTools = mutatingTools(integrationComposition.manifest);
 			const executionPolicyCoordinator = new ExecutionPolicyCoordinator({
 				workspaceRoot,
 				...(executionPolicyConstraints ? { constraints: executionPolicyConstraints } : {}),
@@ -914,15 +976,17 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			});
 		const shellProfile = resolveShellProfile({ env: runtimeEnvironment });
 		const execPolicyStore = new ExecPolicyStore({ homeDir, workspaceRoot });
+		const integrationApprovals = new IntegrationToolApprovalStore(homeDir);
 		const approvalPolicy = new ApprovalPolicy({
 			workspaceRoot,
 			autoApproveMedium: true,
 			shellKind: shellProfile.kind,
-			extensionTools: integrationComposition.registrations.map((registration) => ({
+			extensionTools: currentRegistrations().map((registration) => ({
 				name: registration.definition.name,
-				approvalPolicy: registration.source === "skill" || registration.source === "subagent"
+				...(registration.approvalScope ? { approvalScope: registration.approvalScope } : {}),
+				approvalPolicy: registration.approvalPolicy ?? (registration.source === "skill" || registration.source === "subagent"
 					? "auto_allow" as const
-					: "request" as const,
+					: "request" as const),
 			})),
 		});
 		let loadExecPolicy: Promise<void> | undefined;
@@ -956,13 +1020,14 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			};
 			const toolSearch = new ToolSearchTool(deferredCandidates(allowedDeferredRegistrations()));
 			const staticAdapters = [
+				...(goal ? (["create", "get", "update"] as const).map((operation) => new GoalTool(operation, sessionId, goal)) : []),
 				new ViewImageTool({ workspaceRoot, homeDir }),
 				new ListMcpResourcesTool(integrationComposition.mcpResourceService),
 				new ListMcpResourceTemplatesTool(integrationComposition.mcpResourceService),
 				new ReadMcpResourceTool(integrationComposition.mcpResourceService),
-				options.executionMode === "review" && options.reviewRevision
-					? new GitReviewReadTool(workspaceRoot, options.reviewRevision)
-					: new ReadTool({ workspaceRoot, snapshots: fileSnapshots }),
+				reviewMode && reviewRevision
+					? new GitReviewReadTool(readRoot, reviewRevision)
+					: new ReadTool({ workspaceRoot: readRoot, snapshots: fileSnapshots }),
 			new EditTool(mutationRuntime),
 			new PatchTool(mutationRuntime),
 			new WriteTool({ runtime: mutationRuntime }),
@@ -994,37 +1059,47 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					readonly shell: boolean;
 					readonly collaborationMode: string;
 				},
-				deferred = allowedDeferredRegistrations(),
+				deferred: readonly DeferredToolCandidate[] = deferredCandidates(allowedDeferredRegistrations()),
+				sources: readonly DeferredToolCandidate[] = deferred,
 			): readonly ToolDefinition[] => Object.freeze(filterToolDefinitions(
 				[
 					...planToolExposure(toolManifest, {
 						...capabilities,
 						requestPermissionsTool: requestPermissionsToolEnabled,
+						goals: goal !== undefined,
 					}),
 					...directExtensionDefinitions,
 				],
 				allowedTools,
-			).map((definition) => definition.name === "tool_search"
-				? createToolSearchDefinition(deferredCandidates(deferred))
+			).filter((definition) => definition.name !== "tool_search" || deferred.length > 0)
+			.map((definition) => definition.name === "tool_search"
+				? createToolSearchDefinition(sources)
 				: definition));
 				const toolRouter = new ToolRouter({
 					adapters: staticAdapters,
 					exposure: plannedTools({ shell: true, collaborationMode: "plan" }),
 			});
+			const extensionCatalog = new ExtensionToolCatalog(toolRouter, toolSearch, approvalPolicy);
 			const refreshExtensions = (): void => {
+				allToolExposure = currentToolExposure();
+				for (const name of mutatingTools(integrationComposition.manifest)) mutatingAgentTools.add(name);
 				const deferred = allowedDeferredRegistrations();
-				toolSearch.replaceCandidates(deferredCandidates(deferred));
-				toolRouter.replaceDynamicAdapters(deferred.map((registration) => registration.adapter));
-				approvalPolicy.replaceExtensionTools(integrationComposition.registrations.map(
+				extensionCatalog.replace({ version: integrationComposition.version, tools: deferredCandidates(deferred),
+					skillCatalog: currentSkillCatalog() }, currentRegistrations().map(
 					(registration) => ({
 						name: registration.definition.name,
-						approvalPolicy: registration.source === "skill" || registration.source === "subagent"
+						...(registration.approvalScope ? { approvalScope: registration.approvalScope } : {}),
+						approvalPolicy: registration.approvalPolicy ?? (registration.source === "skill" || registration.source === "subagent"
 							? "auto_allow" as const
-							: "request" as const,
+							: "request" as const),
 					}),
 				));
 			};
 			refreshExtensions();
+			unsubscribeExtensions = integrationComposition.subscribeExtensions((version) => {
+				refreshExtensions();
+				for (const listener of extensionListeners) listener(sessionId, version);
+			});
 		const approvalCoordinator = new ApprovalContinuationCoordinator({
 			sessionId,
 			workspaceRoot,
@@ -1039,6 +1114,12 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				loadExecPolicy = Promise.resolve();
 			},
 			allowSession: (pattern) => { approvalPolicy.allowSession(pattern); },
+			validateExtensionApproval: (scope, name, turnId) => approvalPolicy.matchesExtensionApproval(scope, name, turnId),
+			allowExtensionSession: (scope) => { approvalPolicy.allowExtensionSession(scope); },
+			rememberExtension: async (scope) => {
+				await integrationApprovals.allow(scope);
+				approvalPolicy.replaceRememberedExtensions(await integrationApprovals.load());
+			},
 			grantPermissions: (input) => executionPolicyCoordinator.grant(input),
 		});
 		const parallelApprovals = new ParallelApprovalCoordinator({
@@ -1057,7 +1138,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				cwd: workspaceRoot,
 				homeDir,
 			});
-			const queueCoordinator = new QueueCoordinator({
+			const queueCoordinator = runtimeOptions.queueCoordinator ?? new QueueCoordinator({
 			initial: initialQueue,
 			store: {
 				loadCommittedQueueIds: () => store.loadCommittedQueueIds(sessionId),
@@ -1146,28 +1227,38 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					),
 					reservedOutputTokens: resolved.compactionReservedOutputTokens,
 					triggerRatio: 1,
-					tailTurns: resolved.compactionTailTurns,
-					tailMaxTokens: resolved.compactionTailMaxTokens,
-					minSavingsRatio: resolved.compactionMinSavingsRatio,
-					summaryMaxTokens: compactionSummaryOutputTokens(resolved),
+					retainedUserMaxTokens: resolved.compactionTailMaxTokens,
+					baseInstructions: runtimeInstructions,
+					developerInstructions,
 					summaryModel: resolved.compactionSummarizerModel ?? resolved.model,
-					rehydrationMaxFiles: resolved.compactionRehydrationMaxFiles,
-					rehydrationMaxItemTokens: resolved.compactionRehydrationFileMaxItemTokens,
-					rehydrationMaxTotalTokens: resolved.compactionRehydrationFileMaxTotalTokens,
 					summarize: async (input) => {
 						const summaryConfig = await captureProviderRoute({
 							...resolved,
 							model: input.model ?? resolved.model,
 						}, undefined, runtimeEnvironment);
-						return summarizeCompactionWithProvider(
+						const compactionGoalId = runSnapshot ? goal?.accountingGoalId(runSnapshot.turnId)
+							: goal?.get()?.status === "active" ? goal.get()!.goal_id : undefined;
+						const childGoalUsage = runtimeOptions.subagentContext && runSnapshot ? goalUsage.capture(runSnapshot.turnId) : undefined;
+						const summaryResult = await summarizeCompactionWithProvider(
 							registry.create(summaryConfig, providerRouteForConfig(summaryConfig)),
 							summaryConfig,
-							input,
+							{ ...input, remainingTokenBudget: () => compactionGoalId
+								? goal?.remainingTokenBudget(compactionGoalId, runSnapshot?.turnId)
+								: childGoalUsage?.service.remainingTokenBudget(childGoalUsage.ref.goalId),
+								recordEvent: async (event) => {
+								await input.recordEvent(event);
+								if (event.type === "usage") {
+									const usageId = `compaction:${input.operationId}:${event.attempt}`;
+									if (compactionGoalId) goal?.observeAttributedUsage(compactionGoalId, usageId, event.usage);
+									childGoalUsage?.service.observeAttributedUsage(childGoalUsage.ref.goalId, usageId, event.usage);
+								}
+							} },
 							{ recordDiagnostic: (diagnostic) => tryAppendNodeTrace(homeDir, sessionId,
 								runtimeDiagnosticTraceEvent({ ...diagnostic, kind: "model_stream_diagnostics",
 									turnId: `compaction:${input.operationId}`, provider: summaryConfig.provider,
 									protocol: summaryConfig.protocol, model: summaryConfig.model })) },
 						);
+						return summaryResult;
 					},
 					recordModelEvent: (input) => journal.record(input),
 					createCheckpointId: randomUUID,
@@ -1179,7 +1270,14 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				createdAt: new Date().toISOString(),
 				createEventId: () => `lifecycle-${randomUUID()}`,
 			});
+			const selectedSkills = new SelectedSkillContext({ sessionId, store, service: () => integrationComposition.skills });
 			const coordinatorRuntime = new NodeTurnRuntime({
+			goal,
+			goalUsage: runtimeOptions.subagentContext ? goalUsage : undefined,
+			runLifecycle: {
+				prepare: (turnId, signal) => integrationComposition.prepareRun(JSON.stringify([sessionId, turnId]), signal),
+				finish: (turnId) => integrationComposition.finishRun(JSON.stringify([sessionId, turnId])),
+			},
 			sessionId,
 			workspaceRoot,
 			threadId,
@@ -1195,7 +1293,9 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			providerAttemptLedger: store.providerAttemptLedger,
 			modelInputTokenCounter: tokenCounter,
 			contextSources: ({ config: activeConfig, runSnapshot }) => Object.freeze({
+				conversationContext: sessionGoalContext(goal?.get() ?? null),
 				skillCatalog: runSnapshot.toolCatalog.skillCatalog ?? "",
+				loadedSkillInstructions: selectedSkills.load(runSnapshot.turnId),
 				workspace: workspaceInstructionsForTrust(
 					workspaceRoot,
 					runSnapshot.policy?.configuration
@@ -1236,15 +1336,15 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			executionPolicyCoordinator,
 			planTools: plannedTools,
 			resolveToolCatalog: (capabilities) => {
-				const catalogVersion = integrationComposition.version;
-				const deferred = allowedDeferredRegistrations();
+				const catalog = extensionCatalog.snapshot;
+				const exposure = planExtensionToolExposure(catalog.tools.map((tool) => tool.definition), store.loadToolDiscoveries(sessionId));
+				const deferredNames = new Set(exposure.deferred.map((definition) => definition.name));
+				const deferred = catalog.tools.filter((tool) => deferredNames.has(tool.definition.name));
 				return Object.freeze({
-					catalogVersion,
-					directTools: plannedTools(capabilities, deferred),
-					deferredTools: Object.freeze(deferred.map(
-						(registration) => registration.definition,
-					)),
-					skillCatalog: integrationComposition.skillCatalog,
+					catalogVersion: catalog.version,
+					directTools: Object.freeze([...plannedTools(capabilities, deferred, catalog.tools), ...exposure.direct]),
+					deferredTools: exposure.deferred,
+					skillCatalog: catalog.skillCatalog,
 				});
 			},
 			loadToolActivations: (activeTurnId) => store.loadToolActivations(sessionId, activeTurnId),
@@ -1264,6 +1364,10 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				},
 				evaluate: async (call, executionPolicy, turnId) => {
 					await ensureExecPolicyLoaded();
+					if (approvalPolicy.hasScopedExtensionTool(call.name, turnId)) {
+						approvalPolicy.replaceRememberedExtensions([]);
+						approvalPolicy.replaceRememberedExtensions(await integrationApprovals.load());
+					}
 					return approvalPolicy.evaluate(call, executionPolicy, turnId);
 				},
 				recordResult: (call, result, executionPolicy, turnId) => {
@@ -1346,6 +1450,8 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				return parsed.segments[0]!.words;
 			};
 			const binding = Object.assign(runtime, {
+				goal,
+				goalUsage,
 				sessionPreferences: () => sessionPreferences,
 				setSessionPreferences: (preferences: SessionPreferences) => {
 					sessionPreferences = preferences;
@@ -1388,6 +1494,16 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					}
 					return next;
 				},
+				integrations: integrationComposition,
+				workspaceRoot,
+				toolNames: () => allToolExposure.map((tool) => tool.name),
+				closeExtensions: async () => {
+					try { goal?.close(); }
+					finally {
+						unsubscribeExtensions?.();
+						await integrationComposition.close();
+					}
+				},
 				refreshExtensions,
 				listCommandAllowances: () => approvalPolicy.listSessionAllowances(),
 				addCommandAllowance: (value: string) => {
@@ -1399,17 +1515,18 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					return approvalPolicy.listSessionAllowances();
 				},
 				clearCommandAllowances: () => approvalPolicy.clearSessionAllowances(),
-				compact: async (input: { readonly modelOverride?: string; readonly signal: AbortSignal }) => {
+				compact: async (input: Parameters<NonNullable<NodeGatewayRuntime["compact"]>>[0]) => {
 					const resolved = await resolveRuntimeConfig(input.modelOverride);
-					const commandId = `command_compact_${randomUUID().replaceAll("-", "")}`;
+					const commandId = input.operationId;
 					const startedAt = performance.now();
 					const result = await createCompactionCoordinator(resolved).compact({
+						operationId: commandId,
 						clientTurnId: commandId,
 						turnId: commandId,
 						source: "user_requested",
 						conversation: store.loadConversationItems(sessionId),
 						freshItemIds: new Set(),
-						emit: () => undefined,
+						emit: input.emit,
 						signal: input.signal,
 					});
 					tryAppendNodeTrace(homeDir, sessionId, runtimeDiagnosticTraceEvent({
@@ -1433,7 +1550,14 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					};
 				},
 			});
-			runtimeRegistry.set(sessionId, binding);
+			return binding;
+			} catch (error) {
+				unsubscribeExtensions?.();
+				await integrationComposition.close().catch(() => undefined);
+				throw error;
+			}
+		}).then((binding) => {
+			// Mailbox delivery resolves queues through the registry; publish the runtime first.
 			const agent = store.agentThreads.get(threadId);
 			agentMailbox.repair(Object.freeze({
 				threadId: agentThreadId(threadId),
@@ -1442,7 +1566,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				sessionId,
 			}));
 			return binding;
-		};
+		});
 		childRuntimeFactoryDelegate.create = async (input) => {
 			const runtimeGeneration = randomUUID();
 			const runtimeOwnerId = `agent-runtime-${runtimeGeneration}`;
@@ -1455,7 +1579,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					forkTurns: input.config.forkTurns,
 				});
 			}
-			const runtime = createRuntime(
+			const runtime = await createRuntime(
 				input.childSessionId,
 				input.config.workspaceRoot,
 				input.childSessionId,
@@ -1481,7 +1605,6 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 							checkpoint,
 						});
 					},
-					isMutatingTool: (toolName) => mutatingAgentTools.has(toolName),
 					...(input.config.budget ? { agentBudget: input.config.budget } : {}),
 			},
 		);
@@ -1557,12 +1680,16 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					});
 				} finally {
 					signal.removeEventListener("abort", forwardAbort);
+					runtime.goalUsage.release(turnId);
 					activeTurn = undefined;
 					running = false;
 					localAbort = undefined;
 				}
 			};
 			return {
+				bindParentTurn: (turnId, parentTurnId) => {
+					runtime.goalUsage.bind(turnId, runtimeRegistry.get(input.parentSessionId)?.goalUsage.capture(parentTurnId));
+				},
 				run: (prompt, signal, emit, turnId) => runChild(
 					prompt,
 					signal,
@@ -1632,7 +1759,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				close: async () => {
 					localAbort?.abort();
 					store.agentThreads.clearLease(input.threadId, runtimeOwnerId);
-					runtimeRegistry.delete(input.childSessionId, runtime);
+					await runtimeRegistry.dispose(input.childSessionId, runtime);
 			},
 		};
 		};
@@ -1646,6 +1773,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			sessionArtifacts,
 			artifactQueue,
 			createRuntime,
+			liveRuntime: runtimeRegistry.get(sessionId),
 			fallbackWorkspaceRoot: config.workspaceRoot,
 			repairAgentCompletions,
 		});
@@ -1654,8 +1782,9 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			initial = await prepare(config.sessionId);
 		} catch (error) {
 			if (!hasCode(error, "session_not_found")) throw error;
-				initial = virtualSession(config.sessionId, config.workspaceRoot, createRuntime);
+				initial = await virtualSession(config.sessionId, config.workspaceRoot, createRuntime);
 			}
+			startupProfiler.mark("integrations_ready");
 			startupProfiler.mark("session_prepared");
 			const sessionCoordinator = new SessionCoordinator<NodeGatewayRuntime>({
 			initial,
@@ -1680,7 +1809,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				const initialTrustState = await workspaceTrustStore.load(initial.workspaceRoot);
 				const initialPreferences = initial.binding.sessionPreferences?.();
 				if (initialPreferences) {
-					controlConfig = await resolveCapturedProviderModelConfig({
+					controlConfig = await resolveWorkspaceModelRuntimeConfig({
 						homeDir,
 					workspaceRoot: initial.workspaceRoot,
 					env: options.env,
@@ -1698,7 +1827,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					env: options.env,
 					overrides: sessionPreferenceOverrides(active.sessionId, preferences),
 				});
-				return providerCredentialReadiness(resolved, homeDir, options.env, captureProviderRoute);
+				return providerCredentialReadiness(resolved, homeDir, options.env);
 			};
 			const providerDirectory = async (): Promise<readonly JsonObject[]> => providerDirectoryPayload(
 				await providerModelDirectory.load(controlConfig),
@@ -1707,10 +1836,20 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			);
 			startupProfiler.mark("trust_ready");
 			startupProfiler.mark("session_ready");
+		const activeRuntime = (): ComposedNodeRuntime | undefined => runtimeRegistry.get(sessionCoordinator.snapshot().sessionId);
 		const gatewayIntegrations = integrationGateway(
-			integrationComposition,
-			() => allToolExposure.map((tool) => tool.name),
+			() => activeRuntime()?.integrations,
+			() => activeRuntime()?.toolNames() ?? [],
+			(listener) => {
+				const selected = (sessionId: string, version: number): void => {
+					if (sessionId === sessionCoordinator.snapshot().sessionId) listener(version);
+				};
+				extensionListeners.add(selected);
+				return () => { extensionListeners.delete(selected); };
+			},
+			sharedSubagents?.subscribe,
 		);
+		const closeRuntimeResources = (): Promise<void> => resourceOwner.close();
 		const activeMemoryStore = () => new MemoryStore({
 			homeDir,
 			workspaceRoot: sessionCoordinator.snapshot().workspaceRoot,
@@ -1738,18 +1877,10 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					const active = sessionCoordinator.snapshot();
 					const resolved = await resolveWorkspaceModelRuntimeConfig({ homeDir, workspaceRoot: active.workspaceRoot,
 						env: options.env, overrides: sessionPreferenceOverrides(active.sessionId, preferences) });
-					return (await providerCredentialReadiness(resolved, homeDir, options.env, captureProviderRoute)).ready;
+					return (await providerCredentialReadiness(resolved, homeDir, options.env)).ready;
 				},
 				...(managedExecutionPolicy ? { managedExecutionPolicy } : {}),
 			});
-			let runtimeExtensionsSubscribed = true;
-			const closeRuntimeResources = (): Promise<void> => {
-				if (runtimeExtensionsSubscribed) {
-					runtimeExtensionsSubscribed = false;
-					unsubscribeRuntimeExtensions();
-				}
-				return resourceOwner.close();
-			};
 			const gateway = createNodeGateway({
 			sessionId: config.sessionId,
 			workspaceRoot: config.workspaceRoot,
@@ -1758,11 +1889,12 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			reasoningEffort: controlConfig.thinkingEnabled
 				? controlConfig.reasoningEffort
 				: "none",
-			toolNames: allToolExposure.map((tool) => tool.name),
+			toolNames: activeRuntime()?.toolNames() ?? [],
 			maxPromptTokens: () => controlConfig.maxPromptTokens,
 			sandboxReadiness: await sandboxReadinessPromise,
 			runtime: initial.binding,
 			agentInteractiveRequests,
+			mcpElicitations,
 			loadConversation: (sessionId) => store.loadConversation(sessionId),
 			loadProviderAttempts: (input) => store.providerAttemptLedger.list(input),
 			loadTranscript: (sessionId) => {
@@ -1796,21 +1928,56 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					interrupt: async (parentSessionId, childSessionId) => {
 						const task = store.subagentTasks.getByChildSession(parentSessionId, childSessionId);
 						if (task?.status !== "running") return false;
-						return await integrationComposition.subagentController?.interrupt(childSessionId) ?? false;
+						return await sharedSubagents?.controller.interrupt(childSessionId) ?? false;
 					},
 					interruptAll: async (parentSessionId) => {
 						const running = store.subagentTasks.list(parentSessionId)
 							.filter((task) => task.status === "running");
 						let interrupted = 0;
 						for (const task of running) {
-							if (await integrationComposition.subagentController?.interrupt(task.childSessionId)) {
+							if (await sharedSubagents?.controller.interrupt(task.childSessionId)) {
 								interrupted += 1;
 							}
 						}
 						return interrupted;
 						},
 					},
+					validateSelectedSkills: (sessionId, references) => {
+						const skills = runtimeRegistry.get(sessionId)?.integrations.skills;
+						if (!skills) throw new Error("skills_unavailable");
+						for (const reference of references) skills.resolve(reference);
+					},
+					createReviewRuntime: async ({ sessionId, review, signal }) => {
+						const current = runtimeRegistry.get(sessionId);
+						if (!current) throw new GatewayFailure("session_changed", "Review session is unavailable.");
+						const prepared = await prepareInteractiveReview({ cwd: current.workspaceRoot, review, signal }).catch((error: unknown) => { signal.throwIfAborted(); throw workspaceWorkflowFailure(error); });
+						if (prepared.empty) throw new GatewayFailure("invalid_params", "No changes to review.", { additional_details: "No changes to review." });
+						signal.throwIfAborted();
+						const registryId = `${sessionId}:review:${randomUUID()}`;
+						const runtime = await createRuntime(sessionId, current.workspaceRoot, sessionId, current.queueCoordinator!.snapshot(), undefined, {
+							registryId, review: { workspaceRoot: prepared.workspaceRoot, revision: prepared.revision }, queueCoordinator: current.queueCoordinator,
+							developerInstructions: [prepared.prompt, `Review paths are relative to the Git root ${JSON.stringify(prepared.workspaceRoot)}. Use this root for Read.`, "Write the review as Markdown. For each supported finding include severity, file location, trigger and impact; finish with a concise assessment. If there are no findings, say so. Do not output JSON."],
+						});
+						let closing: Promise<void> | undefined;
+						const close = (): Promise<void> => closing ??= runtimeRegistry.dispose(registryId, runtime);
+						try {
+							signal.throwIfAborted();
+							runtime.configureExecutionPolicy?.({ trust: await workspaceTrustStore.load(current.workspaceRoot), permission: "read-only" });
+							signal.throwIfAborted();
+							return { runtime, close };
+						} catch (error) { await close(); throw error; }
+					},
+					workspaceCommands: { diff: loadGitWorkspaceDiff, init: repositoryInitPrompt },
 					sessionCommands: {
+						exportTraining: async (sessionId, settings, signal) => {
+							const { createTrainingExportHandler } = await import("./session-training-export.ts");
+							signal.throwIfAborted();
+							return createTrainingExportHandler(store, {
+								workspaceRoot: sessionCoordinator.snapshot().workspaceRoot, homeDir, env: options.env,
+								...(controlConfig.apiKey ? { apiKey: controlConfig.apiKey } : {}),
+							})(sessionService.resolve(sessionId), settings, signal);
+						},
+						rename: (sessionId, title) => sessionService.rename(sessionId, title),
 						list: (query) => sessionService.list(query),
 						inspect: (sessionId) => sessionService.inspect(sessionId),
 						previewResume: (sessionId) => sessionService.previewResume(sessionId),
@@ -1900,22 +2067,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 						undo: (sessionId) => activeFileHistory().undoLatest({ sessionId }),
 					},
 					controlCommands: {
-						authProviders: async () => {
-							const profiles = listProviderProfiles();
-							return (await providerDirectory())
-								.filter((route) => route.activation === "active")
-								.map((route) => {
-									const profile = profiles.find((entry) => entry.provider === route.id);
-									return {
-										id: route.id,
-										name: profile?.displayName ?? route.name,
-										configured: route.ready,
-										credential_source: route.credential_source,
-										auth_ref: route.auth_ref,
-										...(profile?.defaultModel ? { default_model: profile.defaultModel } : {}),
-									};
-								});
-						},
+						authProviders: async () => authProviderPayload(controlConfig, homeDir, await credentialReadiness()),
 						credentialReadiness,
 						saveApiKey: async (providerId, apiKey, requestedAuthRef) => {
 							let provider;
@@ -2100,7 +2252,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 							},
 							activateSessionPreferences: async (preferences) => {
 							const active = sessionCoordinator.snapshot();
-							controlConfig = await resolveCapturedProviderModelConfig({
+							controlConfig = await resolveWorkspaceModelRuntimeConfig({
 								homeDir,
 								workspaceRoot: active.workspaceRoot,
 								env: options.env,
@@ -2178,7 +2330,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 						? active.binding.sessionPreferences?.()
 							?? loadSessionPreferences(store, active.sessionId)
 						: undefined;
-					const nextControlConfig = await resolveCapturedProviderModelConfig({
+					const nextControlConfig = await resolveWorkspaceModelRuntimeConfig({
 						homeDir,
 						workspaceRoot,
 						env: options.env,
@@ -2186,10 +2338,11 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 							? sessionPreferenceOverrides(active.sessionId, persistedPreferences)
 							: { ...overrides, session: active.sessionId },
 					}, state);
-					await integrationComposition.reloadProjectConfiguration({
+					await activeRuntime()?.integrations.reloadProjectConfiguration({
 						workspaceRoot,
 						enabled: state === "trusted",
 					});
+					for (const listener of extensionListeners) listener(active.sessionId, activeRuntime()?.integrations.version ?? 1);
 					controlConfig = nextControlConfig;
 					const nextPreferences = sessionPreferencesFromConfig(
 						nextControlConfig,
@@ -2203,7 +2356,9 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				},
 			},
 			integrations: gatewayIntegrations,
-				close: closeRuntimeResources,
+			pluginCatalog: async (workspaceRoot) => new PluginCatalogService({ homeDir, workspaceRoot,
+				includeRepository: await workspaceTrustStore.load(workspaceRoot) === "trusted" }),
+				close: () => resourceOwner.close(),
 		});
 			for (const recovered of recoveredInterrupts) {
 			gateway.publishRecoveredInterrupt(recovered.record, {
@@ -2221,34 +2376,9 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				startupProfile: () => startupProfiler.snapshot(),
 			});
 	} catch (error) {
-		unsubscribeRuntimeExtensions();
 		await resourceOwner.close().catch(() => undefined);
 		throw error;
 	}
-}
-
-async function providerCredentialReadiness(
-	config: NodeRuntimeConfig,
-	homeDir: string,
-	environment: Readonly<NodeJS.ProcessEnv>,
-	captureNative?: (config: NodeRuntimeConfig) => Promise<NodeRuntimeConfig>,
-): Promise<NodeGatewayCredentialReadiness> {
-	const stored = await readProviderCredential({ homeDir, authRef: config.authRef });
-	const captured = !config.apiKey && !config.nativeTransport && (stored || config.allowAmbientAuth) && captureNative
-		? await captureNative(config) : config;
-	const native = !captured.apiKey && captured.nativeTransport ? await inspectNativeProviderAuth({
-		provider: captured.nativeTransport.catalogProviderId, homeDir, authRef: captured.authRef,
-		...(captured.providerEnv ? { providerEnv: captured.providerEnv } : {}),
-		...(captured.allowAmbientAuth === undefined ? {} : { allowAmbientAuth: captured.allowAmbientAuth }),
-	}) : undefined;
-	return Object.freeze({
-		ready: Boolean(config.apiKey) || native?.configured === true,
-		providerId: config.provider,
-		authRef: config.authRef,
-		source: config.apiKey
-			? environment.MYCLI_API_KEY?.trim() ? "environment" : stored ? "stored" : "legacy_config"
-			: native?.source ?? "missing",
-	});
 }
 
 async function providerDirectoryPayload(
@@ -2487,10 +2617,11 @@ function runtimeToolExposure(
 	]);
 }
 
-function deferredCandidates(registrations: readonly IntegrationRegistration[]): readonly DeferredToolCandidate[] {
+function deferredCandidates(registrations: readonly IntegrationRegistration[]): readonly ExtensionCatalogTool[] {
 	return registrations.flatMap((registration) => (
 		registration.source === "mcp" || registration.source === "plugin"
 			? [{
+				adapter: registration.adapter,
 				definition: registration.definition,
 				source: registration.source,
 				originMetadata: registration.originMetadata,
@@ -2510,21 +2641,33 @@ function mutatingTools(manifest: CombinedToolManifest): Set<string> {
 }
 
 function integrationGateway(
-	composition: RuntimeIntegrationComposition,
+	current: () => RuntimeIntegrationComposition | undefined,
 	toolNames: () => readonly string[],
+	subscribeExtensions: NonNullable<NodeGatewayIntegrations["subscribeExtensions"]>,
+	subscribeSubagents: NodeGatewayIntegrations["subscribeSubagents"],
 ): NodeGatewayIntegrations {
-		const integrations: NodeGatewayIntegrations = {
-			toolManifest: () => composition.manifest as unknown as Record<string, unknown>,
-			diagnostics: () => composition.diagnostics.map((diagnostic) => ({ ...diagnostic })),
-			toolNames,
-			listResources: () => composition.resources.map((resource) => ({ ...resource })),
-		commands: combinedIntegrationCommands(() => composition.commands),
-			subscribeSubagents: (
-			listener: (subagent: Readonly<Record<string, unknown>>) => void,
-			) => composition.subscribeSubagents(listener),
-			subscribeExtensions: (listener: (version: number) => void) => (
-				composition.subscribeExtensions(listener)
-			),
+	const commands = combinedIntegrationCommands(() => current()?.commands ?? []);
+	const integrations: NodeGatewayIntegrations = {
+		get skills() { return current()?.skills; },
+		get hookManagement() { return current()?.hookManagement; },
+		refresh: () => current()?.refreshConfiguration() ?? Promise.resolve(),
+		toolManifest: () => current()?.manifest as unknown as Record<string, unknown>,
+		diagnostics: () => current()?.diagnostics.map((diagnostic) => ({ ...diagnostic })) ?? [],
+		toolNames,
+		listResources: () => current()?.resources.map((resource) => ({ ...resource })) ?? [],
+		commands: {
+			list: () => commands.list(),
+			run: async (command, signal) => {
+				const composition = current();
+				if (!composition) return undefined;
+				const owner = `plugin-command:${randomUUID()}`;
+				await composition.prepareRun(owner, signal);
+				try { return await combinedIntegrationCommands(() => composition.commands).run(command, signal); }
+				finally { composition.finishRun(owner); }
+			},
+		},
+		subscribeSubagents,
+		subscribeExtensions,
 	};
 	return Object.freeze(integrations);
 }
@@ -2627,16 +2770,6 @@ function compactionThresholdForModel(config: NodeRuntimeConfig): number {
 	));
 }
 
-function compactionSummaryOutputTokens(config: NodeRuntimeConfig): number {
-	const desired = Math.max(
-		MIN_COMPACTION_SUMMARY_OUTPUT_TOKENS,
-		config.compactionExpectedSummaryTokens,
-	);
-	return config.maxOutputTokens === undefined
-		? desired
-		: Math.min(desired, config.maxOutputTokens);
-}
-
 function totalCompactionBudget(threshold: number, reservedOutputTokens: number): number {
 	const total = threshold + reservedOutputTokens;
 	if (!Number.isSafeInteger(total) || total <= reservedOutputTokens) {
@@ -2664,6 +2797,8 @@ function agentExecutionPolicySnapshot(
 		...(profile?.networkDomains === undefined ? {} : {
 			networkDomains: Object.freeze([...profile.networkDomains]),
 		}),
+		...(profile?.deniedReadRoots === undefined ? {} : { deniedReadRoots: Object.freeze([...profile.deniedReadRoots]) }),
+		...(profile?.deniedReadGlobs === undefined ? {} : { deniedReadGlobs: Object.freeze([...profile.deniedReadGlobs]) }),
 		...(profile?.readableRoots === undefined ? {} : {
 			readableRoots: Object.freeze([...profile.readableRoots]),
 		}),
@@ -2692,6 +2827,8 @@ function inheritedAgentExecutionPolicyConstraints(
 		...(policy.networkDomains === undefined ? {} : {
 			networkDomains: Object.freeze([...policy.networkDomains]),
 		}),
+		...(policy.deniedReadRoots === undefined ? {} : { deniedReadRoots: Object.freeze([...policy.deniedReadRoots]) }),
+		...(policy.deniedReadGlobs === undefined ? {} : { deniedReadGlobs: Object.freeze([...policy.deniedReadGlobs]) }),
 		...(policy.readableRoots === undefined ? {} : {
 			readableRoots: Object.freeze([...policy.readableRoots]),
 		}),

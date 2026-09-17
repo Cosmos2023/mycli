@@ -74,7 +74,8 @@ export async function runCli(options: RunCliOptions = {}): Promise<number> {
 
 	const optionArguments = argv.slice(0, argv.indexOf("--") < 0 ? argv.length : argv.indexOf("--"));
 	if (optionArguments.includes("--help") || optionArguments.includes("-h")) {
-		stdout.write(argv[0] === "exec" || argv[0] === "review" || argv[0] === "app-server" ? renderCommandHelp(argv[0]) : ROOT_HELP);
+		stdout.write(argv[0] === "mcp" ? renderCommandHelp("mcp", optionArguments.slice(1))
+			: argv[0] === "exec" || argv[0] === "review" || argv[0] === "app-server" ? renderCommandHelp(argv[0]) : ROOT_HELP);
 		return 0;
 	}
 	if (optionArguments.includes("--version") || optionArguments.includes("-V")) {

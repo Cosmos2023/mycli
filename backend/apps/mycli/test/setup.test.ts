@@ -62,6 +62,9 @@ test("setup builds all provider rows, persists a successful result, and never re
 
 	assert.equal(response.ok, true);
 	assert.deepEqual(capturedState?.providers.map((provider) => provider.id), PROVIDER_IDS);
+	for (const provider of ["openai", "codex"]) {
+		assert.equal(capturedState?.providers.find((row) => row.id === provider)?.default_model, "gpt-5.5");
+	}
 	assert.deepEqual(
 		capturedState?.providers.filter((provider) => [
 			"openrouter", "groq", "together", "moonshotai", "nvidia", "cerebras",
@@ -127,6 +130,8 @@ test("non-TTY setup uses explicit options and stdin without attempting TUI start
 
 test("non-TTY setup resolves defaults and explicit values for every curated provider", async (t) => {
 	const providers = [
+		["openai", "gpt-5.5", "https://api.openai.com/v1", "medium", "responses"],
+		["codex", "gpt-5.5", "https://api.openai.com/v1", "medium", "responses"],
 		["openrouter", "openrouter/auto", "https://openrouter.ai/api/v1", "medium"],
 		["groq", "openai/gpt-oss-120b", "https://api.groq.com/openai/v1", "medium"],
 		["together", "moonshotai/Kimi-K2.7-Code", "https://api.together.ai/v1", "high"],
@@ -135,7 +140,7 @@ test("non-TTY setup resolves defaults and explicit values for every curated prov
 		["cerebras", "gpt-oss-120b", "https://api.cerebras.ai/v1", "medium"],
 	] as const;
 
-	for (const [provider, defaultModel, defaultBaseUrl, defaultEffort] of providers) {
+	for (const [provider, defaultModel, defaultBaseUrl, defaultEffort, protocol = "chat_completions"] of providers) {
 		for (const explicit of [false, true]) {
 			const homeDir = await temporaryDirectory(t);
 			const secret = `${provider}-${explicit ? "explicit" : "default"}-secret`;
@@ -153,7 +158,7 @@ test("non-TTY setup resolves defaults and explicit values for every curated prov
 			});
 			assert.equal(response.ok, true);
 			assert.equal(response.provider, provider);
-			assert.equal(response.protocol, "chat_completions");
+			assert.equal(response.protocol, protocol);
 			assert.equal(response.model, model);
 			assert.equal(response.apiBaseUrl, apiBaseUrl);
 			assert.equal(JSON.stringify(response).includes(secret), false);
@@ -163,7 +168,7 @@ test("non-TTY setup resolves defaults and explicit values for every curated prov
 			};
 			assert.deepEqual(config.model, {
 				provider,
-				protocol: "chat_completions",
+				protocol,
 				name: model,
 				api_base_url: apiBaseUrl,
 				auth_ref: provider,

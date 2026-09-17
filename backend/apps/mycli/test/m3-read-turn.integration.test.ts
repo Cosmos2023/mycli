@@ -82,7 +82,8 @@ test("Worker-backed root replays a Responses Read continuation and persists it",
 	assert.equal(requestBodies.length, 2);
 	assert.deepEqual(toolNames(requestBodies[0]?.tools), [
 		"Read", "Edit", "Patch", "Write", "update_plan", "web_fetch",
-		"tool_search", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "Skill",
+		"create_goal", "get_goal", "update_goal",
+		"list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "Skill",
 		"spawn_agent", "send_message", "followup_task", "interrupt_agent", "list_agents",
 		"wait_agent",
 	]);

@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { toolDiscovery } from "@mycli/core";
 import {
 	TURN_INTERRUPTED_NOTICE,
 	turnCompletedDurationId,
@@ -555,6 +556,38 @@ test("persists display-only activity without changing provider input or search v
 		&& item.output === "shell display output"));
 	assert.equal(JSON.stringify(readable).includes("baseline-only-marker"), false);
 	assert.equal(JSON.stringify(readable).includes("tool_activation"), false);
+});
+
+test("tool discovery fingerprints survive later turns and reopen without retaining failed or malformed discoveries", async (t) => {
+	const fixture = await repositoryFixture(t);
+	const sessionId = "session-discovery";
+	const tool = { id: "mcp:docs:search", name: "mcp_docs_search", description: "Search", inputSchema: { type: "object" } };
+	const first = toolDiscovery(tool);
+	const changed = toolDiscovery({ ...tool, inputSchema: { type: "object", required: ["query"] } });
+	const attempts = [
+		{ success: true, tools: [first] },
+		{ success: false, tools: [changed] },
+		{ success: true, tools: [{ ...changed, definitionSha256: "invalid" }] },
+	];
+	for (const [index, attempt] of attempts.entries()) {
+		const clientTurnId = `client-${index}`;
+		fixture.repository.reserveTurn(submission(sessionId, clientTurnId, `turn-${index}`));
+		fixture.repository.appendAssistantToolCalls({ sessionId, clientTurnId, assistantText: "",
+			calls: [{ callId: `search-${index}`, name: "tool_search", argumentsJson: "{}" }] });
+		fixture.repository.appendToolResult({ sessionId, clientTurnId,
+			result: { callId: `search-${index}`, toolName: "tool_search", output: "Found tools", success: attempt.success }, summary: "Found tools",
+			metadata: { tool_discovery: { version: 1, tools: attempt.tools }, private_value: "must-not-persist" } });
+		fixture.repository.completeTurn({ sessionId, clientTurnId, assistantText: "Done", usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 }, completedAt: LATER });
+		assert.deepEqual(fixture.repository.loadToolDiscoveries(sessionId), [first]);
+	}
+	assert.deepEqual(fixture.repository.loadToolDiscoveries("unrelated"), []);
+	fixture.repository.close();
+	const reopened = new SQLiteTranscriptEventRepository({ dbPath: fixture.dbPath });
+	t.after(() => reopened.close());
+	assert.deepEqual(reopened.loadToolDiscoveries(sessionId), [first]);
+	const results = reopened.loadConversationItems(sessionId).filter((item) => item.type === "tool_result");
+	assert.deepEqual(results.map((item) => item.toolDiscoveries), [[first], undefined, undefined]);
+	assert.equal(JSON.stringify(reopened.loadEventWindow(sessionId, { limit: 100 })).includes("must-not-persist"), false);
 });
 
 function submission(

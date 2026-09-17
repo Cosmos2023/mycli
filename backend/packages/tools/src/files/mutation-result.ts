@@ -183,7 +183,7 @@ function publicError(kind: string): string {
 		case "secret_like_content": return "The new content looks like a secret and was not written.";
 		case "invalid_encoding": return "The existing file is not valid UTF-8.";
 		case "permission_denied": return "The file cannot be modified with current permissions.";
-		case "workspace_escape": return "The path must stay within the workspace.";
+		case "workspace_escape": return "The path is outside the allowed writable roots.";
 		case "invalid_sandbox_permissions": return "The requested file sandbox permission is invalid.";
 		case "invalid_justification": return "danger-full-access requires a bounded non-empty justification.";
 		case "sandbox_override_not_approved": return "The file sandbox override was not approved by the runtime.";

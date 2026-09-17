@@ -1,5 +1,5 @@
-import { basename, dirname } from "node:path";
 import type { McpManagerDiscovery, McpServerConfig, PluginRuntime } from "@mycli/integrations";
+import { mcpServerSelector, pluginDeclarations } from "@mycli/integrations";
 
 type CatalogResource = {
 	readonly id: string;
@@ -26,7 +26,7 @@ export function mcpCatalogResources(
 	return Object.freeze(configs.map((config): CatalogResource => {
 		const server = discovery?.servers.find((item) => item.serverId === config.id);
 		const failure = server?.failureCategory ?? (phase === "failed" ? "refresh_failed" : undefined);
-		const status = !config.enabled ? "disabled" : server?.status === "failed" ? "failed"
+		const status = !config.enabled ? "disabled" : server?.status === "partial" ? "partial" : server?.status === "failed" ? "failed"
 			: server?.status === "ok" ? phase === "cached" || failure ? "cached" : "ready"
 				: phase === "failed" ? "failed" : "loading";
 		const tools = discovery?.registrations.filter((item) => item.originMetadata.server === config.id)
@@ -36,33 +36,45 @@ export function mcpCatalogResources(
 		const toolCount = server?.toolCount ?? tools.length;
 		const resourceCount = server?.resourceCount ?? resources.length;
 		return Object.freeze({
-			id: `mcp:${config.id}`, type: "mcp", name: config.id, source: "runtime",
+			id: `mcp:${config.id}`, type: "mcp", name: mcpServerSelector(config), source: "runtime",
 			enabled: config.enabled, status,
 			detail: `${toolCount} tools, ${resourceCount} resources${failure ? `; ${failure}` : ""}`,
 			tool_names: Object.freeze(tools), tool_count: toolCount, resource_count: resourceCount,
 			inspection_detail: [
 				...(config.pluginDescription ? [config.pluginDescription] : []),
-				`Transport: ${config.transport}`, `Timeout: ${config.timeoutMs} ms`,
+				...(config.plugin ? [`Plugin: ${config.plugin.id} (${config.plugin.source}); declared server: ${config.plugin.serverName}`] : []),
+				...(config.plugin ? [`Server id: ${config.id}`] : []),
+				`Manage: mycli mcp inspect ${mcpServerSelector(config)}`,
+				...(config.transport === "streamable_http" ? [`Login: mycli mcp login ${mcpServerSelector(config)}`] : []),
+				`Transport: ${config.transport}`,
+				`Startup timeout: ${config.startupTimeoutMs ?? config.timeoutMs} ms; tool timeout: ${config.toolTimeoutMs ?? config.timeoutMs} ms`,
+				`Source: ${config.source ?? "user"}; required: ${config.required ?? false}; approval: ${config.defaultToolsApprovalMode ?? "auto"}`,
+				...(config.enabledTools ? [`Enabled tools: ${catalogNames(config.enabledTools, config.enabledTools.length)}`] : []),
+				...(config.disabledTools?.length ? [`Disabled tools: ${catalogNames(config.disabledTools, config.disabledTools.length)}`] : []),
 				`Resources (${resourceCount}): ${catalogNames(resources, resourceCount)}`,
-				...(failure ? [`Connection issue: ${failure}`] : []),
+				...(server?.failures?.length
+					? server.failures.slice(0, 20).map((issue) => `${issue.capability}${issue.tool ? `/${issue.tool}` : ""}: ${issue.category}`)
+					: failure ? [`Connection issue: ${failure}`] : []),
+				...((server?.failureCount ?? 0) > (server?.failures?.length ?? 0)
+					? [`${server!.failureCount! - (server!.failures?.length ?? 0)} more issues`] : []),
 			].join("\n"),
 			command: "/mcp",
 		});
 	}));
 }
 
-export function pluginCatalogResources(runtime: Pick<PluginRuntime, "records" | "discovery" | "commands">): readonly CatalogResource[] {
+export function pluginCatalogResources(runtime: Pick<PluginRuntime, "records" | "discovery" | "commands">, servers: readonly McpServerConfig[] = []): readonly CatalogResource[] {
 	return Object.freeze(runtime.records.map((record): CatalogResource => {
 		const candidate = runtime.discovery.get(record.pluginId);
 		const manifest = candidate?.kind === "plugin" || candidate?.kind === "bundle" ? candidate.manifest : undefined;
 		const bundle = candidate?.kind === "bundle" ? candidate.manifest : undefined;
-		const provides = candidate?.kind === "plugin" ? candidate.manifest.provides : undefined;
-		const tools = provides?.tools ?? record.tools;
-		const skills = bundle?.skillFiles.map((path) => basename(path) === "SKILL.md" ? basename(dirname(path)) : basename(path)) ?? [];
-		const mcp = bundle?.mcp.flatMap((document) => objectKeys(document.mcpServers ?? document.mcp_servers ?? document)) ?? [];
-		const hooks = provides?.hooks ?? bundle?.hooks.flatMap(declaredHookNames) ?? record.hooks;
+		const declared = pluginDeclarations(candidate);
+		const tools = manifest ? declared.tools : record.tools;
+		const skills = declared.skills;
+		const mcp = declared.mcpServers;
+		const hooks = manifest ? declared.hooks : record.hooks;
 		const commands = runtime.commands.list(record.pluginId).map((command) => `/plugin:${record.pluginId}:${command.name}`);
-		const declaredCommands = provides?.commands ?? record.commands;
+		const declaredCommands = manifest ? declared.commands : record.commands;
 		return Object.freeze({
 			id: `plugin:${record.pluginId}`, type: "plugin", name: record.pluginId,
 			source: record.source, enabled: record.enabled,
@@ -74,6 +86,8 @@ export function pluginCatalogResources(runtime: Pick<PluginRuntime, "records" | 
 				...(manifest?.version ? [`Version: ${manifest.version}`] : []),
 				`Skills (${skills.length}): ${catalogNames(skills)}`,
 				`MCP servers (${mcp.length}): ${catalogNames(mcp)}`,
+				...servers.filter((server) => server.plugin?.id === record.pluginId).slice(0, 20)
+					.map((server) => `MCP: ${mcpServerSelector(server)} → ${server.id}`),
 				`Hooks (${hooks.length}): ${catalogNames(hooks)}`,
 				`Tools (${tools.length}): ${catalogNames(tools)}`,
 				`Commands (${declaredCommands.length}): ${catalogNames(commands.length ? commands : declaredCommands)}`,
@@ -82,17 +96,6 @@ export function pluginCatalogResources(runtime: Pick<PluginRuntime, "records" | 
 			command: "/plugins",
 		});
 	}));
-}
-
-function objectKeys(value: unknown): readonly string[] {
-	return typeof value === "object" && value !== null && !Array.isArray(value) ? Object.keys(value) : [];
-}
-
-function declaredHookNames(document: Readonly<Record<string, unknown>>): readonly string[] {
-	const hooks = document.hooks ?? document;
-	if (!Array.isArray(hooks)) return objectKeys(hooks);
-	return hooks.flatMap((hook: unknown) => typeof hook === "object" && hook !== null
-		&& "hook_point" in hook && typeof hook.hook_point === "string" ? [hook.hook_point] : []);
 }
 
 export function catalogNames(names: readonly string[], total = names.length): string {

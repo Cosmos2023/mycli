@@ -35,13 +35,16 @@ const output = new PassThrough();
 const lines = createInterface({ input: output });
 const requests: Request[] = [];
 const heldHistory: Request[] = [];
+let compactRequest: Request | undefined;
+let rejectSettingsLoad = process.env.MYCLI_TEST_SETTINGS_ERROR === "1";
 let activeSession = "initial";
 let generation = 1;
 let pluginEnabled = false;
 let extensionVersion = 1;
 let savedViewMode = "default";
+let rejectNextClear = true;
 const sessions = [{ id: "initial", title: "Initial session", cwd: "/tmp" }];
-const commands = ["new", "resume", "clear", "view", "settings"].map((id) => ({
+const commands = ["new", "resume", "clear", "view", "settings", "compact", "export"].map((id) => ({
 	id, name: `/${id}`, description: `Run ${id}`, argument_policy: "optional", available_during_turn: false,
 }));
 
@@ -63,8 +66,26 @@ function activate(sessionId: string): Record<string, unknown> {
 
 function runCommand(request: Request): void {
 	const command = String(request.params.command);
+	if (slashCommandArguments(command, "/export") !== null) {
+		assert.equal(request.params.session_id, activeSession);
+		assert.equal(request.params.generation, generation);
+		respond(request, { execution: "backend", presentation: "transcript", result_id: `export:${request.id}`,
+			display: { version: 1, kind: "diagnostic", command, title: "Conversation exported", severity: "info",
+				fields: [{ label: "File", value: "/tmp/training data.jsonl" }, { label: "Messages", value: "12" },
+					{ label: "Tool calls", value: "2" }, { label: "Tool results", value: "2" },
+					{ label: "Reasoning blocks", value: "1" }, { label: "Redactions", value: "4" }],
+				rows: [], sections: [], suggestions: [], omitted_rows: 0, omitted_chars: 0 },
+		});
+		return;
+	}
+	if (command === "/compact") { compactRequest = request; return; }
 	const target = slashCommandArguments(command, "/resume");
-	if (command === "/new") {
+	if (command === "/clear" && rejectNextClear) {
+		rejectNextClear = false;
+		input.write(`${JSON.stringify({ jsonrpc: "2.0", id: request.id,
+			error: { code: "turn_in_progress", message: "Session transition is busy." },
+		})}\n`);
+	} else if (command === "/new" || command === "/clear") {
 		respond(request, activate(`fresh-${generation}`));
 	} else if (target) {
 		const result = activate(target);
@@ -91,7 +112,7 @@ function runCommand(request: Request): void {
 		})}\n`);
 	} else {
 		const id = command.trim().split(/\s+/u)[0]!.slice(1);
-		const action = { clear: "clear_transcript", view: "set_view_mode", resume: "open_session_selector", settings: "open_settings" }[id];
+		const action = { view: "set_view_mode", resume: "open_session_selector", settings: "open_settings" }[id];
 		assert.ok(action, `Unexpected fixture command: ${command}`);
 		respond(request, { execution: "tui", command_id: id, client_action: action, args: slashCommandArguments(command, `/${id}`) ?? "" });
 	}
@@ -127,7 +148,12 @@ lines.on("line", (line: string) => {
 			respond(request, { commands: catalog, routing_names: [...catalog.map((command) => command.name), "/tasks"] });
 			break;
 		}
-		case "settings.load": respond(request, { settings: { view_mode: savedViewMode } }); break;
+		case "settings.load":
+			if (rejectSettingsLoad) {
+				rejectSettingsLoad = false;
+				input.write(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, error: { code: "config_error", message: "Private configuration parse detail" } })}\n`);
+			} else respond(request, { settings: { view_mode: savedViewMode } });
+			break;
 		case "settings.save":
 			assert.equal(request.params.setting_id, "tui.view_mode");
 			savedViewMode = String(request.params.value);
@@ -136,6 +162,17 @@ lines.on("line", (line: string) => {
 		case "session.list": respond(request, { sessions }); break;
 		case "resource.list": respond(request, { resources: [] }); break;
 		case "command.run": runCommand(request); break;
+		case "turn.interrupt": {
+			assert.ok(compactRequest);
+			assert.equal(request.params.operation_id, compactRequest.params.operation_id);
+			respond(request, { accepted: true, requested: true });
+			const params = { session_id: activeSession, generation, checkpoint_id: request.params.operation_id,
+				client_turn_id: request.params.operation_id, source: "user_requested", before_tokens: 900, max_tokens: 1000 };
+			notify("compaction.completed", { ...params, status: "interrupted", after_tokens: 900, duration_s: 1 });
+			respond(compactRequest, { lifecycle_started: true });
+			compactRequest = undefined;
+			break;
+		}
 		case "shutdown": respond(request, { ok: true }); break;
 		default: assert.fail(`Unexpected gateway request: ${request.method}`);
 	}
@@ -162,8 +199,31 @@ try {
 	notify("runtime.ready", { session_id: activeSession });
 	await gateway.gatewayStartup;
 	assert.ok(mountedRuntime);
+	if (process.env.MYCLI_TEST_SETTINGS_ERROR === "1") {
+		assert.equal(mountedRuntime.getState().messages.filter((message) => message.text.includes("Could not load saved interface settings")).length, 1);
+		assert.doesNotMatch(mountedRuntime.ui.render(110).join("\n"), /Private configuration parse detail/);
+	}
 	const runtime = mountedRuntime;
 	const submit = (command: string): void => { runtime.editor.onSubmit?.(command); };
+
+	runtime.showCommandPalette();
+	terminal.sendInput("export");
+	assert.match(runtime.ui.render(110).join("\n"), /\/export/);
+	assert.doesNotMatch(runtime.ui.render(110).join("\n"), /--training|--output/);
+	terminal.sendInput("\x1b");
+	submit("/export");
+	await waitFor(() => runtime.ui.render(110).join("\n").includes("Conversation exported"));
+	assert.equal(runtime.getState().sessionId, "initial");
+	for (const width of [60, 80, 110]) {
+		const text = runtime.ui.render(width).join("\n");
+		assert.match(text, /training data\.jsonl/);
+		assert.match(text, /Tool results/);
+		assert.match(text, /Messages/);
+		assert.match(text, /Tool calls/);
+		assert.equal(text.match(/Conversation exported/gu)?.length, 1);
+	}
+	assert.equal(requests.filter((request) => request.method === "command.run" && String(request.params.command).startsWith("/export")).length, 1);
+	assert.equal(requests.some((request) => request.method === "turn.submit"), false);
 
 	runtime.showCommandPalette();
 	terminal.sendInput("tasks");
@@ -179,7 +239,14 @@ try {
 	runtime.editor.setText("");
 
 	submit("/clear");
-	await waitFor(() => runtime.getState().transcript?.length === 0);
+	await waitFor(() => requests.some((request) => request.method === "command.run" && request.params.command === "/clear"));
+	await setImmediate();
+	assert.equal(runtime.getState().sessionId, "initial");
+	assert.equal(runtime.getState().messages.some((message) => message.text === "Saved answer"), true,
+		"failed clear must retain the visible history and its session");
+	submit("/clear");
+	await waitFor(() => runtime.getState().sessionId === "fresh-1" && runtime.getState().transcript?.length === 0);
+	assert.equal(activeSession, "fresh-1", "clear must also reset the backend model context");
 	await refreshExtensions();
 	assert.equal(runtime.getState().transcript?.length, 0, "refresh must not restore cleared history");
 
@@ -219,12 +286,12 @@ try {
 	terminal.sendInput("\x1b");
 
 	submit("/new");
-	await waitFor(() => runtime.getState().sessionId === "fresh-1" && runtime.getState().sessions?.some((session) => session.id === "fresh-1") === true);
+	await waitFor(() => runtime.getState().sessionId === "fresh-2" && runtime.getState().sessions?.some((session) => session.id === "fresh-2") === true);
 	const listRequests = requests.filter((request) => request.method === "session.list").length;
 	submit("/resume");
 	await waitFor(() => requests.filter((request) => request.method === "session.list").length > listRequests);
 	await setImmediate();
-	assert.match(runtime.ui.render(110).join("\n"), /fresh-1/);
+	assert.match(runtime.ui.render(110).join("\n"), /fresh-2/);
 	terminal.sendInput("\x1b");
 
 	pluginEnabled = true;
@@ -239,11 +306,26 @@ try {
 	submit("/resume delayed");
 	await waitFor(() => heldHistory.length === 1);
 	submit("/new");
-	await waitFor(() => runtime.getState().sessionId === "fresh-3");
+	await waitFor(() => runtime.getState().sessionId === "fresh-4");
 	respond(heldHistory.shift()!, { session_id: "delayed", next_before: null, items: [] });
 	await setImmediate();
-	assert.equal(runtime.getState().sessionId, "fresh-3", "old history must not replace the newest session");
-	assert.equal(activeSession, "fresh-3");
+	assert.equal(runtime.getState().sessionId, "fresh-4", "old history must not replace the newest session");
+	assert.equal(activeSession, "fresh-4");
+
+	for (const key of ["\x1b", "\x03"]) {
+		const interrupts = requests.filter((request) => request.method === "turn.interrupt").length;
+		submit("/compact");
+		await waitFor(() => compactRequest !== undefined);
+		assert.equal(runtime.getState().footer.turnRunning, false);
+		assert.equal(runtime.getState().footer.operationRunning, true);
+		assert.match(runtime.ui.render(110).join("\n"), /Compacting context/);
+		notify("compaction.started", { session_id: activeSession, generation, checkpoint_id: compactRequest!.params.operation_id,
+			client_turn_id: compactRequest!.params.operation_id, source: "user_requested", before_tokens: 900, max_tokens: 1000 });
+		await setImmediate();
+		terminal.sendInput(key);
+		await waitFor(() => requests.filter((request) => request.method === "turn.interrupt").length > interrupts && runtime.getState().footer.operationRunning === false);
+		assert.doesNotMatch(runtime.ui.render(110).join("\n"), /Press Ctrl\+C again|Worked|Turn interrupted/);
+	}
 
 	submit("/resume waiting");
 	await waitFor(() => runtime.getState().transcript?.some((block) => block.kind === "message" && block.message.text === "Session waiting") === true);

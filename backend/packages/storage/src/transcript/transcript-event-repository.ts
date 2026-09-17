@@ -1,4 +1,8 @@
+import { SESSION_GOAL_USAGE_SQL } from "../schema.ts";
+import { parseSessionGoal } from "@mycli/contracts";
+import { migrateV14Goals } from "../migrations/v14/v14-goal-migration.ts";
 import { randomUUID } from "node:crypto";
+import { SessionGoalRepository } from "../sessions/session-goal-repository.ts";
 import { mkdirSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import {
@@ -12,6 +16,8 @@ import {
 import type { RuntimeStateRecord, RuntimeTurnRecord } from "@mycli/contracts";
 import {
 	selectAgentForkConversation,
+	parseToolDiscoveries,
+	type ToolDiscovery,
 	TOOL_RESULT_OUTPUT_MAX_CHARS,
 } from "@mycli/core";
 import Database from "better-sqlite3";
@@ -37,6 +43,7 @@ import {
 	SCHEMA_V13_SQL,
 	SCHEMA_V13_VERSION,
 	SCHEMA_V14_VERSION,
+	SCHEMA_V15_VERSION,
 	SESSION_RUNTIME_LEASE_SQL,
 } from "../schema.ts";
 import { migrateV12ProviderAttempts } from "../migrations/v12/v12-provider-attempt-migration.ts";
@@ -174,19 +181,22 @@ import type {
 	UpsertShellSnapshotInput,
 } from "./shell-transcript-store.ts";
 
+import {
+	projectTranscriptSnapshotWindow,
+	SNAPSHOT_EVENT_LIMIT,
+	type TranscriptSnapshotWindow,
+} from "./transcript-snapshot-metadata.ts";
+
 const DEFAULT_EVENT_WINDOW_LIMIT = 200;
 const MAX_EVENT_WINDOW_LIMIT = 2_000;
 const MAX_TURN_EVENT_LIMIT = 4_096;
 const MAX_SOURCE_REFERENCE_COUNT = 500;
-const RECENT_READABLE_RAW_EVENT_LIMIT = 2_000;
-const RECENT_READABLE_ITEM_LIMIT = 500;
 const READABLE_PAGE_RAW_WINDOW_SIZE = 2_000;
 const READABLE_PAGE_MAX_ITEMS = 500;
 const MAX_SHELL_OUTPUT_PAGE_ROWS = 257;
 const TOOL_ACTIVATION_NAME = /^[A-Za-z0-9_]{1,128}$/u;
 const MAX_TOOL_ACTIVATION_NAMES = 16;
 const PLAN_STATUSES = new Set(["pending", "in_progress", "completed"]);
-const COMPACTION_SUMMARY_MAX_CHARS = 131_072;
 const INVALIDATED_RESPONSES_CONTINUATION = Object.freeze({
 	response_id: null,
 	request_signature: "",
@@ -315,6 +325,7 @@ export interface TranscriptEventRepository extends SessionLeaseStore {
 	commitCompaction(input: CommitCompactionInput): boolean;
 	loadPendingToolCalls(sessionId: string, turnId: string): readonly CanonicalToolCall[];
 	loadToolActivations(sessionId: string, turnId: string): readonly string[];
+	loadToolDiscoveries(sessionId: string): readonly ToolDiscovery[];
 	loadContextItems(
 		sessionId: string,
 		turnId?: string,
@@ -322,6 +333,7 @@ export interface TranscriptEventRepository extends SessionLeaseStore {
 	loadReadableTranscript(sessionId: string): readonly TranscriptItem[];
 	hasTranscriptEvents(sessionId: string): boolean;
 	loadRecentReadableTranscript(sessionId: string): readonly TranscriptItem[];
+	loadReadableTranscriptSnapshot(sessionId: string): TranscriptSnapshotWindow;
 	loadReadableTranscriptPage(
 		sessionId: string,
 		options?: TranscriptReadablePageOptions,
@@ -341,9 +353,10 @@ export interface SQLiteTranscriptEventRepositoryOptions {
 		| typeof SCHEMA_V11_VERSION
 		| typeof SCHEMA_V12_VERSION
 		| typeof SCHEMA_V13_VERSION
-		| typeof SCHEMA_V14_VERSION;
+		| typeof SCHEMA_V14_VERSION | typeof SCHEMA_V15_VERSION;
 	readonly upgradeProviderAttempts?: boolean;
 	readonly upgradeErrorContexts?: boolean;
+	readonly upgradeGoals?: boolean;
 	readonly providerAttemptFailpoint?: (name: ProviderAttemptLedgerFailpoint) => void;
 	readonly busyTimeoutMs?: number;
 	readonly clock?: () => string;
@@ -466,6 +479,7 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 	readonly providerAttemptLedger: ProviderAttemptLedgerStore;
 	readonly subagentTasks: SubagentTaskStore;
 	readonly turnTerminalizations: SQLiteTurnTerminalizationRepository;
+	readonly goals: SessionGoalRepository;
 	readonly #database: Database.Database;
 	readonly #clock: () => string;
 	readonly #ownerId: string;
@@ -479,7 +493,7 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 		| typeof SCHEMA_V11_VERSION
 		| typeof SCHEMA_V12_VERSION
 		| typeof SCHEMA_V13_VERSION
-		| typeof SCHEMA_V14_VERSION;
+		| typeof SCHEMA_V14_VERSION | typeof SCHEMA_V15_VERSION;
 	readonly errorContextVersion: 1 | undefined;
 	#closed = false;
 
@@ -501,9 +515,12 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 				const upgraded = options.upgradeProviderAttempts && version.value === SCHEMA_V12_VERSION
 					? migrateV12ProviderAttempts(this.#database, <Result>(operation: () => Result) => this.#write(operation))
 					: transcriptSchemaVersion(version.value);
-				this.#schemaVersion = options.upgradeErrorContexts && upgraded === SCHEMA_V13_VERSION
+				const errorContexts = options.upgradeErrorContexts && upgraded === SCHEMA_V13_VERSION
 					? migrateV13ErrorContexts(this.#database, <Result>(operation: () => Result) => this.#write(operation))
 					: upgraded;
+				this.#schemaVersion = options.upgradeGoals && errorContexts === SCHEMA_V14_VERSION
+					? migrateV14Goals(this.#database, <Result>(operation: () => Result) => this.#write(operation))
+					: errorContexts;
 			} else {
 				throw new StorageFailure("session schema version marker is invalid");
 			}
@@ -537,11 +554,26 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 								clientUserMessageId: record.clientTurnId,
 								queueId: record.queueId,
 								source: queuedInputSource(record),
+								...(record.skillReferences?.length ? { skillReferences: record.skillReferences } : {}),
 								...(images.length > 0 ? { images } : {}),
 							},
 						}));
 					},
 				},
+			});
+			this.goals = new SessionGoalRepository({
+				writable: this.#schemaVersion >= SCHEMA_V15_VERSION,
+				usageGet: (sessionId, goalId, requestId) => this.#database.prepare(
+					"SELECT token_count FROM session_goal_usage WHERE session_id = ? AND goal_id = ? AND request_id = ?",
+				).pluck().get(sessionId, goalId, requestId) as number | null | undefined,
+				usageSave: (sessionId, goalId, requestId, tokens) => {
+					this.#database.prepare("INSERT INTO session_goal_usage VALUES (?, ?, ?, ?) ON CONFLICT(session_id, goal_id, request_id) DO UPDATE SET token_count = excluded.token_count")
+						.run(sessionId, goalId, requestId, tokens);
+				},
+				state: this.#stateRepository,
+				write: <Result>(operation: () => Result) => this.#write(operation),
+				appendEvent: (input) => this.#insertEvent(parseTranscriptEventAppendInput(input)),
+				loadEvent: (sessionId, eventId) => this.loadEvent(sessionId, eventId),
 			});
 			this.subagentTasks = new SQLiteSubagentTaskRepository({
 				database: this.#database,
@@ -670,6 +702,7 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 					}
 					return Object.freeze({ kind: "existing", turn: existing });
 				}
+				if (input.source === "goal" && this.#schemaVersion < SCHEMA_V15_VERSION) throw new StorageFailure("goal input requires session format 15");
 				this.#touchSession(input);
 				this.#insertRuntimeTurn(initial);
 				if (input.source !== "agent_mailbox") {
@@ -691,7 +724,8 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 							text: input.userText,
 							clientUserMessageId: input.clientUserMessageId,
 							...(input.queueId ? { queueId: input.queueId } : {}),
-							source: input.inputSource ?? "submit",
+							source: input.source === "goal" ? "goal" : input.inputSource ?? "submit",
+							...(input.skillReferences?.length ? { skillReferences: input.skillReferences } : {}),
 							...(images.length > 0 ? { images } : {}),
 						},
 					}));
@@ -869,6 +903,20 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 					FROM session_state
 					WHERE session_id = ? AND state_key = 'session_preferences'
 				`).run(targetSessionId, now, sourceSessionId);
+				// Read the snapshot at the fork boundary, never the source's later goal.
+				const prefix = this.#allEvents(sourceSessionId).filter((event) => boundary.event !== undefined && event.sequenceNo <= boundary.event.sequenceNo);
+				const goalEvent = prefix.findLast((event) => event.eventType === "display_activity" && event.payload.activityType === "goal");
+				const snapshot = input.forkEventId === undefined && input.forkPoint === undefined
+					? this.goals.get(sourceSessionId)
+					: goalEvent?.eventType === "display_activity" ? goalEvent.payload.metadata?.goal_snapshot : null;
+				if (snapshot) {
+					const inherited = parseSessionGoal(snapshot);
+					this.goals.commit({ sessionId: targetSessionId, workspaceRoot: targetWorkspaceRoot ?? source.workspaceRoot,
+						threadId: targetSessionId, eventId: `goal:fork:${targetSessionId}`, operation: "create", expected: null,
+						next: { ...inherited, goal_id: randomUUID(), revision: 1, audit_turns: 0,
+							status: inherited.status === "active" ? "paused" : inherited.status,
+							stop_reason: inherited.status === "active" ? "Goal inherited from fork. Resume to continue." : inherited.stop_reason }, createdAt: now });
+				}
 				return Object.freeze({
 					sourceSessionId,
 					targetSessionId,
@@ -1940,7 +1988,7 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 						sourceEventId: source.eventId,
 						sourceProviderIndex: source.providerIndex,
 						replacement: input.replacementItems,
-						summary: boundedCompactionSummary(input.summary),
+						summary: compactionSummaryText(input.summary),
 						metadata: checkpoint.metadata,
 					},
 				}));
@@ -2002,6 +2050,30 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 				if (index >= 0) pending.splice(index, 1);
 			}
 			return Object.freeze(pending);
+		} catch (error) {
+			throw storageError(error);
+		}
+	}
+
+	loadToolDiscoveries(sessionId: string): readonly ToolDiscovery[] {
+		try {
+			const rows = this.#database.prepare(`
+				SELECT payload_json FROM transcript_events
+				WHERE session_id = ? AND event_type = 'tool_result'
+				  AND json_extract(payload_json, '$.payload.result.toolName') = 'tool_search'
+				  AND json_extract(payload_json, '$.payload.result.success') = 1
+				  AND json_extract(payload_json, '$.payload.metadata.tool_discovery.version') = 1
+				ORDER BY sequence_no DESC LIMIT 512
+			`).all(identity(sessionId, "sessionId")) as readonly { readonly payload_json: string }[];
+			const discoveries = new Map<string, ToolDiscovery>();
+			for (const row of [...rows].reverse()) {
+				const stored: unknown = JSON.parse(row.payload_json);
+				if (!isRecord(stored) || !isRecord(stored.payload)) continue;
+				const payload = stored.payload;
+				if (!isRecord(payload.metadata)) continue;
+				for (const discovery of parseToolDiscoveries(payload.metadata.tool_discovery)) discoveries.set(discovery.id, discovery);
+			}
+			return Object.freeze([...discoveries.values()].slice(-512));
 		} catch (error) {
 			throw storageError(error);
 		}
@@ -2093,15 +2165,19 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 	}
 
 	loadRecentReadableTranscript(sessionId: string): readonly TranscriptItem[] {
+		return this.loadReadableTranscriptSnapshot(sessionId).items;
+	}
+
+	loadReadableTranscriptSnapshot(sessionId: string): TranscriptSnapshotWindow {
 		try {
 			const normalizedSessionId = identity(sessionId, "sessionId");
 			if (this.#hasLineageParent(normalizedSessionId)) {
 				const all = this.#allEvents(normalizedSessionId);
-				const selected = all.slice(-RECENT_READABLE_RAW_EVENT_LIMIT);
-				const preceding = all.at(-(RECENT_READABLE_RAW_EVENT_LIMIT + 1));
-				return projectTranscriptEventsToReadableItems(
+				const selected = all.slice(-SNAPSHOT_EVENT_LIMIT);
+				const preceding = all.at(-(SNAPSHOT_EVENT_LIMIT + 1));
+				return projectTranscriptSnapshotWindow(
 					withoutPartialEarliestEventTurn(selected, preceding),
-					{ limit: RECENT_READABLE_ITEM_LIMIT },
+					preceding !== undefined,
 				);
 			}
 			const rows = this.#database.prepare(`
@@ -2113,10 +2189,10 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 				LIMIT ?
 			`).all(
 				normalizedSessionId,
-				RECENT_READABLE_RAW_EVENT_LIMIT + 1,
+				SNAPSHOT_EVENT_LIMIT + 1,
 			) as readonly TranscriptEventRow[];
-			const selectedRows = rows.slice(0, RECENT_READABLE_RAW_EVENT_LIMIT);
-			const precedingRow = rows.at(RECENT_READABLE_RAW_EVENT_LIMIT);
+			const selectedRows = rows.slice(0, SNAPSHOT_EVENT_LIMIT);
+			const precedingRow = rows.at(SNAPSHOT_EVENT_LIMIT);
 			const hydrated = this.#eventsFromRows(precedingRow
 				? [...selectedRows, precedingRow]
 				: selectedRows);
@@ -2125,9 +2201,7 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 				selected,
 				precedingRow ? hydrated.at(-1) : undefined,
 			);
-			return projectTranscriptEventsToReadableItems(events, {
-				limit: RECENT_READABLE_ITEM_LIMIT,
-			});
+			return projectTranscriptSnapshotWindow(events, precedingRow !== undefined);
 		} catch (error) {
 			throw storageError(error);
 		}
@@ -2596,6 +2670,10 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 	}
 
 	#insertEvent(input: TranscriptEventAppendInput): TranscriptEventEnvelope {
+		if (this.#schemaVersion < SCHEMA_V15_VERSION && (
+			(input.eventType === "user_input" && input.payload.source === "goal")
+			|| (input.eventType === "display_activity" && input.payload.activityType === "goal")
+		)) throw new StorageFailure("goals require session schema version 15");
 		if (this.errorContextVersion !== 1 && (
 			(input.eventType === "turn_lifecycle" && input.payload.errorContext !== undefined)
 			|| (input.eventType === "display_activity" && input.payload.metadata?.error_context !== undefined)
@@ -3708,6 +3786,8 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 								...(item.images?.length ? { images: item.images } : {}),
 							},
 							summary: item.output.slice(0, 500),
+							...(item.toolName === "tool_search" && item.success && item.toolDiscoveries?.length
+								? { metadata: { tool_discovery: { version: 1, tools: item.toolDiscoveries } } } : {}),
 						},
 					}));
 					break;
@@ -3884,7 +3964,10 @@ function eventToolResultMetadata(
 	const mutation = projectMutationMetadata(input.metadata, input.result.success);
 	const errorContext = input.result.success ? undefined : readErrorContext(input.metadata?.error_context);
 	const interaction = projectTerminalInteraction(input.metadata?.terminal_interaction);
+	const discoveries = input.result.success && input.result.toolName === "tool_search"
+		? parseToolDiscoveries(input.metadata?.tool_discovery) : [];
 	const metadata = {
+		...(discoveries.length ? { tool_discovery: { version: 1, tools: discoveries } } : {}),
 		...(errorContext ? { error_context: errorContext } : {}),
 		...(interaction ? { terminal_interaction: interaction } : {}),
 		...(mutation.file_changes ? { file_changes: mutation.file_changes } : {}),
@@ -3957,6 +4040,7 @@ function projectEventsToLegacyHistory(
 						source: event.payload.source,
 						...(event.payload.queueId ? { queue_id: event.payload.queueId } : {}),
 						image_paths: Object.freeze([]),
+						...(event.payload.skillReferences?.length ? { skill_references: event.payload.skillReferences } : {}),
 					}),
 				})];
 			}
@@ -4218,8 +4302,8 @@ function normalizedCompactionCheckpoint(
 	});
 }
 
-function boundedCompactionSummary(value: unknown): string {
-	if (typeof value !== "string" || !value.trim() || value.length > COMPACTION_SUMMARY_MAX_CHARS) {
+function compactionSummaryText(value: unknown): string {
+	if (typeof value !== "string" || !value.trim()) {
 		throw new StorageFailure("compaction summary is invalid");
 	}
 	return value;
@@ -4438,11 +4522,12 @@ function initializeTranscriptSchema(
 		| typeof SCHEMA_V11_VERSION
 		| typeof SCHEMA_V12_VERSION
 		| typeof SCHEMA_V13_VERSION
-		| typeof SCHEMA_V14_VERSION,
+		| typeof SCHEMA_V14_VERSION | typeof SCHEMA_V15_VERSION,
 ): void {
 	database.exec("BEGIN IMMEDIATE");
 	try {
 		database.exec(SCHEMA_V2_SQL);
+		if (version >= SCHEMA_V15_VERSION) database.exec(SESSION_GOAL_USAGE_SQL);
 		database.exec(SCHEMA_V5_SQL);
 		database.exec(SCHEMA_V6_SQL);
 		database.exec(SCHEMA_V7_SQL);
@@ -4483,9 +4568,9 @@ function schemaVersion(database: Database.Database):
 
 function transcriptSchemaVersion(
 	version: number,
-): typeof SCHEMA_V10_VERSION | typeof SCHEMA_V11_VERSION | typeof SCHEMA_V12_VERSION | typeof SCHEMA_V13_VERSION | typeof SCHEMA_V14_VERSION {
+): typeof SCHEMA_V10_VERSION | typeof SCHEMA_V11_VERSION | typeof SCHEMA_V12_VERSION | typeof SCHEMA_V13_VERSION | typeof SCHEMA_V14_VERSION | typeof SCHEMA_V15_VERSION {
 	if (version === SCHEMA_V10_VERSION || version === SCHEMA_V11_VERSION
-		|| version === SCHEMA_V12_VERSION || version === SCHEMA_V13_VERSION || version === SCHEMA_V14_VERSION) return version;
+		|| version === SCHEMA_V12_VERSION || version === SCHEMA_V13_VERSION || version === SCHEMA_V14_VERSION || version === SCHEMA_V15_VERSION) return version;
 	throw new StorageFailure("unsupported transcript event schema version", {
 		expected_version: SCHEMA_V12_VERSION,
 		actual_version: Number.isFinite(version) ? version : null,
@@ -4493,7 +4578,7 @@ function transcriptSchemaVersion(
 }
 
 function usesContentBlobs(
-	version: typeof SCHEMA_V10_VERSION | typeof SCHEMA_V11_VERSION | typeof SCHEMA_V12_VERSION | typeof SCHEMA_V13_VERSION | typeof SCHEMA_V14_VERSION,
+	version: typeof SCHEMA_V10_VERSION | typeof SCHEMA_V11_VERSION | typeof SCHEMA_V12_VERSION | typeof SCHEMA_V13_VERSION | typeof SCHEMA_V14_VERSION | typeof SCHEMA_V15_VERSION,
 ): boolean {
 	return version >= SCHEMA_V11_VERSION;
 }

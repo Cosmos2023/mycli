@@ -1,16 +1,26 @@
 {
   "name": "@cosmos2023/ripgrep-darwin-arm64",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": false,
   "description": "ripgrep binary for mycli on macOS ARM64",
   "license": "MIT OR Unlicense",
-  "os": ["darwin"],
-  "cpu": ["arm64"],
-  "files": ["vendor"],
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "files": [
+    "vendor"
+  ],
   "scripts": {
     "prepack": "npm --prefix ../../.. run build --workspace @mycli/tools && node ../../../scripts/stage_ripgrep_platform_package.mjs stage macos-aarch64",
     "postpack": "node ../../../scripts/stage_ripgrep_platform_package.mjs clean macos-aarch64"
   },
-  "publishConfig": { "access": "public" },
-  "engines": { "node": ">=22.19.0" }
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
 }

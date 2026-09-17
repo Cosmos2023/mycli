@@ -5,9 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
-import { loadGitReviewContext, MAX_REVIEW_CONTEXT_BYTES } from "../../src/review/git-context.ts";
+import { loadGitReviewContext, loadGitWorkspaceDiff, MAX_REVIEW_CONTEXT_BYTES } from "../../src/review/git-context.ts";
 import { prepareReview } from "../../src/review/review.ts";
 import { readGitReviewFile } from "../../src/review/git-context.ts";
+import { repositoryInitPrompt, prepareInteractiveReview } from "../../src/node-runtime/workspace-slash-workflows.ts";
 import { runCli } from "../../src/cli.ts";
 
 const executeFile = promisify(execFile);
@@ -100,3 +101,28 @@ async function fixture(t: test.TestContext): Promise<string> {
 async function git(cwd: string, args: readonly string[]): Promise<string> {
 	return (await executeFile("git", ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-C", cwd, ...args], { encoding: "utf8" })).stdout;
 }
+
+
+test("workspace diff keeps opposing staged and unstaged edits and includes untracked files", async (t) => {
+ const root = await fixture(t);
+ await writeFile(join(root, "file.ts"), "export const value = 1;\n"); await git(root, ["add", "."]); await git(root, ["commit", "-qm", "base"]);
+ await writeFile(join(root, "file.ts"), "export const value = 2;\n"); await git(root, ["add", "."]);
+ await writeFile(join(root, "file.ts"), "export const value = 1;\n");
+ await writeFile(join(root, "new.ts"), "export const fresh = true;\n");
+ const before = await git(root, ["status", "--porcelain=v1"]);
+ const diff = await loadGitWorkspaceDiff(root, new AbortController().signal);
+ assert.match(diff.text, /Staged changes/); assert.match(diff.text, /Unstaged changes/); assert.match(diff.text, /Untracked: "new.ts"/);
+ assert.match(diff.text, /\+export const value = 2/); assert.match(diff.text, /-export const value = 2/);
+ assert.equal(await git(root, ["status", "--porcelain=v1"]), before);
+});
+
+test("init preserves existing guidance and custom review works on a clean repository", async (t) => {
+ const root = await fixture(t);
+ const prompt = await repositoryInitPrompt(root); assert.match(prompt ?? "", /do not overwrite or modify/i);
+ const guidance = "# Existing rules\n"; await writeFile(join(root, "AGENTS.md"), guidance);
+ assert.equal(await repositoryInitPrompt(root), undefined); assert.equal(await readFile(join(root, "AGENTS.md"), "utf8"), guidance);
+ await git(root, ["add", "."]); await git(root, ["commit", "-qm", "guidance"]);
+ const review = await prepareInteractiveReview({ cwd: join(root, "src"), review: { kind: "custom", instructions: "Check repository guidance" }, signal: new AbortController().signal });
+ assert.equal(review.empty, false); assert.match(review.prompt, /Check repository guidance/); assert.match(review.prompt, /AGENTS.md/);
+ assert.equal(await readFile(join(review.workspaceRoot, "AGENTS.md"), "utf8"), guidance);
+});

@@ -4,11 +4,15 @@
 
 #include <cstddef>
 #include <cwctype>
+#include <memory>
 #include <stdexcept>
 #include <utility>
 #include <vector>
 
 #include "win32.hpp"
+#include "wfp.hpp"
+#include "desktop.hpp"
+#include "sid.hpp"
 
 namespace mycli::sandbox {
 namespace {
@@ -41,6 +45,21 @@ class ThreadAttributeList {
   private:
     std::vector<std::byte> storage_;
     PPROC_THREAD_ATTRIBUTE_LIST list_ = nullptr;
+};
+
+// CreateProcessWithLogonW otherwise builds the target account's default environment,
+// losing the host's sanitized PATH, locale, and process-owned proxy settings.
+class InheritedEnvironment {
+  public:
+    InheritedEnvironment() : value_{GetEnvironmentStringsW()} {
+        if (value_ == nullptr) throw Win32Error("GetEnvironmentStringsW");
+    }
+    ~InheritedEnvironment() { FreeEnvironmentStringsW(value_); }
+    InheritedEnvironment(const InheritedEnvironment&) = delete;
+    InheritedEnvironment& operator=(const InheritedEnvironment&) = delete;
+    [[nodiscard]] LPVOID get() const noexcept { return value_; }
+  private:
+    LPWCH value_;
 };
 
 UniqueHandle OpenNullDevice(DWORD desired_access) {
@@ -169,7 +188,9 @@ DWORD RunProcessInJobImpl(
     }
 
     STARTUPINFOEXW startup{};
+    auto desktop_name = CurrentDesktopName();
     startup.StartupInfo.cb = sizeof(startup);
+    startup.StartupInfo.lpDesktop = desktop_name.data();
     startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
     startup.StartupInfo.hStdInput = stdin_handle.get();
     startup.StartupInfo.hStdOutput = stdout_handle.get();
@@ -254,7 +275,9 @@ DWORD RunProcessWithLogonInJob(
     const std::wstring& username,
     const std::wstring& password,
     const std::vector<std::wstring>& argv,
-    const std::filesystem::path& cwd) {
+    const std::filesystem::path& cwd,
+    const std::wstring& account_sid,
+    unsigned short network_proxy_port) {
     auto command_line = BuildWindowsCommandLine(argv);
     std::vector<wchar_t> mutable_command_line(
         command_line.begin(), command_line.end());
@@ -264,7 +287,11 @@ DWORD RunProcessWithLogonInJob(
     const auto stdout_handle = DuplicateStandardHandle(STD_OUTPUT_HANDLE, GENERIC_WRITE);
     const auto stderr_handle = DuplicateStandardHandle(STD_ERROR_HANDLE, GENERIC_WRITE);
     STARTUPINFOW startup{};
+    const auto sandbox_sid = SidFromString(account_sid);
+    const PrivateDesktop desktop{sandbox_sid.get()};
+    auto desktop_name = desktop.name();
     startup.cb = sizeof(startup);
+    startup.lpDesktop = desktop_name.data();
     startup.dwFlags = STARTF_USESTDHANDLES;
     startup.hStdInput = stdin_handle.get();
     startup.hStdOutput = stdout_handle.get();
@@ -274,6 +301,7 @@ DWORD RunProcessWithLogonInJob(
     const auto job = CreateKillOnCloseJob();
     constexpr DWORD kCreationFlags =
         CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW;
+    const InheritedEnvironment environment;
     if (CreateProcessWithLogonW(
             username.c_str(),
             L".",
@@ -282,7 +310,7 @@ DWORD RunProcessWithLogonInJob(
             nullptr,
             mutable_command_line.data(),
             kCreationFlags,
-            nullptr,
+            environment.get(),
             cwd.c_str(),
             &startup,
             &process_info) == 0) {
@@ -293,6 +321,11 @@ DWORD RunProcessWithLogonInJob(
     if (AssignProcessToJobObject(job.get(), process.get()) == 0) {
         TerminateProcess(process.get(), 1);
         throw Win32Error("AssignProcessToJobObject(logon process)");
+    }
+    desktop.AllowLogon(process.get());
+    std::unique_ptr<NetworkProxySession> proxy;
+    if (network_proxy_port != 0) {
+        proxy = std::make_unique<NetworkProxySession>(process.get(), account_sid, network_proxy_port);
     }
     if (ResumeThread(thread.get()) == static_cast<DWORD>(-1)) {
         TerminateJobObject(job.get(), 1);

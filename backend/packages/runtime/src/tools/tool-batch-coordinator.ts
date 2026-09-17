@@ -208,7 +208,8 @@ export class ToolBatchCoordinator {
 			const wallClockExhausted = this.#options.budget.wallClockExhaustion();
 			if (wallClockExhausted) throw new AgentBudgetExhaustedError(wallClockExhausted);
 			assertNotAborted(signal);
-			if (!exposedToolNames.has(call.name)) {
+			if (!exposedToolNames.has(call.name)
+				&& !context.runSnapshot.toolCatalog.deferredTools.some((tool) => tool.name === call.name)) {
 				const earlierSuspension = await flushParallelCalls();
 				if (earlierSuspension) return earlierSuspension;
 				const suspended = await this.#applyToolExecutionResult({
@@ -282,6 +283,7 @@ export class ToolBatchCoordinator {
 							reason: policy.reason,
 							options: policy.options,
 							...(policy.commandPattern ? { commandPattern: policy.commandPattern } : {}),
+							...(policy.extensionApproval ? { extensionApproval: policy.extensionApproval } : {}),
 							...(policy.proposedExecPolicyPattern
 								? { proposedExecPolicyPattern: policy.proposedExecPolicyPattern } : {}),
 						});
@@ -327,6 +329,7 @@ export class ToolBatchCoordinator {
 					reason: policy.reason,
 					options: policy.options,
 					...(policy.commandPattern ? { commandPattern: policy.commandPattern } : {}),
+					...(policy.extensionApproval ? { extensionApproval: policy.extensionApproval } : {}),
 					...(policy.proposedExecPolicyPattern ? {
 						proposedExecPolicyPattern: policy.proposedExecPolicyPattern,
 					} : {}),
@@ -893,7 +896,7 @@ function policyDeniedResult(
 	const toolName = boundedToolName(call.name) || "Tool";
 	const errorKind = decision.errorKind ?? (decision.reason.includes("outside the workspace")
 		? "workspace_escape"
-		: "approval_rejected");
+		: "permission_denied");
 	return Object.freeze({
 		callId: call.callId,
 		toolName: call.name,

@@ -1,42 +1,30 @@
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
 import {
 	decideCompaction,
 	type CanonicalConversationItem,
-	type ProviderReplayState,
 	type ProviderUsage,
 	type RuntimeEvent,
 } from "@mycli/core";
 import { parseRuntimeFailure, runtimeRetryStatusText, type RuntimeFailure } from "@mycli/contracts";
+import { TRANSCRIPT_EVENT_MAX_BATCH_ITEMS } from "@mycli/storage";
 import type {
 	CommitCompactionInput,
 	CompareAndSetStateInput,
 	RuntimeStateKey,
 } from "@mycli/storage";
-import { resolveReadableWorkspaceFile } from "@mycli/tools";
+import { ProviderFailure, providerFailureToRuntimeFailure } from "@mycli/providers";
 import { NO_RUNTIME_FAILPOINT } from "../fault-injection.ts";
 import type { RuntimeFailpointHook } from "../fault-injection.ts";
 import { TokenCounter } from "./token-counter.ts";
+import { countConversationTokens } from "./conversation-token-count.ts";
+import {
+	assertCompactionSummary, compactionSummaryInstruction, compactionSummaryItem,
+	retainCompactionUserMessages,
+} from "./compaction-summary.ts";
 import { CompactionProviderError, type CompactionModelEvent } from "./compaction-model-executor.ts";
 import { normalizeProviderAgentLoopFailure } from "../providers/provider-agent-loop.ts";
 
 export { summarizeCompactionWithProvider } from "./compaction-model-executor.ts";
-
-const SUMMARY_PROMPT = [
-	"CRITICAL: Respond with TEXT ONLY.",
-	"Do not call tools, continue the task, or ask for confirmation.",
-	"Summarize the supplied conversation for a coding agent that must continue the work.",
-	"Preserve the primary request, decisions, files examined or edited, errors and fixes,",
-	"all user instructions, pending tasks, and the exact current work state.",
-].join(" ");
-
-const MAX_REHYDRATION_FILE_BYTES = 1_000_000;
-const EXCLUDED_REHYDRATION_PREFIXES = Object.freeze([
-	".mycli/",
-	".omx/",
-	".trellis/",
-	"docs/superpowers/plans/",
-]);
 
 export interface CompactionCoordinatorStore {
 	loadState(sessionId: string, key: RuntimeStateKey): unknown | undefined;
@@ -49,10 +37,12 @@ export interface CompactionSummaryInput {
 	readonly operationId: string;
 	readonly recordEvent: (event: CompactionModelEvent) => Promise<void>;
 	readonly reportRetry: (event: Extract<RuntimeEvent, { readonly type: "stream_retrying" }>) => void;
+	readonly reportProgress?: (text: string) => void;
 	readonly items: readonly CanonicalConversationItem[];
 	readonly instruction: string;
 	readonly model?: string;
-	readonly maxOutputTokens: number;
+	readonly baseInstructions: string;
+	readonly developerInstructions?: readonly string[];
 	readonly fingerprint: string;
 	readonly signal: AbortSignal;
 }
@@ -91,14 +81,10 @@ export interface CompactionCoordinatorOptions {
 	readonly tokenLimit: number;
 	readonly reservedOutputTokens: number;
 	readonly triggerRatio?: number;
-	readonly tailTurns: number;
-	readonly tailMaxTokens: number;
-	readonly minSavingsRatio?: number;
-	readonly summaryMaxTokens: number;
+	readonly retainedUserMaxTokens?: number;
+	readonly baseInstructions?: string;
+	readonly developerInstructions?: readonly string[];
 	readonly summaryModel?: string;
-	readonly rehydrationMaxFiles: number;
-	readonly rehydrationMaxItemTokens: number;
-	readonly rehydrationMaxTotalTokens: number;
 	readonly summarize: (input: CompactionSummaryInput) => Promise<string>;
 	readonly recordModelEvent?: (input: CompactionModelEvidence) => boolean;
 	readonly createCheckpointId: () => string;
@@ -108,6 +94,7 @@ export interface CompactionCoordinatorOptions {
 }
 
 export interface CompactInput {
+	readonly operationId?: string;
 	readonly clientTurnId: string;
 	readonly turnId: string;
 	readonly source: CompactionSource;
@@ -127,23 +114,10 @@ export interface CompactionResult {
 	readonly afterTokens: number;
 }
 
-interface CompletedTurn {
-	readonly startIndex: number;
-	readonly user: Extract<CanonicalConversationItem, { readonly type: "user" }>;
-	readonly assistant: Extract<CanonicalConversationItem, { readonly type: "assistant" }>;
-}
-
 interface CompactionSelection {
 	readonly summaryItems: readonly CanonicalConversationItem[];
-	readonly exactTail: readonly CanonicalConversationItem[];
+	readonly retainedUsers: readonly CanonicalConversationItem[];
 	readonly freshSuffix: readonly CanonicalConversationItem[];
-	readonly summaryPlacement: "before_retained" | "after_retained";
-}
-
-interface FileCandidate {
-	readonly path: string;
-	readonly kind: "edit" | "read";
-	readonly sequence: number;
 }
 
 export class CompactionCoordinator {
@@ -166,13 +140,13 @@ export class CompactionCoordinator {
 			throw new TypeError("baseContext resolver must return a string");
 		}
 		const baseTokens = this.#tokenCounter.count(baseContext);
-		const beforeTokens = baseTokens + countItems(this.#tokenCounter, input.conversation);
+		const beforeTokens = baseTokens + countConversationTokens(this.#tokenCounter, input.conversation);
 		const checkpointState = this.#checkpointState(input.turnId);
 		if (checkpointState.interrupted) {
 			return result("interrupted", input.conversation, beforeTokens);
 		}
 		const selection = this.#select(input.conversation, input.freshItemIds, input.source);
-		const freshSuffixTokens = countItems(this.#tokenCounter, selection.freshSuffix);
+		const freshSuffixTokens = countConversationTokens(this.#tokenCounter, selection.freshSuffix);
 		const decision = decideCompaction({
 			usedTokens: beforeTokens,
 			tokenLimit: this.#options.tokenLimit,
@@ -186,33 +160,33 @@ export class CompactionCoordinator {
 		if (!shouldCompact || selection.summaryItems.length === 0) {
 			return result("not_needed", input.conversation, beforeTokens);
 		}
-		if (selection.exactTail.length === 0 && !isActiveTurnCompaction(input.source)) {
-			return result("skipped", input.conversation, beforeTokens);
-		}
 		const rawHistory = this.#options.store.loadHistoryItems(this.#options.sessionId);
 
+		const checkpointId = input.operationId ?? this.#options.createCheckpointId();
 		const startedAt = this.#options.monotonicClock?.() ?? performance.now();
 		const interruptedResult = (): CompactionResult => {
-			input.emit(this.#completedEvent(input, "failed", beforeTokens, beforeTokens, startedAt));
+			input.emit(this.#completedEvent(input, checkpointId, "interrupted", beforeTokens, beforeTokens, startedAt));
 			return result("interrupted", input.conversation, beforeTokens);
 		};
 		input.emit({
 			type: "compaction_started",
+			operationId: checkpointId,
 			clientTurnId: input.clientTurnId,
 			source: input.source,
 			beforeTokens,
 			maxTokens: this.#options.tokenLimit,
 		});
-		const checkpointId = this.#options.createCheckpointId();
 		const inputHash = hashItems(input.conversation);
+		const instruction = compactionSummaryInstruction();
 		const summaryFingerprint = hashValue({
 			session_id: this.#options.sessionId,
 			turn_id: input.turnId,
 			source: input.source,
 			items: selection.summaryItems,
-			instruction: SUMMARY_PROMPT,
+			instruction,
 			model: this.#options.summaryModel ?? null,
-			max_output_tokens: this.#options.summaryMaxTokens,
+			base_instructions: this.#options.baseInstructions ?? "",
+			developer_instructions: this.#options.developerInstructions ?? [],
 		});
 		const pendingCheckpoint = checkpointPayload({
 				turnId: input.turnId,
@@ -263,25 +237,30 @@ export class CompactionCoordinator {
 						operationId: checkpointId,
 						text: runtimeRetryStatusText(event.failureKind, event.attempt, event.maxRetries) });
 				},
+				reportProgress: (text) => input.emit({ type: "compaction_progress", clientTurnId: input.clientTurnId,
+					operationId: checkpointId, text }),
 				items: selection.summaryItems,
-				instruction: SUMMARY_PROMPT,
+				instruction,
 				...(this.#options.summaryModel ? { model: this.#options.summaryModel } : {}),
-				maxOutputTokens: this.#options.summaryMaxTokens,
+				baseInstructions: this.#options.baseInstructions ?? "",
+				developerInstructions: this.#options.developerInstructions,
 				fingerprint: summaryFingerprint,
 				signal: input.signal,
 			})).trim();
 			assertNotAborted(input.signal);
-			if (!summary || this.#tokenCounter.count(summary) > this.#options.summaryMaxTokens) {
-				throw new CompactionSummaryError();
-			}
+			assertCompactionSummary(summary);
 		} catch (error) {
-			const failure = parseRuntimeFailure(input.signal.aborted || !(error instanceof CompactionProviderError)
-				? normalizeProviderAgentLoopFailure(error, input.signal) : error.failure);
+			const failure = parseRuntimeFailure(input.signal.aborted
+				? normalizeProviderAgentLoopFailure(error, input.signal)
+				: error instanceof CompactionProviderError ? error.failure
+					: error instanceof ProviderFailure ? providerFailureToRuntimeFailure(error, {
+						errorContextVersion: 1, scope: { kind: "request", id: checkpointId },
+					}) : normalizeProviderAgentLoopFailure(error, input.signal));
 			const owned = recordModelEvent({ type: "failure", failure, usage: usage() });
 			clearCheckpoint();
 			input.emit({ ...this.#completedEvent(
-				input,
-				"failed",
+				input, checkpointId,
+				!owned || failure.code === "interrupted" ? "interrupted" : "failed",
 				beforeTokens,
 				beforeTokens,
 				startedAt,
@@ -293,50 +272,20 @@ export class CompactionCoordinator {
 			), failure, usage: usage() };
 		}
 		this.#failpoint("compaction_after_summary_request");
+		if (input.signal.aborted) {
+			clearCheckpoint();
+			return interruptedResult();
+		}
 
-		const summaryItem = { type: "user", text: `[compact-summary]\n${summary}` } as const;
-		const retainedConversation = Object.freeze([
-			...selection.exactTail,
+		const storedConversation = Object.freeze([
+			...selection.retainedUsers,
+			compactionSummaryItem(summary),
 			...selection.freshSuffix,
 		]);
-		const storedConversation = Object.freeze(selection.summaryPlacement === "after_retained"
-			? [...retainedConversation, summaryItem]
-			: [summaryItem, ...retainedConversation]);
-		let rehydration: readonly RehydratedFile[];
-		try {
-			rehydration = isActiveTurnCompaction(input.source)
-				? Object.freeze([])
-				: await this.#rehydrate(rawHistory, selection.exactTail, input.signal);
-			assertNotAborted(input.signal);
-		} catch (error) {
-			clearCheckpoint();
-			if (!input.signal.aborted && !isAbortError(error)) throw error;
-			input.emit(this.#completedEvent(input, "failed", beforeTokens, beforeTokens, startedAt));
-			return result("interrupted", input.conversation, beforeTokens);
-		}
-		const rehydrationInsertionIndex = selection.summaryPlacement === "after_retained"
-			? 0
-			: storedConversation.length - selection.freshSuffix.length;
-		const providerConversation = injectRehydration(
-			storedConversation,
-			rehydration,
-			rehydrationInsertionIndex,
-		);
-		const afterTokens = baseTokens + countItems(this.#tokenCounter, providerConversation);
-		const savingsRatio = beforeTokens === 0 ? 0 : (beforeTokens - afterTokens) / beforeTokens;
-		if (savingsRatio < (this.#options.minSavingsRatio ?? 0)) {
-			if (!clearCheckpoint()) {
-				return interruptedResult();
-			}
-			input.emit(this.#completedEvent(
-				input,
-				"skipped",
-				beforeTokens,
-				beforeTokens,
-				startedAt,
-			));
-			return { ...result("skipped", input.conversation, beforeTokens), usage: usage() };
-		}
+		const rehydration: readonly RehydratedFile[] = Object.freeze([]);
+		const providerConversation = storedConversation;
+		const afterTokens = baseTokens + countConversationTokens(this.#tokenCounter, providerConversation);
+		assertNotAborted(input.signal);
 
 		const replacementMessages = storedConversation.map(toStoredMessage);
 		const replacementHash = hashItems(storedConversation);
@@ -349,7 +298,7 @@ export class CompactionCoordinator {
 			inputHash,
 			replacementHash,
 			replacementMessages,
-			retainedTailMessages: selection.exactTail.map(toStoredMessage),
+			retainedTailMessages: selection.retainedUsers.map(toStoredMessage),
 			freshSuffixCount: selection.freshSuffix.length,
 			rehydration,
 			status: "completed",
@@ -367,7 +316,7 @@ export class CompactionCoordinator {
 		if (!committed) return interruptedResult();
 
 		input.emit({ ...this.#completedEvent(
-			input,
+			input, checkpointId,
 			"compressed",
 			beforeTokens,
 			afterTokens,
@@ -422,57 +371,18 @@ export class CompactionCoordinator {
 		freshItemIds: ReadonlySet<string>,
 		source: CompactionSource,
 	): CompactionSelection {
-		if (isActiveTurnCompaction(source)) {
-			// Completed tool phases can be summarized; keep real user intent exact for continuation.
-			return Object.freeze({
-				summaryItems: conversation,
-				exactTail: Object.freeze([]),
-				freshSuffix: retainRecentUserMessages(
-					conversation,
-					this.#tokenCounter,
-					this.#options.tailMaxTokens,
-				),
-				summaryPlacement: "after_retained",
-			});
-		}
-		const freshCount = this.#freshSuffixCount(freshItemIds);
-		if (freshCount > conversation.length) {
-			throw new RangeError("fresh suffix exceeds provider conversation");
-		}
+		// A new turn has not executed yet: compact prior history, then append its fresh input.
+		// Manual and in-turn compaction summarize the complete active window.
+		const freshCount = source === "pre_turn" ? this.#freshSuffixCount(freshItemIds) : 0;
+		if (freshCount > conversation.length) throw new RangeError("fresh suffix exceeds provider conversation");
 		const priorLength = conversation.length - freshCount;
-		const prior = conversation.slice(0, priorLength);
-		const freshSuffix = conversation.slice(priorLength);
-		const completed = completedTurns(prior);
-		let retained = this.#options.tailTurns === 0
-			? []
-			: completed.slice(-this.#options.tailTurns);
-		while (retained.length > 1 && countTurns(this.#tokenCounter, retained)
-			> this.#options.tailMaxTokens) {
-			retained = retained.slice(1);
-		}
-		if (retained.length === 0) {
-			return Object.freeze({
-				summaryItems: prior,
-				exactTail: Object.freeze([]),
-				freshSuffix,
-				summaryPlacement: "before_retained",
-			});
-		}
-		const firstTailIndex = retained[0]!.startIndex;
-		if (firstTailIndex === 0) {
-			return Object.freeze({
-				summaryItems: Object.freeze([]),
-				exactTail: retained.flatMap((turn) => [turn.user, turn.assistant]),
-				freshSuffix,
-				summaryPlacement: "before_retained",
-			});
-		}
-		return Object.freeze({
-			summaryItems: prior.slice(0, firstTailIndex),
-			exactTail: Object.freeze(retained.flatMap((turn) => [turn.user, turn.assistant])),
-			freshSuffix,
-			summaryPlacement: "before_retained",
-		});
+		const summaryItems = conversation.slice(0, priorLength);
+		return {
+			summaryItems,
+			retainedUsers: retainCompactionUserMessages(summaryItems, this.#tokenCounter, this.#options.retainedUserMaxTokens)
+				.slice(-Math.max(1, TRANSCRIPT_EVENT_MAX_BATCH_ITEMS - freshCount - 1)),
+			freshSuffix: conversation.slice(priorLength),
+		};
 	}
 
 	#freshSuffixCount(freshItemIds: ReadonlySet<string>): number {
@@ -492,50 +402,10 @@ export class CompactionCoordinator {
 		return projectedHistoryItemCount(history.slice(firstFreshIndex));
 	}
 
-	async #rehydrate(
-		history: readonly Readonly<Record<string, unknown>>[],
-		tail: readonly CanonicalConversationItem[],
-		signal: AbortSignal,
-	): Promise<readonly RehydratedFile[]> {
-		const candidates = fileCandidates(history);
-		const tailText = renderItems(tail);
-		let remaining = this.#options.rehydrationMaxTotalTokens;
-		const files: RehydratedFile[] = [];
-		for (const candidate of candidates) {
-			if (files.length >= this.#options.rehydrationMaxFiles || remaining <= 0) break;
-			assertNotAborted(signal);
-			const normalizedPath = candidate.path.replaceAll("\\", "/").replace(/^\.\//, "");
-			if (isExcludedRehydrationPath(normalizedPath)) continue;
-			let content: string;
-			try {
-				const target = await resolveReadableWorkspaceFile(
-					this.#options.workspaceRoot,
-					normalizedPath,
-				);
-				const bytes = await readFile(target);
-				if (bytes.length > MAX_REHYDRATION_FILE_BYTES || bytes.includes(0)) continue;
-				content = new TextDecoder("utf-8", { fatal: true }).decode(bytes).trim();
-			} catch {
-				continue;
-			}
-			if (!content || tailText.includes(content)) continue;
-			const budget = Math.min(this.#options.rehydrationMaxItemTokens, remaining);
-			const bounded = truncateToTokens(content, budget, this.#tokenCounter);
-			if (!bounded.content || bounded.tokens === 0) continue;
-			files.push(Object.freeze({
-				path: normalizedPath,
-				content: bounded.content,
-				tokens: bounded.tokens,
-				truncated: bounded.truncated,
-			}));
-			remaining -= bounded.tokens;
-		}
-		return Object.freeze(files);
-	}
-
 	#completedEvent(
 		input: CompactInput,
-		status: "compressed" | "skipped" | "failed",
+		operationId: string,
+		status: "compressed" | "skipped" | "failed" | "interrupted",
 		beforeTokens: number,
 		afterTokens: number,
 		startedAt: number,
@@ -543,6 +413,7 @@ export class CompactionCoordinator {
 		const finishedAt = this.#options.monotonicClock?.() ?? performance.now();
 		return {
 			type: "compaction_completed",
+			operationId,
 			clientTurnId: input.clientTurnId,
 			source: input.source,
 			status,
@@ -554,138 +425,16 @@ export class CompactionCoordinator {
 	}
 }
 
-class CompactionSummaryError extends Error {}
-
 function validateOptions(options: CompactionCoordinatorOptions): CompactionCoordinatorOptions {
 	positiveSafeInteger(options.tokenLimit, "tokenLimit");
 	nonNegativeSafeInteger(options.reservedOutputTokens, "reservedOutputTokens");
 	if (options.reservedOutputTokens >= options.tokenLimit) {
 		throw new RangeError("reservedOutputTokens must be below tokenLimit");
 	}
-	nonNegativeSafeInteger(options.tailTurns, "tailTurns");
-	nonNegativeSafeInteger(options.tailMaxTokens, "tailMaxTokens");
-	positiveSafeInteger(options.summaryMaxTokens, "summaryMaxTokens");
-	nonNegativeSafeInteger(options.rehydrationMaxFiles, "rehydrationMaxFiles");
-	nonNegativeSafeInteger(options.rehydrationMaxItemTokens, "rehydrationMaxItemTokens");
-	nonNegativeSafeInteger(options.rehydrationMaxTotalTokens, "rehydrationMaxTotalTokens");
-	if (options.rehydrationMaxItemTokens > options.rehydrationMaxTotalTokens) {
-		throw new RangeError("rehydrationMaxItemTokens cannot exceed total tokens");
-	}
-	for (const [name, value] of [
-		["triggerRatio", options.triggerRatio ?? 1],
-		["minSavingsRatio", options.minSavingsRatio ?? 0],
-	] as const) {
-		if (!Number.isFinite(value) || value < 0 || value > 1) {
-			throw new RangeError(`${name} must be between 0 and 1`);
-		}
-	}
+	if (options.retainedUserMaxTokens !== undefined) nonNegativeSafeInteger(options.retainedUserMaxTokens, "retainedUserMaxTokens");
+	const ratio = options.triggerRatio ?? 1;
+	if (!Number.isFinite(ratio) || ratio < 0 || ratio > 1) throw new RangeError("triggerRatio must be between 0 and 1");
 	return options;
-}
-
-function completedTurns(items: readonly CanonicalConversationItem[]): readonly CompletedTurn[] {
-	const userIndexes = items.flatMap((item, index) => item.type === "user" ? [index] : []);
-	const completed: CompletedTurn[] = [];
-	for (const [offset, startIndex] of userIndexes.entries()) {
-		const endIndex = userIndexes[offset + 1] ?? items.length;
-		const assistant = items.slice(startIndex + 1, endIndex).findLast(
-			(item): item is Extract<CanonicalConversationItem, { readonly type: "assistant" }> =>
-				item.type === "assistant" && Boolean(item.text.trim()),
-		);
-		const user = items[startIndex];
-		if (user?.type === "user" && assistant) {
-			completed.push(Object.freeze({ startIndex, user, assistant }));
-		}
-	}
-	return Object.freeze(completed);
-}
-
-function countTurns(counter: TokenCounter, turns: readonly CompletedTurn[]): number {
-	return turns.reduce(
-		(total, turn) => total + countItems(counter, [turn.user, turn.assistant]),
-		0,
-	);
-}
-
-function countItems(counter: TokenCounter, items: readonly CanonicalConversationItem[]): number {
-	return items.reduce((total, item) => {
-		const providerState = item.type === "assistant" || item.type === "assistant_tool_calls"
-			? item.providerState
-			: undefined;
-		return total + counter.count(renderItem(item))
-			+ (providerState ? countProviderReplayState(counter, providerState) : 0);
-	}, 0);
-}
-
-const OPAQUE_PROVIDER_STATE_KEYS = new Set([
-	"encrypted_content",
-	"encryptedContent",
-	"signature",
-]);
-
-function countProviderReplayState(counter: TokenCounter, state: ProviderReplayState): number {
-	if (state.tokenEstimate !== undefined
-		&& Number.isSafeInteger(state.tokenEstimate)
-		&& state.tokenEstimate >= 0) {
-		return state.tokenEstimate;
-	}
-	return counter.count(JSON.stringify(withoutOpaqueProviderState(state.value)));
-}
-
-function withoutOpaqueProviderState(value: unknown): unknown {
-	if (Array.isArray(value)) return value.map(withoutOpaqueProviderState);
-	if (typeof value !== "object" || value === null) return value;
-	return Object.fromEntries(Object.entries(value).flatMap(([key, entry]) => (
-		OPAQUE_PROVIDER_STATE_KEYS.has(key)
-			? []
-			: [[key, withoutOpaqueProviderState(entry)]]
-	)));
-}
-
-function isActiveTurnCompaction(source: CompactionSource): boolean {
-	return source === "mid_turn" || source === "context_overflow";
-}
-
-function retainRecentUserMessages(
-	items: readonly CanonicalConversationItem[],
-	counter: TokenCounter,
-	maxTokens: number,
-): readonly CanonicalConversationItem[] {
-	const userMessages = items.filter(
-		(item): item is Extract<CanonicalConversationItem, { readonly type: "user" }> =>
-			item.type === "user" && !item.text.startsWith("[compact-summary]\n"),
-	);
-	if (userMessages.length === 0) return Object.freeze([]);
-
-	let remaining = maxTokens;
-	const retained: CanonicalConversationItem[] = [];
-	for (const message of userMessages.toReversed()) {
-		const tokens = countItems(counter, [message]);
-		if (retained.length === 0 || tokens <= remaining) {
-			retained.push(message);
-			remaining = Math.max(0, remaining - tokens);
-		}
-		if (remaining === 0) break;
-	}
-	return Object.freeze(retained.reverse());
-}
-
-function renderItems(items: readonly CanonicalConversationItem[]): string {
-	return items.map(renderItem).join("\n");
-}
-
-function renderItem(item: CanonicalConversationItem): string {
-	switch (item.type) {
-		case "user":
-		case "assistant":
-			return `${item.type}: ${item.text}`;
-		case "context":
-			return `context ${item.metadata.kind}: ${item.text}`;
-		case "assistant_tool_calls":
-			return `assistant: ${item.text}\n${item.calls.map((call) =>
-				`tool_call ${call.name} ${call.callId} ${call.argumentsJson}`).join("\n")}`;
-		case "tool_result":
-			return `tool ${item.toolName} ${item.callId}: ${item.output}`;
-	}
 }
 
 function toStoredMessage(item: CanonicalConversationItem): Readonly<Record<string, unknown>> {
@@ -806,50 +555,6 @@ function checkpointPayload(input: {
 	};
 }
 
-function fileCandidates(
-	history: readonly Readonly<Record<string, unknown>>[],
-): readonly FileCandidate[] {
-	const successfulCalls = new Set<string>();
-	for (const item of history) {
-		if (item.type !== "tool_result") continue;
-		const metadata = recordValue(item.metadata);
-		if (metadata.success !== false) {
-			const callId = stringValue(item.call_id);
-			if (callId) successfulCalls.add(callId);
-		}
-	}
-	const edits: FileCandidate[] = [];
-	const reads: FileCandidate[] = [];
-	for (const [sequence, item] of history.entries()) {
-		const toolName = stringValue(item.tool_name);
-		const metadata = recordValue(item.metadata);
-		if (item.type === "tool_result" && ["Edit", "Write", "Patch"].includes(toolName ?? "")) {
-			const changes = Array.isArray(metadata.file_changes) ? metadata.file_changes : [];
-			for (const change of changes) {
-				const path = stringValue(recordValue(change).path);
-				if (path) edits.push({ path, kind: "edit", sequence });
-			}
-		}
-		if (item.type === "tool_call" && toolName === "Read") {
-			const callId = stringValue(item.call_id);
-			if (!callId || !successfulCalls.has(callId)) continue;
-			const path = stringValue(recordValue(metadata.arguments).file_path);
-			if (path) reads.push({ path, kind: "read", sequence });
-		}
-	}
-	const ordered = [
-		...edits.sort((left, right) => right.sequence - left.sequence),
-		...reads.sort((left, right) => right.sequence - left.sequence),
-	];
-	const seen = new Set<string>();
-	return Object.freeze(ordered.filter((candidate) => {
-		const normalized = candidate.path.replaceAll("\\", "/");
-		if (seen.has(normalized)) return false;
-		seen.add(normalized);
-		return true;
-	}));
-}
-
 function projectedHistoryItemCount(
 	items: readonly Readonly<Record<string, unknown>>[],
 ): number {
@@ -872,54 +577,6 @@ function projectedHistoryItemCount(
 		}
 	}
 	return count;
-}
-
-function injectRehydration(
-	conversation: readonly CanonicalConversationItem[],
-	files: readonly RehydratedFile[],
-	insertionIndex: number,
-): readonly CanonicalConversationItem[] {
-	if (files.length === 0) return conversation;
-	if (!Number.isSafeInteger(insertionIndex)
-		|| insertionIndex < 0
-		|| insertionIndex > conversation.length) {
-		throw new RangeError("rehydration insertion index is invalid");
-	}
-	const text = [
-		"[Compaction file rehydration]",
-		...files.flatMap((file) => [
-			`### ${file.path}`,
-			"```text",
-			file.content,
-			"```",
-		]),
-	].join("\n");
-	return Object.freeze([
-		...conversation.slice(0, insertionIndex),
-		{ type: "user", text },
-		...conversation.slice(insertionIndex),
-	]);
-}
-
-function truncateToTokens(
-	content: string,
-	maxTokens: number,
-	counter: TokenCounter,
-): { readonly content: string; readonly tokens: number; readonly truncated: boolean } {
-	if (maxTokens <= 0) return { content: "", tokens: 0, truncated: false };
-	let bounded = content;
-	let tokens = counter.count(bounded);
-	let truncated = false;
-	while (tokens > maxTokens && bounded) {
-		truncated = true;
-		bounded = bounded.slice(0, Math.max(1, Math.trunc(bounded.length * 0.8)));
-		tokens = counter.count(bounded);
-	}
-	return { content: bounded.trimEnd(), tokens, truncated };
-}
-
-function isExcludedRehydrationPath(path: string): boolean {
-	return EXCLUDED_REHYDRATION_PREFIXES.some((prefix) => path.startsWith(prefix));
 }
 
 function result(
@@ -953,20 +610,12 @@ function parseArguments(value: string): Readonly<Record<string, unknown>> {
 	}
 }
 
-function recordValue(value: unknown): Readonly<Record<string, unknown>> {
-	return isRecord(value) ? value : {};
-}
-
 function stringValue(value: unknown): string | undefined {
 	return typeof value === "string" && value ? value : undefined;
 }
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isAbortError(value: unknown): boolean {
-	return value instanceof Error && value.name === "AbortError";
 }
 
 function positiveSafeInteger(value: number, name: string): void {

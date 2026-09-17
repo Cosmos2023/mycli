@@ -2,6 +2,26 @@
 export type GatewayEventNotification =
   | {
       jsonrpc: "2.0";
+      method: "hook.started";
+      params: Hook;
+    }
+  | {
+      jsonrpc: "2.0";
+      method: "hook.completed";
+      params: Hook1;
+    }
+  | {
+      jsonrpc: "2.0";
+      method: "mcp.elicitation.respond";
+      params: McpElicitation;
+    }
+  | {
+      jsonrpc: "2.0";
+      method: "mcp.elicitation.request";
+      params: McpElicitationRequest;
+    }
+  | {
+      jsonrpc: "2.0";
       method: "extension.updated";
       params: Extension;
     }
@@ -280,6 +300,8 @@ export type ErrorReasonDetails =
       reason:
         | "provider.invalid_request"
         | "provider.context_limit"
+        | "provider.output_limit"
+        | "provider.empty_response"
         | "provider.rate_limited"
         | "provider.quota_exceeded"
         | "provider.overloaded"
@@ -355,6 +377,7 @@ export type ErrorReasonDetails =
         | "runtime.retry_exhausted"
         | "runtime.tool_budget_exceeded"
         | "runtime.continuation_unavailable"
+        | "runtime.compaction_summary_too_long"
         | "runtime.effect_outcome_unknown"
         | "runtime.internal_error";
       details?: RuntimeErrorDetails;
@@ -531,6 +554,28 @@ export type ShellOutput = Shell & {
 };
 export type ShellRemoved = Shell;
 export type ShellStarted = Shell;
+/**
+ * @maxItems 8
+ */
+export type SkillReferences =
+  | []
+  | [SkillReference]
+  | [SkillReference, SkillReference]
+  | [SkillReference, SkillReference, SkillReference]
+  | [SkillReference, SkillReference, SkillReference, SkillReference]
+  | [SkillReference, SkillReference, SkillReference, SkillReference, SkillReference]
+  | [SkillReference, SkillReference, SkillReference, SkillReference, SkillReference, SkillReference]
+  | [SkillReference, SkillReference, SkillReference, SkillReference, SkillReference, SkillReference, SkillReference]
+  | [
+      SkillReference,
+      SkillReference,
+      SkillReference,
+      SkillReference,
+      SkillReference,
+      SkillReference,
+      SkillReference,
+      SkillReference
+    ];
 export type ProviderAttemptRecord = ProviderAttemptFields & {
   eventId: string;
   attemptId: string;
@@ -545,6 +590,67 @@ export type ProviderAttemptRecord = ProviderAttemptFields & {
   [k: string]: any;
 };
 
+export interface Hook {
+  operation_id: string;
+  turn_id: string;
+  point: string;
+  status?: "completed" | "failed" | "denied" | "interrupted";
+  message?: string;
+  [k: string]: any;
+}
+export interface Hook1 {
+  operation_id: string;
+  turn_id: string;
+  point: string;
+  status: "completed" | "failed" | "denied" | "interrupted";
+  message?: string;
+  [k: string]: any;
+}
+export interface McpElicitation {
+  request_id: string;
+  session_id: string;
+  generation?: number;
+  turn_id?: string;
+  child_session_id?: string;
+  action: "accept" | "decline" | "cancel";
+}
+export interface McpElicitationRequest {
+  request_id: string;
+  session_id: string;
+  turn_id?: string;
+  generation?: number;
+  child_session_id?: string;
+  server_id: string;
+  mode: "form" | "url";
+  message: string;
+  url?: string;
+  /**
+   * @maxItems 32
+   */
+  fields: McpElicitationField[];
+}
+export interface McpElicitationField {
+  name: string;
+  label: string;
+  description?: string;
+  type: "string" | "number" | "integer" | "boolean" | "array";
+  required: boolean;
+  /**
+   * @maxItems 64
+   */
+  options?: {
+    value: string;
+    label: string;
+  }[];
+  defaultValue?: string | number | boolean | string[];
+  minimum?: number;
+  maximum?: number;
+  minLength?: number;
+  maxLength?: number;
+  minItems?: number;
+  maxItems?: number;
+  format?: "email" | "uri" | "date" | "date-time";
+}
 export interface Extension {
   version: number;
 }
@@ -746,7 +852,7 @@ export interface Compaction {
   duration_s: number;
   max_tokens: number;
   source: string;
-  status: "compressed" | "skipped" | "failed";
+  status: "compressed" | "skipped" | "failed" | "interrupted";
   [k: string]: any;
 }
 export interface Failure {
@@ -805,6 +911,8 @@ export interface ProviderErrorDetails {
   provider_code?: string;
   provider_type?: string;
   retry_after_seconds?: number;
+  finish_reason?: "length" | "stop" | "toolUse" | "error" | "aborted";
+  max_output_tokens?: number;
 }
 export interface CapabilityErrorDetails {
   provider?: string;
@@ -856,6 +964,8 @@ export interface RuntimeErrorDetails {
   request_retries?: number;
   stream_retries?: number;
   omitted_causes?: number;
+  summary_tokens?: number;
+  summary_max_tokens?: number;
   exit_code?: number;
   signal?: string;
 }
@@ -1116,6 +1226,7 @@ export interface Shell {
   [k: string]: any;
 }
 export interface Status {
+  goal?: SessionGoal | null;
   context_window: {
     max_tokens?: number;
     source?: string;
@@ -1152,6 +1263,7 @@ export interface Status {
       target_turn_id?: string | null;
       text?: string;
       updated_at?: string;
+      skill_references?: SkillReferences;
       [k: string]: any;
     }[];
     pending_steers?: {
@@ -1172,6 +1284,7 @@ export interface Status {
       target_turn_id?: string | null;
       text?: string;
       updated_at?: string;
+      skill_references?: SkillReferences;
       [k: string]: any;
     }[];
     rejected_steers?: {
@@ -1192,6 +1305,7 @@ export interface Status {
       target_turn_id?: string | null;
       text?: string;
       updated_at?: string;
+      skill_references?: SkillReferences;
       [k: string]: any;
     }[];
     [k: string]: any;
@@ -1209,6 +1323,7 @@ export interface Status {
     message?: string;
     source?: string;
     text?: string;
+    skill_references?: SkillReferences;
     [k: string]: any;
   }[];
   queued_steering: any[];
@@ -1223,6 +1338,7 @@ export interface Status {
     message?: string;
     source?: string;
     text?: string;
+    skill_references?: SkillReferences;
     [k: string]: any;
   }[];
   session_id: string;
@@ -1234,6 +1350,26 @@ export interface Status {
   turn_running: boolean;
   workspace: string;
   [k: string]: any;
+}
+export interface SessionGoal {
+  goal_id: string;
+  revision: number;
+  objective: string;
+  status: "active" | "paused" | "blocked" | "usage_limited" | "budget_limited" | "complete";
+  token_budget: number | null;
+  tokens_used: number;
+  elapsed_ms: number;
+  rounds_started: number;
+  audit_turns: number;
+  created_at: string;
+  updated_at: string;
+  stop_reason: string | null;
+  usage_incomplete: boolean;
+}
+export interface SkillReference {
+  id: string;
+  name: string;
+  revision: string;
 }
 export interface Status1 {
   session_id?: string;
@@ -1466,6 +1602,7 @@ export interface Turn3 {
   [k: string]: any;
 }
 export interface Turn4 {
+  interruption_reason?: "user" | "goal_budget" | "goal_usage_unavailable" | "goal_changed" | "goal_stopped";
   error_context?: ErrorContextV1;
   error_context_invalid?: true;
   session_id?: string;
@@ -1504,6 +1641,7 @@ export interface TurnQueue {
     message?: string;
     source?: string;
     text?: string;
+    skill_references?: SkillReferences;
     [k: string]: any;
   }[];
   has_pending_input?: boolean;
@@ -1526,6 +1664,7 @@ export interface TurnQueue {
       target_turn_id?: string | null;
       text?: string;
       updated_at?: string;
+      skill_references?: SkillReferences;
       [k: string]: any;
     }[];
     pending_steers?: {
@@ -1546,6 +1685,7 @@ export interface TurnQueue {
       target_turn_id?: string | null;
       text?: string;
       updated_at?: string;
+      skill_references?: SkillReferences;
       [k: string]: any;
     }[];
     rejected_steers?: {
@@ -1566,6 +1706,7 @@ export interface TurnQueue {
       target_turn_id?: string | null;
       text?: string;
       updated_at?: string;
+      skill_references?: SkillReferences;
       [k: string]: any;
     }[];
     [k: string]: any;
@@ -1583,11 +1724,13 @@ export interface TurnQueue {
     message?: string;
     source?: string;
     text?: string;
+    skill_references?: SkillReferences;
     [k: string]: any;
   }[];
   [k: string]: any;
 }
 export interface Turn5 {
+  source?: "user" | "goal";
   session_id?: string;
   generation?: number;
   client_turn_id: string;

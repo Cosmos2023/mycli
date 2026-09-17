@@ -1,6 +1,6 @@
 import { existsSync, statSync } from "node:fs";
 import Database from "better-sqlite3";
-import { SCHEMA_V12_VERSION, SCHEMA_V13_VERSION, SCHEMA_V14_VERSION } from "../schema.ts";
+import { SCHEMA_V12_VERSION, SCHEMA_V13_VERSION, SCHEMA_V14_VERSION, SCHEMA_V15_VERSION } from "../schema.ts";
 import { StorageFailure } from "./session-store.ts";
 import type { SQLiteSessionStoreOptions } from "./sqlite-session-store.ts";
 import { SQLiteTranscriptEventRepository } from "../transcript/transcript-event-repository.ts";
@@ -16,14 +16,14 @@ export function openRuntimeSessionStore(
 	if (schema === "empty") {
 		return new SQLiteTranscriptEventRepository({
 			...options,
-			initializeSchemaVersion: SCHEMA_V14_VERSION,
+			initializeSchemaVersion: SCHEMA_V15_VERSION,
 		});
 	}
-	if (schema === SCHEMA_V12_VERSION || schema === SCHEMA_V13_VERSION || schema === SCHEMA_V14_VERSION) {
-		return new SQLiteTranscriptEventRepository({ ...options, upgradeProviderAttempts: true, upgradeErrorContexts: true });
+	if (schema === SCHEMA_V12_VERSION || schema === SCHEMA_V13_VERSION || schema === SCHEMA_V14_VERSION || schema === SCHEMA_V15_VERSION) {
+		return new SQLiteTranscriptEventRepository({ ...options, upgradeProviderAttempts: true, upgradeErrorContexts: true, upgradeGoals: true });
 	}
 	throw new StorageFailure("unsupported session schema version", {
-		expected_version: SCHEMA_V14_VERSION,
+		expected_version: SCHEMA_V15_VERSION,
 		actual_version: schema,
 	});
 }

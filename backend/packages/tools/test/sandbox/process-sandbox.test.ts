@@ -63,15 +63,14 @@ test("domain-constrained launch without a proxy preserves filesystem access but 
 	assert.equal(linux.args.includes("--unshare-net"), true);
 
 	const helper = "C:\\mycli\\mycli-windows-sandbox.exe";
-	const windows = prepareSandboxedProcess(["cmd.exe", "/c", "echo ok"], {
+	assert.throws(() => prepareSandboxedProcess(["cmd.exe", "/c", "echo ok"], {
 		...policy,
 		workspaceRoot: workspace,
 		cwd: outside,
 	}, {
 		...probes("win32", [helper]),
 		windowsHelperPath: helper,
-	});
-	assert.equal(JSON.parse(windows.args[1] ?? "").network, "disabled");
+	}), { kind: "sandbox_unavailable" });
 });
 
 test("macOS admits only the host-owned proxy port for a constrained policy", async (t) => {
@@ -89,7 +88,7 @@ test("macOS admits only the host-owned proxy port for a constrained policy", asy
 		assert.throws(() => prepareSandboxedProcess(["/usr/bin/true"], profile,
 			probes("darwin", ["/usr/bin/sandbox-exec"]), { port: invalid }), ProcessSandboxError);
 	}
-	for (const platform of ["linux", "win32"] as const) {
+	for (const platform of ["linux"] as const) {
 		assert.throws(() => prepareSandboxedProcess(["command"], profile,
 			probes(platform, []), { port: 40_000 }), { kind: "network_proxy_unavailable" });
 	}
@@ -120,6 +119,25 @@ test("macOS uses the fixed seatbelt executable and protects repository metadata"
 	}
 	const profile = launch.args[launch.args.indexOf("-p") + 1];
 	assert.match(profile ?? "", /deny file-write\*/u);
+	assert.match(profile ?? "", /\(allow network-outbound\)/u);
+});
+
+test("Windows proxy authority is an explicit endpoint and absent endpoints stay offline", async (t) => {
+	const workspace = await temporaryWorkspace(t);
+	const profile = { ...executionPolicy("workspace", workspace),
+		networkDomains: ["api.example.com"], workspaceRoot: workspace, cwd: workspace };
+	const helper = "C:\\mycli\\mycli-windows-sandbox.exe";
+	const options = { ...probes("win32", [helper]), windowsHelperPath: helper };
+	const proxied = prepareSandboxedProcess(["cmd.exe", "/c", "echo ok"], profile, options, { port: 40_000 });
+	assert.equal(JSON.parse(proxied.args[1]!).network_proxy_port, 40_000);
+	assert.equal(JSON.parse(proxied.args[1]!).network, "enabled");
+	const offline = prepareSandboxedProcess(["cmd.exe", "/c", "echo ok"], profile, options);
+	assert.equal(JSON.parse(offline.args[1]!).network, "disabled");
+	assert.equal(Object.hasOwn(JSON.parse(offline.args[1]!), "network_proxy_port"), false);
+	for (const port of [0, -1, 65_536, 1.5, NaN]) {
+		assert.throws(() => prepareSandboxedProcess(["cmd.exe"], profile, options, { port }),
+			{ kind: "network_proxy_unavailable" });
+	}
 });
 
 test("macOS denies protected metadata paths before they exist", async (t) => {
@@ -166,7 +184,7 @@ test("Linux Bubblewrap fixes the base argv, writable bind, metadata protection, 
 		const path = join(canonicalWorkspace, name);
 		assertArgumentWindow(launch.args, ["--ro-bind", path, path]);
 	}
-	assert.equal(launch.args.includes("--unshare-net"), true);
+	assert.equal(launch.args.includes("--unshare-net"), false);
 	assertArgumentWindow(launch.args, ["--chdir", canonicalWorkspace, "--"]);
 	assert.deepEqual(launch.args.slice(-3), ["/bin/sh", "-c", "printf ok"]);
 });
@@ -182,9 +200,10 @@ test("read-only Linux has no writable bind", async (t) => {
 
 	assert.equal(launch.executable, "/bin/bwrap");
 	assert.equal(launch.args.includes("--bind"), false);
+	assert.equal(launch.args.includes("--unshare-net"), true);
 });
 
-test("Windows uses protocol version 1 with the injected restricted-token helper", async (t) => {
+test("Windows uses protocol version 2 with the injected restricted-token helper", async (t) => {
 	const workspace = await temporaryWorkspace(t);
 	const canonicalWorkspace = await realpath(workspace);
 	const helper = "C:\\mycli\\mycli-windows-sandbox.exe";
@@ -202,13 +221,15 @@ test("Windows uses protocol version 1 with the injected restricted-token helper"
 	assert.equal(launch.isolation, "windows_restricted_token");
 	assert.equal(launch.args[0], "--request-json");
 	assert.deepEqual(JSON.parse(launch.args[1] ?? ""), {
-		protocol_version: 1,
+		protocol_version: 2,
 		command: { argv: ["cmd.exe", "/c", "echo ok"] },
 		cwd: canonicalWorkspace,
 		workspace_roots: [canonicalWorkspace],
 		writable_roots: [canonicalWorkspace],
+		denied_read_roots: [],
+		denied_read_globs: [],
 		filesystem: "workspace_write",
-		network: "disabled",
+		network: "enabled",
 		mode: "workspace-write",
 	});
 });
@@ -302,31 +323,31 @@ test("Windows sandbox readiness validates bounded handshake states", async () =>
 
 	assert.equal((await inspect({
 		name: "mycli-windows-sandbox",
-		protocolVersion: 1,
+		protocolVersion: 2,
 		setupComplete: false,
 		sandboxReady: false,
 	})).state, "setup_required");
 	assert.equal((await inspect({
 		name: "mycli-windows-sandbox",
-		protocolVersion: 1,
+		protocolVersion: 2,
 		setupComplete: true,
 		sandboxReady: false,
 	})).code, "enforcement_unavailable");
 	assert.equal((await inspect({
 		name: "mycli-windows-sandbox",
-		protocolVersion: 1,
+		protocolVersion: 2,
 		setupComplete: true,
 		sandboxReady: true,
 	})).state, "ready");
 	assert.equal((await inspect({
 		name: "other-helper",
-		protocolVersion: 1,
+		protocolVersion: 2,
 		setupComplete: true,
 		sandboxReady: true,
 	})).code, "handshake_failed");
 	assert.equal((await inspect({
 		name: "mycli-windows-sandbox",
-		protocolVersion: 1,
+		protocolVersion: 2,
 		setupComplete: false,
 		sandboxReady: true,
 	})).code, "handshake_failed");

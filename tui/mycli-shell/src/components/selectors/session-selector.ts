@@ -1,15 +1,16 @@
-import { Container, getKeybindings, Input, Spacer, Text, TruncatedText, type TUI, truncateToWidth, visibleWidth } from "../../tui-core/index.ts";
+import { Container, getKeybindings, matchesKey, Input, Spacer, Text, TruncatedText, type TUI, truncateToWidth, visibleWidth } from "../../tui-core/index.ts";
 import type { MycliShellSession } from "../../model.ts";
 import { uiGlyphs } from "../../theme/terminal-style.ts";
 import { theme } from "../../theme/theme.ts";
 import { DynamicBorder } from "../shared/dynamic-border.ts";
-import { keyHint } from "../shared/keybinding-hints.ts";
+import { keyHint, rawKeyHint } from "../shared/keybinding-hints.ts";
 import { filterSessions, sessionDisplayTitle, type SessionNameFilter, type SessionScope, type SessionSortMode } from "./session-selector-search.ts";
 
 export type SessionSelectorOptions = {
 	tui: TUI;
 	sessions: MycliShellSession[];
 	currentWorkspace?: string;
+	onPreview?: (session: MycliShellSession) => void;
 	onSelect: (session: MycliShellSession) => void;
 	onCancel: () => void;
 };
@@ -32,7 +33,7 @@ export class SessionSelectorComponent extends Container {
 	private readonly onCancelCallback: () => void;
 	private readonly tui: TUI;
 
-	constructor(options: SessionSelectorOptions) {
+	constructor(private readonly options: SessionSelectorOptions) {
 		super();
 		this.tui = options.tui;
 		this.sessions = [...options.sessions];
@@ -85,6 +86,7 @@ export class SessionSelectorComponent extends Container {
 	handleInput(data: string): void {
 		if (this.submitting) return;
 		const kb = getKeybindings();
+		if (matchesKey(data, "ctrl+p")) { const selected = this.filteredSessions[this.selectedIndex]; if (selected && !this.loading) this.options.onPreview?.(selected); return; }
 		if (kb.matches(data, "tui.input.tab")) {
 			this.scope = this.scope === "current" ? "all" : "current";
 			this.filter(this.searchInput.getValue());
@@ -152,6 +154,7 @@ export class SessionSelectorComponent extends Container {
 		const second = truncateToWidth(
 			[
 				keyHint("tui.input.tab", "scope"),
+				...(this.options.onPreview ? [rawKeyHint("ctrl+p", "preview")] : []),
 				theme.fg("muted", `type to search ${uiGlyphs().separator} re:<pattern> regex ${uiGlyphs().separator} "phrase" exact`),
 				theme.fg("muted", `path ${pathState}`),
 			].join(theme.fg("muted", ` ${uiGlyphs().separator} `)),

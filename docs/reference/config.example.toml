@@ -38,6 +38,10 @@
 # Allowed: "compact", "normal", "detailed"
 # tui_subagent_density = "normal"
 
+# Notifies when unfocused and a turn finishes or needs your attention
+# Allowed: true, false
+# tui_terminal_notifications = true
+
 # Shows compact progress while an agent turn is running
 # Allowed: true, false
 # tui_terminal_progress = true
@@ -58,22 +62,22 @@
 # Keeps this many prompt tokens free when deciding whether automatic compaction should run.
 # compaction_l4_buffer_tokens = 13000
 
-# Estimates the cost per thousand tokens retained after compaction for savings decisions.
+# Legacy compatibility setting; unused by local context compaction.
 # compaction_l4_carry_cost_per_1k = 0
 
-# Keeps this many recent conversation turns in addition to the generated compaction summary.
+# Legacy compatibility setting; unused by local context compaction.
 # compaction_l4_carry_turns = 1
 
-# Estimates the summary size used by the compaction savings calculation.
+# Legacy compatibility setting; unused by local context compaction.
 # compaction_l4_expected_summary_tokens = 500
 
-# Estimates the input cost per thousand tokens used by compaction economics.
+# Legacy compatibility setting; unused by local context compaction.
 # compaction_l4_input_cost_per_1k = 0
 
-# Requires this minimum estimated savings ratio before optional compaction is accepted.
+# Legacy compatibility setting; unused by local context compaction.
 # compaction_l4_min_savings_ratio = 0
 
-# Estimates the output cost per thousand summary tokens used by compaction economics.
+# Legacy compatibility setting; unused by local context compaction.
 # compaction_l4_output_cost_per_1k = 0
 
 # Selects an optional model override for compaction summaries.
@@ -82,22 +86,22 @@
 # Starts automatic compaction when estimated prompt use reaches this fraction of the active context window.
 # compaction_l4_trigger_ratio = 0.9
 
-# Limits tokens restored from any single recently used file after compaction.
+# Legacy compatibility setting; unused by local context compaction.
 # compaction_rehydration_file_max_item_tokens = 5000
 
-# Limits total file-context tokens restored after compaction.
+# Legacy compatibility setting; unused by local context compaction.
 # compaction_rehydration_file_max_total_tokens = 50000
 
-# Limits how many recently used files are restored after compaction.
+# Legacy compatibility setting; unused by local context compaction.
 # compaction_rehydration_max_files = 5
 
 # Reserves context capacity for the next model response during compaction budgeting.
 # compaction_reserved_output_tokens = 13000
 
-# Caps the token budget for recent turns retained verbatim after compaction.
-# compaction_tail_max_tokens = 8000
+# Caps retained user-message text after compaction (default 20000 tokens); the boundary message is truncated with a marker.
+# compaction_tail_max_tokens = 20000
 
-# Keeps this many recent turns verbatim after compaction.
+# Legacy compatibility setting; unused by local context compaction.
 # compaction_tail_turns = 2
 
 # Sets the prompt-token ceiling used to trigger compaction.
@@ -122,7 +126,7 @@
 # auth_ref = "openai"
 
 # Selects the provider model used for new runtime requests.
-# name = "gpt-5"
+# name = "gpt-5.5"
 
 # Selects the provider wire protocol used for model requests.
 # Allowed: "responses", "chat_completions", "anthropic_messages"

@@ -58,6 +58,13 @@ test("uses the exact Python fallback estimate when encoder loading fails", () =>
 	assert.equal(loads, 1);
 });
 
+test("counts literal tokenizer markers in documents as ordinary text", () => {
+	const counter = new TokenCounter();
+	assert.equal(counter.count("<|endoftext|>"), 7);
+	assert.equal(counter.count("<|endofprompt|>"), 7);
+	assert.equal(counter.count("Document literal: <|endoftext|>"), 10);
+});
+
 test("caches encoder counts without retaining more than the configured bound", () => {
 	let calls = 0;
 	const counter = new TokenCounter({

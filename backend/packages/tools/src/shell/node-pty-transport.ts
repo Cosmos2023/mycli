@@ -1,3 +1,4 @@
+import { setTimeout as delay } from "node:timers/promises";
 import {
 	createProcessController,
 	type ProcessController,
@@ -18,10 +19,15 @@ interface Disposable {
 	dispose(): void;
 }
 
+interface PtyExit {
+	readonly exitCode: number;
+	readonly signal?: number;
+}
+
 interface NodePtyProcess {
 	readonly pid: number;
 	onData(listener: (data: string) => void): Disposable;
-	onExit(listener: (event: { readonly exitCode: number; readonly signal?: number }) => void): Disposable;
+	onExit(listener: (event: PtyExit) => void): Disposable;
 	write(text: string): void;
 	resize(columns: number, rows: number): void;
 	kill(signal?: string): void;
@@ -44,6 +50,7 @@ interface NodePtyModule {
 export interface StartNodePtyTransportOptions {
 	readonly loadNodePty?: () => Promise<NodePtyModule>;
 	readonly processController?: ProcessControllerOptions;
+	readonly startupTimeoutMs?: number;
 }
 
 export async function startNodePtyTransport(
@@ -51,6 +58,10 @@ export async function startNodePtyTransport(
 	options: StartNodePtyTransportOptions = {},
 ): Promise<ShellTransport> {
 	validateRequest(request);
+	const startupTimeoutMs = options.startupTimeoutMs ?? 10_000;
+	if (!Number.isFinite(startupTimeoutMs) || startupTimeoutMs <= 0) {
+		throw new RangeError("PTY startup timeout must be positive and finite");
+	}
 	let nodePty: NodePtyModule;
 	try {
 		nodePty = options.loadNodePty
@@ -72,10 +83,45 @@ export async function startNodePtyTransport(
 	} catch {
 		throw unavailableForPlatform(request.platform);
 	}
-	if (!Number.isSafeInteger(process.pid) || process.pid <= 0) {
+	if (request.platform === "win32" && process.pid === 0) {
+		return await startPendingWindowsPty(process, options, startupTimeoutMs);
+	}
+	if (!hasProcessId(process)) {
+		try { process.kill(); } catch { /* Native startup already failed. */ }
 		throw unavailableForPlatform(request.platform);
 	}
 	return new NodePtyTransport(process, request.platform, options.processController);
+}
+
+async function startPendingWindowsPty(
+	process: NodePtyProcess,
+	options: StartNodePtyTransportOptions,
+	timeoutMs: number,
+): Promise<ShellTransport> {
+	// ConPTY connects asynchronously. Subscribe before waiting so fast commands
+	// retain their first output and exit, including commands that produce no text.
+	const output: string[] = [];
+	let exit: PtyExit | undefined;
+	const dataSubscription = process.onData((data) => output.push(data));
+	const exitSubscription = process.onExit((event) => { exit = event; });
+	const deadline = Date.now() + timeoutMs;
+	try {
+		while (!hasProcessId(process)) {
+			if (exit !== undefined || Date.now() >= deadline) throw unavailableForPlatform("win32");
+			await delay(10);
+		}
+		return new NodePtyTransport(process, "win32", options.processController, output, exit);
+	} catch (error: unknown) {
+		try { process.kill(); } catch { /* Native startup already failed. */ }
+		throw error;
+	} finally {
+		dataSubscription.dispose();
+		exitSubscription.dispose();
+	}
+}
+
+function hasProcessId(process: NodePtyProcess): boolean {
+	return Number.isSafeInteger(process.pid) && process.pid > 0;
 }
 
 class NodePtyTransport implements ShellTransport {
@@ -100,6 +146,8 @@ class NodePtyTransport implements ShellTransport {
 		process: NodePtyProcess,
 		platform: NodeJS.Platform,
 		processController: ProcessControllerOptions | undefined,
+		initialOutput: readonly string[] = [],
+		initialExit?: PtyExit,
 	) {
 		this.kind = platform === "win32" ? "windows_conpty" : "unix_pty";
 		this.pid = process.pid;
@@ -125,6 +173,8 @@ class NodePtyTransport implements ShellTransport {
 		});
 		this.#dataSubscription = process.onData(this.#onData);
 		this.#exitSubscription = process.onExit(this.#onExit);
+		for (const data of initialOutput) this.#onData(data);
+		if (initialExit) this.#onExit(initialExit);
 	}
 
 	onOutput(listener: (chunk: ShellOutputChunk) => void): () => void {
@@ -204,7 +254,7 @@ class NodePtyTransport implements ShellTransport {
 		for (const listener of this.#outputListeners) listener(chunk);
 	};
 
-	readonly #onExit = (event: { readonly exitCode: number; readonly signal?: number }): void => {
+	readonly #onExit = (event: PtyExit): void => {
 		if (this.#closed || this.#exit !== undefined) return;
 		this.#managedState.exitCode = event.exitCode;
 		const exit = Object.freeze({

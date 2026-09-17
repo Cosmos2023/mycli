@@ -7,11 +7,62 @@ import { createErrorContext, readErrorContext } from "@mycli/contracts";
 import {
 	subagentRunId,
 	TranscriptSnapshotStore,
+	type TranscriptSnapshotCoverage,
 	type TranscriptSnapshotProject,
 	type TranscriptSnapshotV2,
 } from "../../src/index.ts";
 
 const NOW = "2026-08-04T00:00:00.000Z";
+
+test("enriched v2 snapshots round-trip safely during degraded loading", async (t) => {
+	const root = await temporaryDirectory(t);
+	const snapshots = new TranscriptSnapshotStore({ homeDir: root });
+	const expected = enrichedSnapshot();
+	await snapshots.write(expected);
+	const path = snapshots.snapshotPath("s1");
+	await writeFile(path, JSON.stringify({ ...expected,
+		session: { ...expected.session, credential: "private-credential" },
+		last_request: { ...expected.last_request, api_key: "private-key", encrypted_content: "private-reasoning" },
+		coverage: { ...expected.coverage, provider_payload: "private-payload" },
+	}), "utf8");
+	const result = await snapshots.loadOrRebuild("s1", {
+		loadCanonical: () => { throw new Error("sqlite unavailable"); },
+		importLegacy: () => { throw new Error("must not import"); },
+	});
+	assert.equal(result.source, "snapshot_read_only");
+	assert.equal(result.readOnly, true);
+	assert.deepEqual(result.snapshot, expected);
+	assert.doesNotMatch(JSON.stringify(result.snapshot), /private-/u);
+});
+
+test("invalid session, request, or coverage metadata is rejected and rebuilt from SQLite", async (t) => {
+	const root = await temporaryDirectory(t);
+	const snapshots = new TranscriptSnapshotStore({ homeDir: root });
+	const canonical = enrichedSnapshot();
+	const cases = [
+		{ session: { ...canonical.session, summary_count: -1 } },
+		{ session: { ...canonical.session, title: "x".repeat(10_000) } },
+		{ last_request: { ...canonical.last_request, model: [] } },
+		{ last_request: { ...canonical.last_request, provider_step: -1 } },
+		{ last_request: { ...canonical.last_request, model_input_event_count: 0.5 } },
+		...[
+			{ included_events: 2_001 }, { included_items: 2 }, { event_limit: 0 },
+			{ omitted_items_in_window: -1 }, { history_truncated: true }, { truncated_items: 1 },
+			{ first_event_sequence: null }, { last_event_sequence: 0 },
+		].map((coverage) => ({ coverage: { ...canonical.coverage, ...coverage } })),
+	];
+	await snapshots.ensureSessionDirectory("s1");
+	for (const invalid of cases) {
+		await writeFile(snapshots.snapshotPath("s1"), JSON.stringify({ ...canonical, ...invalid }), "utf8");
+		await assert.rejects(() => snapshots.loadOrRebuild("s1", {
+			loadCanonical: () => undefined,
+			importLegacy: () => { throw new Error("must not import"); },
+		}), /session transcript is unavailable/u);
+		const rebuilt = await snapshots.loadOrRebuild("s1", project(canonical));
+		assert.equal(rebuilt.source, "sqlite_rebuild");
+		assert.deepEqual(rebuilt.snapshot, canonical);
+	}
+});
 
 test("snapshot v2 keeps optional error metadata during degraded read-only recovery", async (t) => {
 	const root = await temporaryDirectory(t);
@@ -325,6 +376,24 @@ function snapshot(sessionId: string, text: string): TranscriptSnapshotV2 {
 		created_at: NOW,
 		updated_at: NOW,
 		transcript: [{ id: `${sessionId}:user:1`, type: "user_message", text }],
+	};
+}
+
+function enrichedSnapshot(): TranscriptSnapshotV2 {
+	const coverage: TranscriptSnapshotCoverage = {
+		source: "sqlite", mode: "recent_readable_history", event_limit: 2_000, item_limit: 500,
+		text_limit_chars: 8_000, included_events: 1, included_items: 1, omitted_items_in_window: 0,
+		has_older_events: false, history_truncated: false, truncated_items: 0,
+		first_event_sequence: 1, last_event_sequence: 1,
+	};
+	return {
+		...snapshot("s1", "readable"),
+		session: { thread_id: "s1", title: "Inspect snapshot", status: "active", summary_count: 2,
+			parent_session_id: "parent", fork_point: 3, latest_turn_status: "completed" },
+		last_request: { request_id: "request-1", turn_id: "turn-1", provider_step: 1, created_at: NOW,
+			provider: "openai", protocol: "responses", model: "gpt-test", reasoning_effort: "high",
+			instruction_snapshot_id: "instructions-1", tool_set_snapshot_id: "tools-1", model_input_event_count: 5 },
+		coverage,
 	};
 }
 

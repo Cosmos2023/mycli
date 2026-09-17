@@ -40,6 +40,8 @@ export function visualSettingsWithChoice(
 			return booleanSetting(settings, "hardwareCursor", value);
 		case "clearOnShrink":
 			return booleanSetting(settings, "clearOnShrink", value);
+		case "terminalNotifications":
+			return booleanSetting(settings, "terminalNotifications", value);
 		case "terminalProgress":
 			return booleanSetting(settings, "terminalProgress", value);
 		case "subagentDensity":
@@ -65,7 +67,7 @@ export function visualSettingsWithChoice(
 
 function booleanSetting(
 	settings: MycliShellVisualSettings | undefined,
-	key: "hideThinking" | "hardwareCursor" | "clearOnShrink" | "terminalProgress"
+	key: "hideThinking" | "hardwareCursor" | "clearOnShrink" | "terminalProgress" | "terminalNotifications"
 		| "reducedMotion" | "highContrast",
 	value: string,
 ): MycliShellVisualSettings | null {

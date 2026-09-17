@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { ExecutionPolicy } from "../src/index.ts";
 import {
+	executionPolicy,
 	isPublicIpAddress,
 	normalizePublicUrl,
 	resolvePublicTarget,
@@ -16,6 +17,20 @@ const NETWORK_ENABLED: ExecutionPolicy = Object.freeze({
 	filesystem: "unrestricted",
 	network: "enabled",
 	writableRoots: Object.freeze([]),
+});
+
+test("web_fetch uses the default workspace network policy without a grant", async () => {
+	const requests: string[] = [];
+	const tool = new WebFetchTool({ fetcher: fetcher(async (url) => {
+		requests.push(url.hostname);
+		return response(200, "text/plain", "Workspace networking is available.");
+	}) });
+	const result = await tool.execute({ url: "https://example.com/" },
+		executionOptions(executionPolicy("workspace", process.cwd())));
+
+	assert.equal(result.success, true);
+	assert.deepEqual(requests, ["example.com"]);
+	assert.match(result.modelOutput, /Workspace networking is available\./u);
 });
 
 test("web_fetch refuses network work when policy disables it", async () => {

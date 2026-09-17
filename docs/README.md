@@ -1,5 +1,7 @@
 # mycli Documentation Index
 
+**English** | [简体中文](zh/README.md)
+
 This directory is split by document purpose.
 
 ## Current Architecture
@@ -9,8 +11,10 @@ This directory is split by document purpose.
 - [architecture/configuration-trust-and-provenance.md](./architecture/configuration-trust-and-provenance.md): configuration precedence, workspace trust, provenance, and secret boundaries.
 - [reference/configuration.md](./reference/configuration.md): generated configuration keys, defaults, canonical paths, and compatibility aliases.
 - [reference/config.example.toml](./reference/config.example.toml): generated commented configuration example.
-- [providers.md](./providers.md): first-class provider defaults, compatible endpoints, credentials, rollback, and opt-in live verification.
-- [commands.md](./commands.md): canonical 38-command slash registry, independent integration entries, retired names, and availability.
+- [providers.md](./providers.md): built-in provider defaults, additional catalogs, custom endpoints, credentials, and opt-in live verification. See the [README examples](../README.md#additional-and-custom-providers) for setup.
+- [commands.md](./commands.md): canonical slash registry, independent integration entries, retired names, and availability.
+- [sessions.md](./sessions.md): local storage, resume, fork, recovery, and complete conversation JSONL export with `/export`.
+- [goals.md](./goals.md): explicit objectives, automatic continuation, token budgets, approval boundaries, and recovery.
 - [terminal-accessibility.md](./terminal-accessibility.md): terminal capabilities, custom keymaps, CJK/IME, paste, resize, completion, and non-TTY behavior.
 - [parity/configuration-ux-baseline.md](./parity/configuration-ux-baseline.md): provider-free UX journeys, budgets, privacy rules, and drift gates.
 - [compatibility.md](./compatibility.md): supported Node, platform, config, catalog, session, deprecation, and evidence windows.
@@ -21,6 +25,7 @@ This directory is split by document purpose.
 - [parity/pi-ai-provider-catalog-release-evidence.md](./parity/pi-ai-provider-catalog-release-evidence.md): deterministic, packed, and available live evidence for the curated pi-ai provider expansion.
 - [node-runtime-rollout.md](./node-runtime-rollout.md): M8 Node-only release gates and package rollback.
 - [troubleshooting.md](./troubleshooting.md): provider-free diagnosis and common recovery paths.
+- [errors.md](./errors.md): structured error codes, TUI presentation, retry behavior, and recovery guidance.
 - [diagnostics-and-updates.md](./diagnostics-and-updates.md): structured doctor output, privacy boundaries, cached update checks, and dismissal.
 - [node-extensions.md](./node-extensions.md): extension discovery, configuration, approvals, management, and doctor.
 - [node-agent-runtime.md](./node-agent-runtime.md): durable agent threads, coordination tools, permissions, artifacts, recovery, and TUI projection.

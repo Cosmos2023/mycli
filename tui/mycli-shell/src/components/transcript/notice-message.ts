@@ -14,8 +14,8 @@ export class NoticeMessageComponent extends Container {
 		super();
 		const error = message.role === "error";
 		const glyphs = uiGlyphs();
-		const glyph = error ? glyphs.error : glyphs.warning;
-		const color = error ? "error" : "warning";
+		const glyph = error ? glyphs.error : message.role === "warning" ? glyphs.warning : glyphs.bullet;
+		const color = error ? "error" : message.role === "warning" ? "warning" : "muted";
 		this.addChild(new Text(theme.fg(color, `${glyph} ${message.text}`), 1, 0));
 		for (const line of diagnosticLines(message)) {
 			this.addChild(new Text(theme.fg("dim", `  ${glyphs.branch} ${line}`), 1, 0));

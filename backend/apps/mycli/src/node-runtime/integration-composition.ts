@@ -1,38 +1,28 @@
+import { HookBrowserService, configuredHookEnablement, pluginHookIdentity, integrationEnabled } from "@mycli/integrations";
 import { join } from "node:path";
+import type { ExecutionPolicyConstraints } from "@mycli/runtime";
 import type { HookRunnerContract } from "@mycli/core";
 import {
-	builtinSkillRoot,
 	ConfiguredHookRunner,
 	createSkillToolRegistration,
-	defineIntegrationRegistration,
 	discoverHookConfig,
-	discoverMcpConfig,
-	discoverPlugins,
 	pluginBundleContributions,
-	FOLLOWUP_TASK_TOOL_DEFINITION,
-	HookAllowlistStore,
 	HookManager,
-	INTERRUPT_AGENT_TOOL_DEFINITION,
-	InterruptAgentTool,
 	IntegrationLifecycleStack,
-	LIST_AGENTS_TOOL_DEFINITION,
-	ListAgentsTool,
 	McpClient,
 	McpCatalogCache,
 	McpManager,
+	McpRequiredServerError,
+	normalizeIntegrationToolNames,
 	type McpManagerDiscovery,
 	type McpResourceService,
 	type McpServerConfig,
+	type McpElicitationHandler,
 	PluginRuntime,
 	renderSkillCatalog,
-	SEND_AGENT_MESSAGE_TOOL_DEFINITION,
-	SendAgentMessageTool,
-	SkillRegistry,
-	SubagentController,
-	SPAWN_AGENT_TOOL_DEFINITION,
-	SpawnAgentTool,
-	WAIT_AGENT_TOOL_DEFINITION,
-	WaitAgentTool,
+	type SkillRegistry,
+	type ConfiguredHookSpec,
+	SkillManagementService,
 } from "@mycli/integrations";
 import type {
 	CreateSubagentSupervisorOptions,
@@ -51,13 +41,17 @@ import {
 	combinedToolManifest,
 	type BuiltInToolManifest,
 	type CombinedToolManifest,
-	type ToolAdapter,
 } from "@mycli/tools";
 import {
 	pluginSandboxProfile,
+	mcpSandboxProfile,
 	workspaceSandboxProfile,
 } from "./integration-sandbox.ts";
 import { mcpCatalogResources, pluginCatalogResources, type McpCatalogPhase } from "./integration-resource-catalog.ts";
+import { loadRuntimeIntegrationConfiguration, type RuntimeIntegrationConfiguration } from "./integration-configuration.ts";
+
+import { createRuntimeSubagentServices, type RuntimeSubagentServices } from "./runtime-subagent-services.ts";
+import type { SubagentController } from "@mycli/integrations";
 
 type IntegrationCompositionSourceId = "skill" | "mcp" | "plugin" | "subagent";
 
@@ -102,7 +96,13 @@ interface IntegrationComposition {
 	close(): Promise<void>;
 }
 
-interface CreateRuntimeIntegrationCompositionOptions {
+export interface CreateRuntimeIntegrationCompositionOptions {
+	readonly subagentServices?: RuntimeSubagentServices;
+	readonly signal?: AbortSignal;
+	readonly configuration?: RuntimeIntegrationConfiguration;
+	readonly pinConfiguration?: boolean;
+	readonly onMcpElicitation?: McpElicitationHandler;
+	readonly managedExecutionPolicy?: ExecutionPolicyConstraints;
 	readonly disabled?: boolean;
 	readonly builtinManifest: BuiltInToolManifest;
 	readonly workspaceRoot: string;
@@ -140,6 +140,9 @@ type IntegrationStartupStage =
 	| "subagents_ready";
 
 export interface RuntimeIntegrationComposition extends IntegrationComposition {
+	readonly skills?: SkillManagementService;
+	readonly hookManagement?: HookBrowserService;
+	readonly configuration?: RuntimeIntegrationConfiguration;
 	readonly mcpResourceService: McpResourceService;
 	readonly version: number;
 	readonly hookRunner: HookRunnerContract;
@@ -150,6 +153,9 @@ export interface RuntimeIntegrationComposition extends IntegrationComposition {
 	): () => void;
 	publishSubagent(subagent: Readonly<Record<string, unknown>>): void;
 	subscribeExtensions(listener: (version: number) => void): () => void;
+	prepareRun(turnId: string, signal: AbortSignal): Promise<void>;
+	finishRun(turnId: string): void;
+	refreshConfiguration(): Promise<void>;
 	reloadProjectConfiguration(input: {
 		readonly workspaceRoot: string;
 		readonly enabled: boolean;
@@ -200,24 +206,31 @@ export async function createIntegrationComposition(
 	const sources = orderedSources(options.sources);
 	try {
 		for (const source of sources) {
+			controller.signal.throwIfAborted();
 			let contribution: IntegrationCompositionContribution;
 			try {
 				contribution = await source.start(controller.signal);
-			} catch {
+			} catch (error) {
 				await lifecycles.close().catch(() => undefined);
+				if (error instanceof McpRequiredServerError) throw error;
 				throw new Error("integration_start_failed");
 			}
 			contributions.push(contribution);
 			if (contribution.close) {
 				lifecycles.add({ close: (signal) => contribution.close!(signal) });
 			}
+			if (controller.signal.aborted) {
+				await lifecycles.close().catch(() => undefined);
+				controller.signal.throwIfAborted();
+			}
 		}
 
-		const registrations = Object.freeze(contributions.flatMap(
-			(contribution) => [...(contribution.registrations ?? [])],
-		));
+		let registrations: readonly IntegrationRegistration[];
 		let manifest: CombinedToolManifest;
 		try {
+			registrations = normalizeIntegrationToolNames(contributions.flatMap(
+				(contribution) => [...(contribution.registrations ?? [])],
+			), options.builtinManifest.tools.map((tool) => tool.name));
 			manifest = combinedToolManifest(options.builtinManifest, registrations);
 		} catch (error) {
 			await lifecycles.close().catch(() => undefined);
@@ -257,7 +270,12 @@ export async function createRuntimeIntegrationComposition(
 	options: CreateRuntimeIntegrationCompositionOptions,
 ): Promise<RuntimeIntegrationComposition> {
 	if (options.disabled) {
-		const composition = await createIntegrationComposition({ builtinManifest: options.builtinManifest, sources: [] });
+		const composition = await createIntegrationComposition({ builtinManifest: options.builtinManifest,
+			signal: options.signal,
+			sources: options.subagentServices ? [{ id: "subagent", start: async () => ({
+				registrations: options.subagentServices!.registrations,
+			}) }] : [],
+		});
 		return Object.freeze({
 			...composition, version: 1, skillCatalog: "",
 			mcpResourceService: {
@@ -275,11 +293,11 @@ export async function createRuntimeIntegrationComposition(
 			publishSubagent: () => undefined,
 			subscribeExtensions: () => () => undefined,
 			reloadProjectConfiguration: async () => undefined,
+			prepareRun: async (_turnId: string, signal: AbortSignal) => { signal.throwIfAborted(); },
+			finishRun: () => undefined,
+			refreshConfiguration: async () => undefined,
 		});
 	}
-	const subagentListeners = new Set<(
-		subagent: Readonly<Record<string, unknown>>,
-	) => void>();
 	const extensionListeners = new Set<(version: number) => void>();
 	options.onStartupStage?.("integration_discovery_started");
 	let content = await createRuntimeIntegrationContent({
@@ -287,43 +305,23 @@ export async function createRuntimeIntegrationComposition(
 		workspaceRoot: options.workspaceRoot,
 		projectConfigurationEnabled: options.projectConfigurationEnabled !== false,
 		reportStartup: true,
+		configuration: options.configuration,
+		signal: options.signal,
 	});
-	let subagentController: SubagentController | undefined;
-	let subagentComposition: IntegrationComposition;
+	let subagents: RuntimeSubagentServices;
 	try {
-		subagentComposition = await createIntegrationComposition({
-			builtinManifest: options.builtinManifest,
-			...(options.closeTimeoutMs === undefined ? {} : { closeTimeoutMs: options.closeTimeoutMs }),
-			sources: [{
-				id: "subagent",
-				start: async () => {
-					subagentController = new SubagentController({
-						createSupervisor: options.createSubagentSupervisor,
-						parentSessionId: options.parentSessionId,
-						parentTurnId: options.parentTurnId,
-						parentTools: options.parentTools,
-						resolveSpawnContext: options.resolveSubagentSpawnContext,
-						...(options.agentMailbox ? { mailbox: options.agentMailbox } : {}),
-						...(options.resolveAgentRouteContext
-							? { resolveAgentRouteContext: options.resolveAgentRouteContext }
-							: {}),
-						...(options.maxAgentDepth === undefined
-							? {}
-							: { maxAgentDepth: options.maxAgentDepth }),
-					});
-					subagentController.recoverAbandoned("parent runtime restarted");
-					options.onStartupStage?.("subagents_ready");
-					return {
-						registrations: subagentRegistrations(
-							subagentController,
-							options.agentActivity ?? UNAVAILABLE_AGENT_ACTIVITY,
-						),
-						subagents: subagentController,
-						close: () => subagentController?.close() ?? Promise.resolve(),
-					};
-				},
-			}],
+		subagents = options.subagentServices ?? createRuntimeSubagentServices({
+			createSupervisor: options.createSubagentSupervisor,
+			parentSessionId: options.parentSessionId,
+			parentTurnId: options.parentTurnId,
+			parentTools: options.parentTools,
+			resolveSpawnContext: options.resolveSubagentSpawnContext,
+			...(options.agentMailbox ? { mailbox: options.agentMailbox } : {}),
+			...(options.resolveAgentRouteContext ? { resolveAgentRouteContext: options.resolveAgentRouteContext } : {}),
+			...(options.maxAgentDepth === undefined ? {} : { maxAgentDepth: options.maxAgentDepth }),
+			agentActivity: options.agentActivity,
 		});
+		options.onStartupStage?.("subagents_ready");
 	} catch {
 		await content.close().catch(() => undefined);
 		throw new Error("integration_start_failed");
@@ -348,9 +346,14 @@ export async function createRuntimeIntegrationComposition(
 		1,
 		content,
 		skillRegistration,
-		subagentComposition.registrations,
+		subagents.registrations,
 	);
 	let closed = false;
+	const activeRuns = new Set<string>();
+	const configurationController = new AbortController();
+	const abortConfiguration = (): void => { configurationController.abort(); };
+	options.signal?.addEventListener("abort", abortConfiguration, { once: true });
+	if (options.signal?.aborted) configurationController.abort();
 	let reloadQueue = Promise.resolve();
 	let closePromise: Promise<void> | undefined;
 
@@ -370,7 +373,7 @@ export async function createRuntimeIntegrationComposition(
 				snapshot.version + 1,
 				owner,
 				skillRegistration,
-				subagentComposition.registrations,
+				subagents.registrations,
 				contribution,
 			);
 		} catch {
@@ -402,55 +405,80 @@ export async function createRuntimeIntegrationComposition(
 			(contribution) => publishMcp(owner, contribution),
 		));
 	};
-	const reloadProjectConfiguration = (input: {
+	const replaceConfiguration = async (input: {
 		readonly workspaceRoot: string;
 		readonly enabled: boolean;
-	}): Promise<void> => {
-		const run = reloadQueue.then(async () => {
-			if (closed) throw new Error("integration_composition_closed");
-			if (input.workspaceRoot === workspaceRoot && input.enabled === projectConfigurationEnabled) {
-				return;
-			}
-			const next = await createRuntimeIntegrationContent({
-				options,
-				workspaceRoot: input.workspaceRoot,
-				projectConfigurationEnabled: input.enabled,
-				reportStartup: false,
-			});
-			let nextSnapshot: RuntimeIntegrationSnapshot;
-			try {
-				nextSnapshot = runtimeContentSnapshot(
-					options.builtinManifest,
-					snapshot.version + 1,
-					next,
-					skillRegistration,
-					subagentComposition.registrations,
-				);
-			} catch (error) {
-				await next.close().catch(() => undefined);
-				throw error;
-			}
-			const previous = content;
-			previous.retire();
-			content = next;
-			activeSkillRegistry = next.skillRegistry;
-			activeHookRunner = createRuntimeHookRunner(options, next);
-			workspaceRoot = input.workspaceRoot;
-			projectConfigurationEnabled = input.enabled;
-			snapshot = nextSnapshot;
-			notifyExtensions();
-			startRefresh(next);
-			try {
-				await previous.close();
-			} catch {
-				retiredContents.push(previous);
-			}
+	}, configuration?: RuntimeIntegrationConfiguration): Promise<void> => {
+		if (closed) throw new Error("integration_composition_closed");
+		const next = await createRuntimeIntegrationContent({
+			options,
+			workspaceRoot: input.workspaceRoot,
+			projectConfigurationEnabled: input.enabled,
+			reportStartup: false,
+			configuration,
+			waitForMcpDiscovery: configuration !== undefined,
+			signal: configurationController.signal,
 		});
-		reloadQueue = run.catch(() => undefined);
-		return run;
+		let nextSnapshot: RuntimeIntegrationSnapshot;
+		try {
+			configurationController.signal.throwIfAborted();
+			nextSnapshot = runtimeContentSnapshot(
+				options.builtinManifest,
+				snapshot.version + 1,
+				next,
+				skillRegistration,
+				subagents.registrations,
+			);
+		} catch (error) {
+			await next.close().catch(() => undefined);
+			throw error;
+		}
+		const previous = content;
+		previous.retire();
+		content = next;
+		activeSkillRegistry = next.skillRegistry;
+		activeHookRunner = createRuntimeHookRunner(options, next);
+		workspaceRoot = input.workspaceRoot;
+		projectConfigurationEnabled = input.enabled;
+		snapshot = nextSnapshot;
+		notifyExtensions();
+		startRefresh(next);
+		try {
+			await previous.close();
+		} catch {
+			retiredContents.push(previous);
+		}
+	};
+	const enqueue = (operation: () => Promise<void>): Promise<void> => {
+		const task = reloadQueue.then(operation);
+		reloadQueue = task.catch(() => undefined);
+		return task;
+	};
+	const refreshConfiguration = async (): Promise<void> => {
+		if (closed) throw new Error("integration_composition_closed");
+		if (activeRuns.size || options.pinConfiguration) return;
+		const configuration = await loadRuntimeIntegrationConfiguration({ workspaceRoot, homeDir: options.homeDir,
+			env: options.env, includeRepository: projectConfigurationEnabled });
+		configurationController.signal.throwIfAborted();
+		if (configuration.fingerprint === content.configurationFingerprint) return;
+		await replaceConfiguration({ workspaceRoot, enabled: projectConfigurationEnabled }, configuration);
+	};
+	const reloadProjectConfiguration = (input: { readonly workspaceRoot: string; readonly enabled: boolean }): Promise<void> => {
+		return enqueue(async () => {
+			if (closed) throw new Error("integration_composition_closed");
+			if (input.workspaceRoot === workspaceRoot && input.enabled === projectConfigurationEnabled) return;
+			await replaceConfiguration(input);
+		});
 	};
 
 	const runtimeComposition: RuntimeIntegrationComposition = Object.freeze({
+		hookManagement: new HookBrowserService({ homeDir: options.homeDir,
+			configured: async () => (await discoverHookConfig({ workspaceRoot: content.workspaceRoot, homeDir: options.homeDir, env: options.env, includeRepository: content.projectConfigurationEnabled })).hooks,
+			plugins: () => content.composition.hooks,
+		}),
+		skills: new SkillManagementService({ registry: () => activeSkillRegistry, homeDir: options.homeDir,
+			catalog: async () => (await loadRuntimeIntegrationConfiguration({ workspaceRoot: content.workspaceRoot, homeDir: options.homeDir, env: options.env, includeRepository: content.projectConfigurationEnabled })).skills,
+		}),
 		mcpResourceService: {
 			listResources: (signal: AbortSignal, serverId?: string) => content.mcpResourceService.listResources(signal, serverId),
 			listResourcesPage: async (serverId: string, signal: AbortSignal, cursor?: string) => {
@@ -464,40 +492,43 @@ export async function createRuntimeIntegrationComposition(
 				content.mcpResourceService.listResourceTemplates?.(signal, serverId, cursor) ?? { resourceTemplates: [], failures: [] },
 			readResource: (serverId: string, uri: string, signal: AbortSignal) => content.mcpResourceService.readResource(serverId, uri, signal),
 		},
+		get configuration() { return content.configuration; },
 		get version() { return snapshot.version; },
 		get registrations() { return snapshot.registrations; },
 		get hooks() { return content.composition.hooks; },
 		get resources() { return snapshot.resources; },
 		get diagnostics() { return snapshot.diagnostics; },
 		get commands() { return content.composition.commands; },
-		get subagents() { return subagentComposition.subagents; },
+		get subagents() { return [subagents.controller]; },
 		get manifest() { return snapshot.manifest; },
 		hookRunner,
 		get skillCatalog() { return renderSkillCatalog(activeSkillRegistry); },
-		...(subagentController ? { subagentController } : {}),
-		subscribeSubagents: (
-			listener: (subagent: Readonly<Record<string, unknown>>) => void,
-		) => {
-			subagentListeners.add(listener);
-			return () => { subagentListeners.delete(listener); };
-		},
-		publishSubagent: (subagent: Readonly<Record<string, unknown>>) => {
-			for (const listener of subagentListeners) {
-				try { listener(subagent); } catch { /* Projection cannot affect execution. */ }
-			}
-		},
+		subagentController: subagents.controller,
+		subscribeSubagents: subagents.subscribe,
+		publishSubagent: subagents.publish,
 		subscribeExtensions: (listener: (version: number) => void) => {
 			extensionListeners.add(listener);
 			return () => { extensionListeners.delete(listener); };
 		},
 		reloadProjectConfiguration,
+		refreshConfiguration: () => enqueue(refreshConfiguration),
+		prepareRun: (turnId: string, signal: AbortSignal) => enqueue(async () => {
+			if (closed) throw new Error("integration_composition_closed");
+			signal.throwIfAborted();
+			if (activeRuns.has(turnId)) return;
+			await refreshConfiguration();
+			signal.throwIfAborted();
+			activeRuns.add(turnId);
+		}),
+		finishRun: (turnId: string) => { activeRuns.delete(turnId); },
 		close: () => closePromise ??= (async () => {
 			closed = true;
+			configurationController.abort();
 			await reloadQueue;
 			content.retire();
 			let failed = false;
 			try {
-				await subagentComposition.close();
+				if (!options.subagentServices) await subagents.close();
 			} catch {
 				failed = true;
 			}
@@ -508,7 +539,7 @@ export async function createRuntimeIntegrationComposition(
 					failed = true;
 				}
 			}
-			subagentListeners.clear();
+			options.signal?.removeEventListener("abort", abortConfiguration);
 			extensionListeners.clear();
 			if (failed) throw new Error("integration_close_failed");
 		})(),
@@ -518,6 +549,9 @@ export async function createRuntimeIntegrationComposition(
 }
 
 interface RuntimeIntegrationContent {
+	readonly projectConfigurationEnabled: boolean;
+	readonly configuration: RuntimeIntegrationConfiguration;
+	readonly configurationFingerprint: string;
 	readonly mcpResourceService: McpResourceService;
 	readonly workspaceRoot: string;
 	readonly composition: IntegrationComposition;
@@ -537,6 +571,9 @@ async function createRuntimeIntegrationContent(input: {
 	readonly workspaceRoot: string;
 	readonly projectConfigurationEnabled: boolean;
 	readonly reportStartup: boolean;
+	readonly configuration?: RuntimeIntegrationConfiguration;
+	readonly waitForMcpDiscovery?: boolean;
+	readonly signal?: AbortSignal;
 }): Promise<RuntimeIntegrationContent> {
 	const { options } = input;
 	const mcpRefreshController = new AbortController();
@@ -547,35 +584,26 @@ async function createRuntimeIntegrationContent(input: {
 	let startMcpRefresh: ((
 		publish: (contribution: IntegrationCompositionContribution) => void,
 	) => void) | undefined;
-	const pluginDiscovery = await discoverPlugins({ workspaceRoot: input.workspaceRoot, homeDir: options.homeDir,
-		includeRepository: input.projectConfigurationEnabled });
+	const configuration = input.configuration ?? await loadRuntimeIntegrationConfiguration({ workspaceRoot: input.workspaceRoot,
+		homeDir: options.homeDir, env: options.env, includeRepository: input.projectConfigurationEnabled });
+	const pluginDiscovery = configuration.plugins;
 	const bundles = pluginBundleContributions(pluginDiscovery, { workspaceRoot: input.workspaceRoot, env: options.env,
-		sandboxProfile: (cwd) => workspaceSandboxProfile(input.workspaceRoot, cwd) });
-	const hookDiscovery = await discoverHookConfig({
-		workspaceRoot: input.workspaceRoot,
-		homeDir: options.homeDir,
-		env: options.env,
-		includeRepository: input.projectConfigurationEnabled,
+		sandboxProfile: (cwd) => workspaceSandboxProfile(input.workspaceRoot, cwd, options.managedExecutionPolicy),
+		hookEnabled: (hook) => integrationEnabled(configuration.enablement, "hook", pluginHookIdentity(hook), hook.origin?.enabled ?? true),
 	});
+	const hookDiscovery = configuration.hooks;
 	if (input.reportStartup) options.onStartupStage?.("hooks_ready");
 	let composition: IntegrationComposition;
 	try {
 		composition = await createIntegrationComposition({
+			signal: input.signal,
 			builtinManifest: options.builtinManifest,
 			...(options.closeTimeoutMs === undefined ? {} : { closeTimeoutMs: options.closeTimeoutMs }),
 			sources: [
 				{
 					id: "skill",
 					start: async () => {
-						skillRegistry = await SkillRegistry.discover({
-							builtinRoot: builtinSkillRoot(),
-							userRoot: join(options.homeDir, ".mycli", "skills"),
-							pluginSkills: bundles.skills,
-							...(input.projectConfigurationEnabled ? {
-								sharedRepoRoot: join(input.workspaceRoot, ".agents", "skills"),
-								repoRoot: join(input.workspaceRoot, ".mycli", "skills"),
-							} : {}),
-						});
+						skillRegistry = configuration.skills;
 						if (input.reportStartup) options.onStartupStage?.("skills_ready");
 						return {
 							resources: skillResources(skillRegistry),
@@ -586,29 +614,49 @@ async function createRuntimeIntegrationContent(input: {
 				{
 					id: "mcp",
 					start: async (signal) => {
-						const discoverySignal = AbortSignal.any([signal, mcpRefreshController.signal]);
-						const config = await discoverMcpConfig({
-							workspaceRoot: input.workspaceRoot,
-							homeDir: options.homeDir,
-							env: options.env,
-							includeRepository: input.projectConfigurationEnabled,
-						});
-						const servers = [...config.servers, ...bundles.mcpServers];
+						const discoverySignal = AbortSignal.any([signal, mcpRefreshController.signal, ...(input.signal ? [input.signal] : [])]);
+						const config = configuration.mcp;
+						const servers = config.servers;
+						const invalidRequired = [...config.diagnostics.filter((issue) => issue.required).map((issue) => issue.serverId), ...config.requiredPluginFailures];
+						if (invalidRequired.length) throw new McpRequiredServerError(invalidRequired);
 						const manager = new McpManager({
 							configs: servers,
 							catalogCache: new McpCatalogCache({
 								directory: join(options.homeDir, ".mycli", "cache"),
 							}),
 							createClient: (server) => new McpClient({
+								homeDir: options.homeDir,
+								onElicitation: options.onMcpElicitation,
 								config: server,
 								cwd: input.workspaceRoot,
-								sandboxProfile: workspaceSandboxProfile(input.workspaceRoot),
+								sandboxProfile: mcpSandboxProfile(input.workspaceRoot, server, options.managedExecutionPolicy),
 							}),
 						});
 						mcpManager = manager;
-						const cached = await manager.loadCached(discoverySignal);
+						let cached: McpManagerDiscovery | undefined;
+						try {
+							cached = await manager.loadCached(discoverySignal);
+							// Changed configuration must be discovered before the next run captures its catalog.
+							if (input.waitForMcpDiscovery) {
+								const live = await manager.refresh(discoverySignal);
+								const requiredIds = new Set(servers.filter((server) => server.enabled && server.required).map((server) => server.id));
+								const failed = live.servers.filter((server) => requiredIds.has(server.serverId) && (server.status === "failed"
+									|| server.failures?.some((failure) => failure.capability === "tools" && !failure.tool)));
+								if (failed.length) throw new McpRequiredServerError(failed.map((server) => server.serverId));
+								cached = mergeMcpRefresh(cached, live);
+							} else if (servers.some((server) => server.enabled && server.required)) {
+								const required = await manager.discoverRequired(discoverySignal);
+								const ids = new Set(required.servers.map((server) => server.serverId));
+								cached = {
+									registrations: [...(cached?.registrations.filter((tool) => !ids.has(tool.originMetadata.server ?? "")) ?? []), ...required.registrations],
+									resources: [...(cached?.resources.filter((resource) => !ids.has(resource.serverId)) ?? []), ...required.resources],
+									servers: [...(cached?.servers.filter((server) => !ids.has(server.serverId)) ?? []), ...required.servers],
+								};
+							}
+						} catch (error) { await manager.close().catch(() => undefined); throw error; }
 						if (input.reportStartup) options.onStartupStage?.("mcp_cache_ready");
 						startMcpRefresh = (publish) => {
+							if (input.waitForMcpDiscovery) return;
 							void manager.refresh(discoverySignal).then(
 								(discovery) => {
 									if (!discoverySignal.aborted) {
@@ -627,7 +675,7 @@ async function createRuntimeIntegrationContent(input: {
 							);
 						};
 						return {
-							...mcpContribution(servers, config.diagnostics, cached, cached ? "cached" : "loading"),
+							...mcpContribution(servers, config.diagnostics, cached, input.waitForMcpDiscovery ? "ready" : cached ? "cached" : "loading"),
 							close: () => manager.close(),
 						};
 					},
@@ -640,18 +688,18 @@ async function createRuntimeIntegrationContent(input: {
 							homeDir: options.homeDir,
 							env: options.env,
 							includeRepository: input.projectConfigurationEnabled,
-							sandboxProfile: pluginSandboxProfile,
+							sandboxProfile: (manifest) => pluginSandboxProfile(manifest, options.managedExecutionPolicy, input.workspaceRoot),
 							discovery: pluginDiscovery,
 							bundleIssues: [...bundles.issues, ...(skillRegistry?.diagnostics().issues ?? [])
 								.filter((issue) => bundles.skills.some((skill) => skill.pluginId === issue.fileLabel))
 								.map((issue) => ({ pluginId: issue.fileLabel, errorClass: issue.errorClass }))],
-						}, signal);
+						}, input.signal ? AbortSignal.any([signal, input.signal]) : signal);
 						pluginRuntime = runtime;
 						if (input.reportStartup) options.onStartupStage?.("plugins_ready");
 						return {
 							registrations: runtime.tools,
 							hooks: [...runtime.hooks, ...bundles.hooks],
-							resources: pluginCatalogResources(runtime),
+							resources: pluginCatalogResources(runtime, configuration.mcp.servers),
 							diagnostics: runtime.issues.map((issue) => ({
 								source: "plugin",
 								label: "runtime",
@@ -675,11 +723,14 @@ async function createRuntimeIntegrationContent(input: {
 	}
 	return Object.freeze({
 		workspaceRoot: input.workspaceRoot,
+		configuration,
+		configurationFingerprint: configuration.fingerprint,
 		mcpResourceService: mcpManager,
 		composition,
+		projectConfigurationEnabled: input.projectConfigurationEnabled,
 		hookDiscovery,
 		skillRegistry,
-		pluginContribution: () => pluginContribution(pluginRuntime!),
+		pluginContribution: () => pluginContribution(pluginRuntime!, configuration.mcp.servers),
 		startPluginUpdates: (publish: () => void) => {
 			unsubscribePlugins?.();
 			unsubscribePlugins = pluginRuntime!.subscribe(publish);
@@ -700,17 +751,20 @@ function createRuntimeHookRunner(
 	options: CreateRuntimeIntegrationCompositionOptions,
 	content: RuntimeIntegrationContent,
 ): HookManager {
-	const allowlistStore = new HookAllowlistStore({ homeDir: options.homeDir });
+	const allowlistStore = { statusFor: async (spec: ConfiguredHookSpec) => {
+		const index = content.hookDiscovery.hooks.findIndex((hook) => hook.configPath === spec.configPath && hook.hookId === spec.hookId && hook.hookPoint === spec.hookPoint);
+		return content.configuration.hookApprovals[index] ?? { allowed: false, reason: "entry_missing" as const, commandDigest: "" };
+	} };
 	const configuredExecutor = new ConfiguredHookRunner({
 		workspaceRoot: content.workspaceRoot,
 		allowlistStore,
 		env: options.env,
-		sandboxProfile: (cwd) => workspaceSandboxProfile(content.workspaceRoot, cwd),
+		sandboxProfile: (cwd) => workspaceSandboxProfile(content.workspaceRoot, cwd, options.managedExecutionPolicy),
 	});
 	return new HookManager({
-		configuredHooks: content.hookDiscovery.hooks,
+		configuredHooks: content.hookDiscovery.hooks.map((hook) => configuredHookEnablement(hook, content.configuration.enablement)),
 		configuredExecutor,
-		pluginHooks: content.composition.hooks,
+		pluginHooks: content.composition.hooks.filter((hook) => integrationEnabled(content.configuration.enablement, "hook", pluginHookIdentity(hook), hook.origin?.enabled ?? true)),
 	});
 }
 
@@ -781,7 +835,7 @@ function runtimeIntegrationSnapshot(input: {
 	readonly resources: readonly Readonly<Record<string, unknown>>[];
 	readonly diagnostics: readonly Readonly<Record<string, unknown>>[];
 }): RuntimeIntegrationSnapshot {
-	const registrations = Object.freeze([...input.registrations]);
+	const registrations = normalizeIntegrationToolNames(input.registrations, input.builtinManifest.tools.map((tool) => tool.name));
 	return Object.freeze({
 		version: input.version,
 		registrations,
@@ -877,13 +931,13 @@ function isMcpDiagnostic(diagnostic: Readonly<Record<string, unknown>>): boolean
 }
 
 function skillResources(registry: SkillRegistry): readonly Readonly<Record<string, unknown>>[] {
-	return registry.list().map((skill) => Object.freeze({
+	return registry.listAll().map((skill) => Object.freeze({
 		id: `skill:${skill.name}`,
 		type: "skill",
 		name: skill.name,
 		source: resourceSource(skill.sourceKind),
-		enabled: true,
-		status: "enabled",
+		enabled: skill.enabled,
+		status: skill.enabled ? "enabled" : "disabled",
 		detail: skill.description,
 		command: "/skills",
 	}));
@@ -897,8 +951,8 @@ function isPluginResource(resource: Readonly<Record<string, unknown>>): boolean 
 	return typeof resource.id === "string" && resource.id.startsWith("plugin:");
 }
 
-function pluginContribution(runtime: PluginRuntime): IntegrationCompositionContribution {
-	return Object.freeze({ resources: pluginCatalogResources(runtime),
+function pluginContribution(runtime: PluginRuntime, servers: readonly McpServerConfig[]): IntegrationCompositionContribution {
+	return Object.freeze({ resources: pluginCatalogResources(runtime, servers),
 		diagnostics: runtime.issues.map((errorClass) => ({ source: "plugin", label: "runtime", errorClass })) });
 }
 
@@ -922,65 +976,6 @@ function hookResources(
 		command: "/hooks",
 	}));
 }
-
-function subagentRegistrations(
-	controller: SubagentController,
-	agentActivity: WaitAgentActivityContract,
-): readonly IntegrationRegistration[] {
-	return Object.freeze([
-		subagentRegistration(
-			SPAWN_AGENT_TOOL_DEFINITION,
-			new SpawnAgentTool({ control: controller }),
-		),
-		subagentRegistration(
-			SEND_AGENT_MESSAGE_TOOL_DEFINITION,
-			new SendAgentMessageTool({
-				control: controller,
-				definition: SEND_AGENT_MESSAGE_TOOL_DEFINITION,
-				triggerMode: "queue_only",
-			}),
-		),
-		subagentRegistration(
-			FOLLOWUP_TASK_TOOL_DEFINITION,
-			new SendAgentMessageTool({
-				control: controller,
-				definition: FOLLOWUP_TASK_TOOL_DEFINITION,
-				triggerMode: "follow_up",
-			}),
-		),
-		subagentRegistration(
-			INTERRUPT_AGENT_TOOL_DEFINITION,
-			new InterruptAgentTool({ control: controller }),
-		),
-		subagentRegistration(
-			LIST_AGENTS_TOOL_DEFINITION,
-			new ListAgentsTool({ control: controller }),
-		),
-		subagentRegistration(
-			WAIT_AGENT_TOOL_DEFINITION,
-			new WaitAgentTool({ activity: agentActivity }),
-		),
-	]);
-}
-
-function subagentRegistration(
-	definition: IntegrationRegistration["definition"],
-	adapter: ToolAdapter,
-	modelVisible = true,
-): IntegrationRegistration {
-	return defineIntegrationRegistration({
-		id: definition.id,
-		source: "subagent",
-		definition,
-		adapter,
-		originMetadata: { controller: "local" },
-		modelVisible,
-	});
-}
-
-const UNAVAILABLE_AGENT_ACTIVITY: WaitAgentActivityContract = Object.freeze({
-	wait: async () => Object.freeze({ kind: "unavailable" as const }),
-});
 
 function pluginCommandService(registry: PluginCommandRegistry): IntegrationCommandService {
 	const service: IntegrationCommandService = {

@@ -100,6 +100,8 @@ export interface AgentExecutionPolicySnapshot {
 	readonly network: "disabled" | "enabled";
 	readonly networkDomains?: readonly string[];
 	readonly readableRoots?: readonly string[];
+	readonly deniedReadRoots?: readonly string[];
+	readonly deniedReadGlobs?: readonly string[];
 	readonly writableRoots: readonly string[];
 }
 
@@ -118,6 +120,11 @@ export interface AgentSpawnConfigSnapshot {
 	readonly provider: AgentProviderSnapshot;
 	readonly instructions: AgentInstructionSnapshot;
 	readonly tools: readonly string[];
+	/** Non-secret authority retained across child unload/reload. */
+	readonly integrationAuthority?: {
+		readonly configurationFingerprint: string;
+		readonly toolFingerprints: Readonly<Record<string, string>>;
+	};
 	readonly budget?: AgentBudget;
 	readonly forkTurns: AgentForkTurns;
 }
@@ -435,6 +442,8 @@ export function narrowAgentExecutionPolicy(
 		|| filesystemRank(candidate.filesystem) > filesystemRank(parent.filesystem)
 		|| networkRank(candidate.network) > networkRank(parent.network)
 		|| networkDomainsBroadenAuthority(parent, candidate)
+		|| (parent.deniedReadRoots ?? []).some((root) => !(candidate.deniedReadRoots ?? []).includes(root))
+		|| (parent.deniedReadGlobs ?? []).some((glob) => !(candidate.deniedReadGlobs ?? []).includes(glob))
 		|| (parent.filesystem !== "unrestricted"
 			&& (candidate.readableRoots ?? []).some((root) => (
 				!(parent.readableRoots ?? []).includes(root)
@@ -445,6 +454,8 @@ export function narrowAgentExecutionPolicy(
 	if (broader) throw new AgentAuthorityError();
 	return Object.freeze({
 		...candidate,
+		...(candidate.deniedReadRoots === undefined ? {} : { deniedReadRoots: Object.freeze([...candidate.deniedReadRoots]) }),
+		...(candidate.deniedReadGlobs === undefined ? {} : { deniedReadGlobs: Object.freeze([...candidate.deniedReadGlobs]) }),
 		...(candidate.networkDomains === undefined ? {} : {
 			networkDomains: Object.freeze([...candidate.networkDomains]),
 		}),

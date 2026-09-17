@@ -1,4 +1,6 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
+import { mcpConfigFingerprint as configFingerprint } from "./config-identity.ts";
+import { parseMcpAnnotations } from "./config-options.ts";
 import {
 	chmod,
 	mkdir,
@@ -174,6 +176,7 @@ function parseTool(serverId: string, value: unknown): McpToolDescriptor[] {
 		|| typeof value.supportsParallelToolCalls !== "boolean") {
 		return [];
 	}
+	const annotations = parseMcpAnnotations(value.annotations);
 	return [Object.freeze({
 		serverId,
 		name: value.name as string,
@@ -181,31 +184,8 @@ function parseTool(serverId: string, value: unknown): McpToolDescriptor[] {
 		...(typeof value.serverInstructions === "string" ? { serverInstructions: value.serverInstructions } : {}),
 		inputSchema: Object.freeze({ ...value.inputSchema }),
 		supportsParallelToolCalls: value.supportsParallelToolCalls,
+		...(annotations ? { annotations } : {}),
 	})];
-}
-
-function configFingerprint(configs: readonly McpServerConfig[]): string {
-	const canonical = configs.map((config) => ({
-		id: config.id,
-		transport: config.transport,
-		command: config.command ?? null,
-		url: config.url ?? null,
-		args: [...config.args],
-		cwd: config.cwd ?? null,
-		pluginDescription: config.pluginDescription ?? null,
-		env: sortedRecord(config.env),
-		headers: sortedRecord(config.headers),
-		enabled: config.enabled,
-		supportsParallelToolCalls: config.supportsParallelToolCalls,
-		timeoutMs: config.timeoutMs,
-	}));
-	return createHash("sha256").update(JSON.stringify(canonical), "utf8").digest("hex");
-}
-
-function sortedRecord(value: Readonly<Record<string, string>>): Readonly<Record<string, string>> {
-	return Object.freeze(Object.fromEntries(
-		Object.entries(value).sort(([left], [right]) => left.localeCompare(right)),
-	));
 }
 
 function boundedString(value: unknown, max: number, allowEmpty = false): value is string {

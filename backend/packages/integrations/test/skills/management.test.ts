@@ -1,0 +1,32 @@
+import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import { SkillManagementService } from "../../src/skills/management.ts";
+import { SkillRegistry } from "../../src/skills/registry.ts";
+import { IntegrationEnablementStore } from "../../src/foundation/enablement-store.ts";
+
+test("skill management binds content and applies persisted settings after registry refresh", async (t) => {
+	const homeDir = await mkdtemp(join(tmpdir(), "mycli-skill-management-"));
+	t.after(() => rm(homeDir, { recursive: true, force: true }));
+	const userRoot = join(homeDir, "skills"); await mkdir(userRoot);
+	const path = join(userRoot, "review.md");
+	const content = "---\nname: review\ndescription: Review changes\n---\nCheck every diff.\n";
+	await writeFile(path, content);
+	const options = { builtinRoot: join(homeDir, "missing"), userRoot };
+	let registry = await SkillRegistry.discover(options);
+	const service = new SkillManagementService({ homeDir, registry: () => registry });
+	const catalog = await service.list(); const selected = catalog.skills[0]!;
+	assert.equal(service.resolve(selected).body, "Check every diff.");
+	const disabled = await service.setEnabled({ id: selected.id, revision: catalog.revision, skillRevision: selected.revision, enabled: false }, new AbortController().signal);
+	assert.equal(disabled.skills[0]?.enabled, false);
+	assert.ok(service.resolve(selected), "captured active registry remains usable");
+	registry = await SkillRegistry.discover({ ...options, enablement: await new IntegrationEnablementStore({ homeDir }).load() });
+	assert.throws(() => service.resolve(selected), { code: "skill_disabled" });
+	await assert.rejects(service.setEnabled({ id: selected.id, revision: catalog.revision, skillRevision: selected.revision, enabled: true }, new AbortController().signal), { code: "integration_settings_changed" });
+	await writeFile(path, content + "New instructions.\n");
+	registry = await SkillRegistry.discover(options);
+	assert.throws(() => service.resolve(selected), { code: "skill_changed" });
+	await assert.rejects(service.setEnabled({ id: selected.id, revision: disabled.revision, skillRevision: selected.revision, enabled: true }, new AbortController().signal), { code: "skill_changed" });
+});

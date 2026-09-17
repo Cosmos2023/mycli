@@ -30,7 +30,8 @@ test("Responses reads then edits a file with durable mutation metadata", async (
 	await submitAndWait(fixture, "Read README.md, replace beta with gamma, then finish.");
 	assert.deepEqual(toolNames(fixture.requestBodies[0]?.tools, "responses"), [
 		"Read", "Edit", "Patch", "Write", "update_plan", "web_fetch",
-		"tool_search", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "Skill",
+		"create_goal", "get_goal", "update_goal",
+		"list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "Shell", "WriteStdin", "Skill",
 		"spawn_agent", "send_message", "followup_task", "interrupt_agent", "list_agents",
 		"wait_agent",
 	]);
@@ -93,7 +94,8 @@ test("Chat writes a file and replays the matching tool call id", async (t) => {
 	await submitAndWait(fixture, "Create created.txt with the requested content.");
 	assert.deepEqual(toolNames(fixture.requestBodies[0]?.tools, "chat_completions"), [
 		"Read", "Edit", "Patch", "Write", "update_plan", "web_fetch",
-		"tool_search", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "Skill",
+		"create_goal", "get_goal", "update_goal",
+		"list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "Shell", "WriteStdin", "Skill",
 		"spawn_agent", "send_message", "followup_task", "interrupt_agent", "list_agents",
 		"wait_agent",
 	]);
@@ -109,6 +111,51 @@ test("Chat writes a file and replays the matching tool call id", async (t) => {
 	assert.deepEqual(conversationTypes(fixture.dbPath, fixture.sessionId), [
 		"user", "assistant_tool_calls", "tool_result", "assistant",
 	]);
+});
+
+test("read-only rejects Write Edit and Patch with unchanged files and replayable policy errors", async (t) => {
+	const fixture = await scenarioFixture(t, "responses", [
+		responsesTool("readonly-write", "Write", { file_path: "created.txt", content: "after\n" }),
+		responsesTool("readonly-edit", "Edit", { file_path: "source.txt", old_string: "before", new_string: "after" }),
+		responsesTool("readonly-patch", "Patch", { operations: [{ type: "delete", file_path: "source.txt" }] }),
+		responsesFinal("The current file permissions do not allow these changes."),
+	], { permission: "read-only" });
+	await writeFile(join(fixture.workspace, "source.txt"), "before\n");
+
+	await submitAndWait(fixture, "Try each file mutation with the current permissions.");
+	assert.equal(existsSync(join(fixture.workspace, "created.txt")), false);
+	assert.equal(await readFile(join(fixture.workspace, "source.txt"), "utf8"), "before\n");
+	assert.equal(events(fixture.messages, "tool.failed").length, 3);
+	assert.equal(events(fixture.messages, "tool.complete").length, 0);
+	assert.equal(events(fixture.messages, "approval.request").length, 0);
+	for (const request of fixture.requestBodies.slice(1)) assert.match(JSON.stringify(request.input), /workspace_escape/u);
+	await fixture.shutdown();
+	assert.deepEqual(conversationTypes(fixture.dbPath, fixture.sessionId), [
+		"user", "assistant_tool_calls", "tool_result", "assistant_tool_calls", "tool_result",
+		"assistant_tool_calls", "tool_result", "assistant",
+	]);
+});
+
+test("managed writable subdirectory permits its files and rejects other workspace mutations", async (t) => {
+	const fixture = await scenarioFixture(t, "responses", [
+		responsesTool("managed-write", "Write", { file_path: "generated/report.txt", content: "after\n" }),
+		responsesTool("managed-edit-denied", "Edit", { file_path: "source.txt", old_string: "before", new_string: "after" }),
+		responsesTool("managed-patch-denied", "Patch", { operations: [
+			{ type: "add", file_path: "generated/staged.txt", content: "staged\n" },
+			{ type: "move", from_path: "source.txt", to_path: "generated/moved.txt" },
+		] }),
+		responsesFinal("Saved the permitted report."),
+	], { managedSubdirectory: "generated" });
+	await writeFile(join(fixture.workspace, "source.txt"), "before\n");
+
+	await submitAndWait(fixture, "Write the report, then attempt the remaining file changes.");
+	assert.equal(await readFile(join(fixture.workspace, "generated/report.txt"), "utf8"), "after\n");
+	assert.equal(await readFile(join(fixture.workspace, "source.txt"), "utf8"), "before\n");
+	assert.equal(existsSync(join(fixture.workspace, "generated/staged.txt")), false);
+	assert.equal(existsSync(join(fixture.workspace, "generated/moved.txt")), false);
+	assert.equal(events(fixture.messages, "tool.complete").length, 1);
+	assert.equal(events(fixture.messages, "tool.failed").length, 2);
+	assert.equal(events(fixture.messages, "approval.request").length, 0);
 });
 
 test("Responses approves one exact outside Write only after workspace denial", async (t) => {
@@ -199,6 +246,7 @@ async function scenarioFixture(
 	t: test.TestContext,
 	protocol: Protocol,
 	steps: readonly (readonly JsonObject[])[],
+	options: { readonly permission?: "workspace" | "read-only"; readonly managedSubdirectory?: string } = {},
 ): Promise<ScenarioFixture> {
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-m4-mutation-"));
 	const home = join(root, "home");
@@ -207,6 +255,13 @@ async function scenarioFixture(
 	const sessionId = `m4-${protocol}`;
 	await mkdir(home);
 	await mkdir(workspace);
+	if (options.managedSubdirectory) {
+		const writableRoot = join(workspace, options.managedSubdirectory);
+		await mkdir(writableRoot);
+		await mkdir(join(home, ".mycli"));
+		await writeFile(join(home, ".mycli", "managed_config.toml"),
+			`[execution_policy]\nwritable_roots = [${JSON.stringify(writableRoot)}]\n`);
+	}
 	const requestBodies: JsonObject[] = [];
 	const server = createServer((request, response) => {
 		let body = "";
@@ -240,6 +295,12 @@ async function scenarioFixture(
 		messages.push(parseJsonRpcMessage(JSON.parse(line)) as JsonObject);
 	});
 	await waitFor(() => event(messages, "runtime.ready"));
+	writeRequest(backend, "trust-file-workspace", "workspace.trust.set", { state: "trusted" });
+	const trusted = await waitFor(() => messages.find((item) => item.id === "trust-file-workspace"));
+	assert.equal("error" in trusted, false, JSON.stringify(trusted));
+	writeRequest(backend, "configure-file-permissions", "permissions.update", { profile: options.permission ?? "workspace" });
+	const configured = await waitFor(() => messages.find((item) => item.id === "configure-file-permissions"));
+	assert.equal("error" in configured, false, JSON.stringify(configured));
 	let closed = false;
 	const shutdown = async () => {
 		if (closed) return;

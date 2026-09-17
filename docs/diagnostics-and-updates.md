@@ -20,6 +20,11 @@ terminal support, session storage and ownership, extensions, and cached update s
 call a model provider. One collector failure becomes one bounded diagnostic and does not prevent
 the remaining collectors from running.
 
+MCP and plugin checks read configuration and manifests without starting a server or plugin host.
+Their `runtime=not_probed` detail means the metadata passed inspection; it does not confirm a live
+connection. This also applies to repair previews and support bundles. To actively connect to one
+MCP server, discover its capabilities, and close the probe, run `mycli mcp inspect <server-id>`.
+
 Every row has a stable category and code, a short summary, optional bounded details, remediation,
 recovery actions, and collector duration. `--verbose` shows those details in the human report.
 `--json` emits the same structured rows plus a bounded support manifest containing only runtime

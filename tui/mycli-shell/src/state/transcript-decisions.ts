@@ -1,3 +1,4 @@
+import { boundedUiText } from "../safe-ui-text.ts";
 import type {
 	MycliShellClarificationResponse,
 	MycliShellPendingApproval,
@@ -94,6 +95,7 @@ export function pendingClarificationFromRecord(
 	const turnId = stringValue(value.turn_id) ?? stringValue(value.turnId);
 	return {
 		requestId,
+		...(value.elicitation ? { elicitation: value.elicitation as NonNullable<MycliShellPendingClarification["elicitation"]> } : {}),
 		...(turnId ? { turnId } : {}),
 		sessionId: stringValue(value.session_id) ?? stringValue(value.sessionId) ?? undefined,
 		generation: numberValue(value.generation) ?? undefined,
@@ -247,4 +249,20 @@ export function removeTransientClarificationItems(items: RuntimeTranscriptItem[]
 		const itemRequestId = stringValue(metadata.request_id) ?? stringValue(metadata.requestId);
 		return itemRequestId !== requestId;
 	});
+}
+
+export function appendApprovalDecision(items: RuntimeTranscriptItem[], pending: Record<string, unknown> | null, response: Record<string, unknown>): RuntimeTranscriptItem[] {
+	const decisionId = stringValue(response.decision_id) ?? stringValue(response.decisionId);
+	if (!decisionId || !pending) return items;
+	const labels: Readonly<Record<string, string>> = { approve_once: "Approved once", allow_session: "Allowed for this session", always_allow: "Approved with “Always allow”", reject: "Rejected" };
+	const label = labels[String(response.choice)];
+	if (!label) return items;
+	const subject = boundedUiText(String(pending.command_preview ?? pending.preview ?? pending.tool_name ?? "Tool request"), "Tool request", 400);
+	const id = `approval-decision:${decisionId}`;
+	if (items.some((item) => item.id === id)) return items;
+	return [...items, { id, type: response.choice === "reject" ? "warning" : "system_notice",
+		text: `${label}: ${subject}`, folded: false,
+		...(typeof response.turn_id === "string" ? { turn_id: response.turn_id } : {}),
+		metadata: { decision_id: decisionId, choice: response.choice, source: "approval" },
+	}];
 }

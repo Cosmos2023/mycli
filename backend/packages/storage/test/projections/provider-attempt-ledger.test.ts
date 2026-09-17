@@ -167,7 +167,7 @@ test("v12 migration preserves canonical rows before enabling the current runtime
 	assert.deepEqual(migrated.providerAttemptLedger.list({ sessionId: "session-1" }), []);
 	const after = new Database(f.dbPath);
 	assert.deepEqual(after.prepare("SELECT * FROM provider_request_manifests").all(), saved);
-	assert.equal(after.prepare("SELECT version FROM schema_version").pluck().get(), 14);
+	assert.equal(after.prepare("SELECT version FROM schema_version").pluck().get(), 15);
 	after.exec("CREATE TRIGGER reject_current_version_update BEFORE UPDATE ON schema_version BEGIN SELECT RAISE(ABORT, 'blocked'); END");
 	after.close();
 	migrated.close();

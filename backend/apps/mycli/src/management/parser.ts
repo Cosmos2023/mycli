@@ -1,3 +1,5 @@
+import { parseTrainingExportSettings } from "../node-runtime/session-training-export-options.ts";
+import { parseMcpManagement } from "./mcp-parser.ts";
 import { CONFIG_PATH_SCOPES, type ConfigPathScope } from "@mycli/config/paths";
 import { parseHeadlessCommand } from "../headless/arguments.ts";
 import {
@@ -13,7 +15,6 @@ import type {
 	DoctorManagementCommand,
 	HooksManagementCommand,
 	ManagementCommand,
-	McpManagementCommand,
 	PluginsManagementCommand,
 	SandboxManagementCommand,
 	SessionManagementCommand,
@@ -65,6 +66,7 @@ function isCompletionShell(value: string | undefined): value is CompletionShell 
 }
 
 function parseManagementCommand(root: string, rawArgs: readonly string[]): ManagementCommand {
+	if (root === "mcp") return parseMcpManagement(rawArgs);
 	if (root === "setup") {
 		return parseSetup(rawArgs);
 	}
@@ -80,7 +82,6 @@ function parseManagementCommand(root: string, rawArgs: readonly string[]): Manag
 	if (root === "config") return parseConfig(args, json);
 	if (root === "hooks") return parseHooks(args, json);
 	if (root === "plugins") return parsePlugins(args, json);
-	if (root === "mcp") return parseMcp(args, json);
 	return parseSession(args, json);
 }
 
@@ -147,7 +148,7 @@ function parseSandbox(args: readonly string[], json: boolean): SandboxManagement
 	if (action === "status" && args.length === 1) {
 		return Object.freeze({ kind: "sandbox", action, json });
 	}
-	if (action === "setup" || action === "reset") {
+	if (action === "setup" || action === "reset" || action === "repair" || action === "uninstall") {
 		const confirmation = extractFlag(args.slice(1), "--confirm");
 		if (confirmation.args.length === 0) {
 			return Object.freeze({
@@ -158,7 +159,7 @@ function parseSandbox(args: readonly string[], json: boolean): SandboxManagement
 			});
 		}
 	}
-	throw usage("sandbox status|setup|reset [--confirm] [--json]");
+	throw usage("sandbox status|setup|reset|repair|uninstall [--confirm] [--json]");
 }
 
 function parseSetup(rawArgs: readonly string[]): SetupManagementCommand {
@@ -264,6 +265,7 @@ function parseUpdate(args: readonly string[], json: boolean): ManagementCommand 
 function parseSession(args: readonly string[], json: boolean): SessionManagementCommand {
 	const action = args[0];
 	if (action === "list") return parseSessionList(args.slice(1), json);
+	if (action === "export") return parseSessionExport(args.slice(1), json);
 	if (action === "fork" && (args.length === 2 || args.length === 3)) {
 		return Object.freeze({
 			kind: "session",
@@ -282,7 +284,7 @@ function parseSession(args: readonly string[], json: boolean): SessionManagement
 			json,
 		});
 	}
-	if ((action === "archive" || action === "unarchive" || action === "export")
+	if ((action === "archive" || action === "unarchive")
 		&& args.length === 2) {
 		return Object.freeze({
 			kind: "session",
@@ -304,6 +306,17 @@ function parseSession(args: readonly string[], json: boolean): SessionManagement
 		});
 	}
 	throw sessionUsage();
+}
+
+function parseSessionExport(args: readonly string[], json: boolean): SessionManagementCommand {
+	const sessionId = nonEmpty(args[0]);
+	const invalid = (): Error => usage("session export <id> [--training --output <new-file.jsonl>] [--json]");
+	if (sessionId.startsWith("-")) throw invalid();
+	const training = args.length > 1 ? parseTrainingExportSettings(args.slice(1)) : undefined;
+	if (args.length > 1 && !training) throw invalid();
+	return Object.freeze({ kind: "session", action: "export", sessionId, json,
+		...(training ? { training } : {}),
+	});
 }
 
 function parseSessionList(args: readonly string[], json: boolean): SessionManagementCommand {
@@ -531,17 +544,6 @@ function parsePlugins(args: readonly string[], json: boolean): PluginsManagement
 		arguments: parseJsonArguments(extracted.value),
 		json,
 	});
-}
-
-function parseMcp(args: readonly string[], json: boolean): McpManagementCommand {
-	const action = args[0];
-	if (action === "list" && args.length === 1) {
-		return Object.freeze({ kind: "mcp", action, json });
-	}
-	if (action === "inspect" && args.length === 2) {
-		return Object.freeze({ kind: "mcp", action, serverId: nonEmpty(args[1]), json });
-	}
-	throw usage("mcp list|inspect [server_id] [--json]");
 }
 
 function parseJsonArguments(value: string | undefined): Readonly<Record<string, unknown>> {

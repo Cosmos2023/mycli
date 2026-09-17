@@ -5,6 +5,9 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
+    "goal.get",
+    "goal.update",
+    "plugin.inspect",
     "initialize",
     "status.get",
     "status.inspect",
@@ -27,6 +30,7 @@
     "approval.respond",
     "decision.resolve",
     "clarify.respond",
+    "mcp.elicitation.respond",
     "workspace.trust.status",
     "workspace.trust.set",
     "permissions.list",
@@ -52,9 +56,261 @@
     "shell.stop",
     "shell.stop_all",
     "trace.export",
-    "shutdown"
+    "shutdown",
+    "plugin.catalog",
+    "plugin.operation.start",
+    "plugin.operation.get",
+    "plugin.operation.cancel",
+    "skills.list",
+    "skills.config.write",
+    "hooks.list",
+    "hooks.config.write",
+    "workspace.diff",
+    "session.preview"
   ],
   "properties": {
+    "goal.get": {"type": "object", "required": ["params", "result"], "properties": {"params": {"type": "object", "properties": {}}, "result": {"type": "object", "required": ["session_id", "goal"], "properties": {"session_id": {"type": "string"}, "generation": {"type": "integer"}, "goal": {"anyOf": [{"$ref": "session-goal.schema.json"}, {"type": "null"}]}}}}},
+    "goal.update": {"type": "object", "required": ["params", "result"], "properties": {"params": {"type": "object", "required": ["action"], "additionalProperties": false, "properties": {"action": {"type": "string", "enum": ["create", "edit", "pause", "resume", "clear"]}, "session_id": {"type": "string"}, "generation": {"type": "integer", "minimum": 1}, "expected_goal_id": {"type": "string"}, "expected_revision": {"type": "integer", "minimum": 1}, "objective": {"type": "string", "minLength": 1, "maxLength": 16384}, "token_budget": {"type": ["integer", "null"], "minimum": 1, "maximum": 9007199254740991}}}, "result": {"type": "object", "required": ["session_id", "goal"], "properties": {"session_id": {"type": "string"}, "generation": {"type": "integer"}, "goal": {"anyOf": [{"$ref": "session-goal.schema.json"}, {"type": "null"}]}}}}},
+    "plugin.inspect": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "session_id",
+            "generation",
+            "target",
+            "revision"
+          ],
+          "properties": {
+            "session_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "generation": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "target": {
+              "type": "string",
+              "maxLength": 129
+            },
+            "revision": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          }
+        },
+        "result": {
+          "type": "object",
+          "title": "PluginDetail",
+          "required": [
+            "plugin",
+            "details"
+          ],
+          "properties": {
+            "plugin": {
+              "$ref": "#/$defs/PluginCatalogEntry"
+            },
+            "details": {
+              "type": "array",
+              "maxItems": 1024,
+              "items": {
+                "type": "string",
+                "maxLength": 1024
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    "plugin.catalog": {
+      "type": "object",
+      "properties": {
+        "params": {
+          "type": "object",
+          "properties": {
+            "session_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "generation": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "marketplace": {
+              "type": "string",
+              "maxLength": 64
+            }
+          },
+          "required": [
+            "session_id",
+            "generation"
+          ],
+          "additionalProperties": false
+        },
+        "result": {
+          "$ref": "#/$defs/PluginCatalog"
+        }
+      },
+      "required": [
+        "params",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    "plugin.operation.start": {
+      "type": "object",
+      "properties": {
+        "params": {
+          "type": "object",
+          "properties": {
+            "session_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "generation": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "operation_id": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+            },
+            "change": {
+              "$ref": "#/$defs/PluginChange"
+            }
+          },
+          "required": [
+            "session_id",
+            "generation",
+            "operation_id",
+            "change"
+          ],
+          "additionalProperties": false
+        },
+        "result": {
+          "$ref": "#/$defs/PluginOperation"
+        }
+      },
+      "required": [
+        "params",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    "plugin.operation.get": {
+      "type": "object",
+      "properties": {
+        "params": {
+          "type": "object",
+          "properties": {
+            "session_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "generation": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "operation_id": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+            }
+          },
+          "required": [
+            "session_id",
+            "generation",
+            "operation_id"
+          ],
+          "additionalProperties": false
+        },
+        "result": {
+          "$ref": "#/$defs/PluginOperation"
+        }
+      },
+      "required": [
+        "params",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    "plugin.operation.cancel": {
+      "type": "object",
+      "properties": {
+        "params": {
+          "type": "object",
+          "properties": {
+            "session_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "generation": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "operation_id": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+            }
+          },
+          "required": [
+            "session_id",
+            "generation",
+            "operation_id"
+          ],
+          "additionalProperties": false
+        },
+        "result": {
+          "$ref": "#/$defs/PluginOperation"
+        }
+      },
+      "required": [
+        "params",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    "mcp.elicitation.respond": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "$ref": "mcp-elicitation.schema.json#/$defs/response"
+        },
+        "result": {
+          "type": "object",
+          "required": [
+            "accepted"
+          ],
+          "properties": {
+            "accepted": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
     "initialize": {
       "$ref": "#/$defs/BootstrapMethod"
     },
@@ -774,6 +1030,7 @@
             "command"
           ],
           "properties": {
+            "operation_id": { "type": "string", "minLength": 1, "maxLength": 256 },
             "command": {
               "type": "string",
               "minLength": 1
@@ -946,9 +1203,574 @@
           }
         }
       }
+    },
+    "skills.list": {
+      "type": "object",
+      "properties": {
+        "params": {
+          "type": "object",
+          "properties": {
+            "session_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "generation": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "session_id",
+            "generation"
+          ],
+          "additionalProperties": false
+        },
+        "result": {
+          "$ref": "#/$defs/SkillCatalog"
+        }
+      },
+      "required": [
+        "params",
+        "result"
+      ]
+    },
+    "skills.config.write": {
+      "type": "object",
+      "properties": {
+        "params": {
+          "type": "object",
+          "properties": {
+            "session_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "generation": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "id": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "revision": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "skill_revision": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "enabled": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "session_id",
+            "generation",
+            "id",
+            "revision",
+            "skill_revision",
+            "enabled"
+          ],
+          "additionalProperties": false
+        },
+        "result": {
+          "$ref": "#/$defs/SkillCatalog"
+        }
+      },
+      "required": [
+        "params",
+        "result"
+      ]
+    },
+    "hooks.list": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "session_id",
+            "generation"
+          ],
+          "properties": {
+            "session_id": {
+              "$ref": "#/$defs/Identity"
+            },
+            "generation": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "result": {
+          "$ref": "#/$defs/HookCatalog"
+        }
+      }
+    },
+    "hooks.config.write": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "session_id",
+            "generation",
+            "id",
+            "revision",
+            "hook_revision",
+            "action"
+          ],
+          "properties": {
+            "session_id": {
+              "$ref": "#/$defs/Identity"
+            },
+            "generation": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "id": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "revision": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "hook_revision": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "action": {
+              "enum": [
+                "enable",
+                "disable",
+                "trust",
+                "revoke"
+              ]
+            }
+          }
+        },
+        "result": {
+          "$ref": "#/$defs/HookCatalog"
+        }
+      }
+    },
+    "workspace.diff": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "type": "object",
+          "required": [
+            "session_id",
+            "generation"
+          ],
+          "properties": {
+            "session_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "generation": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "result": {
+          "type": "object",
+          "required": [
+            "text",
+            "truncated"
+          ],
+          "properties": {
+            "text": {
+              "type": "string",
+              "maxLength": 262200
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "session.preview": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "type": "object",
+          "required": [
+            "session_id",
+            "generation",
+            "target_session_id"
+          ],
+          "properties": {
+            "session_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "generation": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "target_session_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          }
+        },
+        "result": {
+          "type": "object",
+          "required": [
+            "text",
+            "truncated"
+          ],
+          "properties": {
+            "text": {
+              "type": "string",
+              "maxLength": 262200
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
     }
   },
   "$defs": {
+    "PluginCatalogEntry": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(@[a-z0-9][a-z0-9._-]{0,63})?$",
+          "maxLength": 129
+        },
+        "revision": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "source": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "marketplace": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "installed": {
+          "type": "boolean"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "managed": {
+          "type": "boolean"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "installed",
+            "available",
+            "unavailable",
+            "invalid",
+            "migration_required"
+          ]
+        },
+        "version": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "capabilities": {
+          "type": "object",
+          "properties": {
+            "skills": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65536
+            },
+            "mcpServers": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65536
+            },
+            "hooks": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65536
+            },
+            "tools": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65536
+            },
+            "commands": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65536
+            }
+          },
+          "required": [
+            "skills",
+            "mcpServers",
+            "hooks",
+            "tools",
+            "commands"
+          ],
+          "additionalProperties": false,
+          "title": "PluginCapabilitySummary"
+        },
+        "issues": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "maxItems": 64
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "name",
+        "description",
+        "source",
+        "installed",
+        "enabled",
+        "managed",
+        "status",
+        "issues"
+      ],
+      "additionalProperties": false,
+      "title": "PluginCatalogEntry"
+    },
+    "PluginMarketplaceEntry": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "revision": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "source": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "issues": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "maxItems": 64
+        }
+      },
+      "required": [
+        "name",
+        "revision",
+        "source",
+        "issues"
+      ],
+      "additionalProperties": false,
+      "title": "PluginMarketplaceEntry"
+    },
+    "PluginCatalog": {
+      "type": "object",
+      "properties": {
+        "plugins": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PluginCatalogEntry"
+          },
+          "maxItems": 2048
+        },
+        "marketplaces": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PluginMarketplaceEntry"
+          },
+          "maxItems": 128
+        },
+        "issues": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "maxItems": 64
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "repository_enabled": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "plugins",
+        "marketplaces",
+        "issues",
+        "truncated",
+        "repository_enabled"
+      ],
+      "additionalProperties": false,
+      "title": "PluginCatalog"
+    },
+    "PluginChange": {
+      "title": "PluginChange",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
+                "install",
+                "enable",
+                "disable",
+                "update",
+                "remove"
+              ]
+            },
+            "target": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(@[a-z0-9][a-z0-9._-]{0,63})?$",
+              "maxLength": 129
+            },
+            "revision": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          },
+          "required": [
+            "action",
+            "target",
+            "revision"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
+                "marketplace_upgrade",
+                "marketplace_remove"
+              ]
+            },
+            "target": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "revision": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          },
+          "required": [
+            "action",
+            "target",
+            "revision"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
+                "install_source",
+                "marketplace_add"
+              ]
+            },
+            "source": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            }
+          },
+          "required": [
+            "action",
+            "source"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "PluginOperation": {
+      "type": "object",
+      "properties": {
+        "operation_id": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "running",
+            "completed",
+            "failed",
+            "cancelled"
+          ]
+        },
+        "message": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "issues": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "maxItems": 64
+        }
+      },
+      "required": [
+        "operation_id",
+        "state",
+        "message",
+        "issues"
+      ],
+      "additionalProperties": false,
+      "title": "PluginOperation"
+    },
     "Identity": {
       "type": "string",
       "minLength": 1
@@ -1036,6 +1858,7 @@
     "Status": {
       "type": "object",
       "properties": {
+        "goal": {"anyOf": [{"$ref": "session-goal.schema.json"}, {"type": "null"}]},
         "session_id": {
           "type": "string"
         },
@@ -1055,6 +1878,7 @@
         "pending_decision": {
           "type": "boolean"
         },
+        "pending_mcp_elicitation": {"type": "boolean"},
         "pending_clarification": {
           "type": "boolean"
         },
@@ -1367,6 +2191,12 @@
             "default",
             "plan"
           ]
+        },
+        "skill_references": {
+          "$ref": "#/$defs/SkillReferences"
+        },
+        "review": {
+          "$ref": "#/$defs/ReviewSelection"
         }
       }
     },
@@ -1393,6 +2223,9 @@
             },
             "local_images": {
               "$ref": "#/$defs/QueueImages"
+            },
+            "skill_references": {
+              "$ref": "#/$defs/SkillReferences"
             }
           }
         }
@@ -1448,6 +2281,7 @@
         {
           "type": "object",
           "properties": {
+        "operation_id": { "type": "string", "minLength": 1, "maxLength": 256 },
             "turn_id": {
               "type": "string"
             },
@@ -1802,6 +2636,7 @@
     "CommandResult": {
       "type": "object",
       "properties": {
+        "goal": {"anyOf": [{"$ref": "session-goal.schema.json"}, {"type": "null"}]},
         "execution": {
           "type": "string"
         },
@@ -1970,6 +2805,258 @@
         "has_more": {
           "type": "boolean"
         }
+      }
+    },
+    "SkillReference": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "revision": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "revision"
+      ],
+      "additionalProperties": false
+    },
+    "SkillCatalog": {
+      "type": "object",
+      "properties": {
+        "revision": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "skills": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "revision": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "description": {
+                "type": "string",
+                "maxLength": 512
+              },
+              "source": {
+                "type": "string",
+                "enum": [
+                  "builtin",
+                  "user",
+                  "shared_repo",
+                  "repo"
+                ]
+              },
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "enabled": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "revision",
+              "description",
+              "source",
+              "path",
+              "enabled"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 256
+        }
+      },
+      "required": [
+        "revision",
+        "skills"
+      ],
+      "additionalProperties": false
+    },
+    "HookCatalog": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "revision",
+        "hooks"
+      ],
+      "properties": {
+        "revision": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "hooks": {
+          "type": "array",
+          "maxItems": 2048,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "revision",
+              "name",
+              "point",
+              "source",
+              "path",
+              "command",
+              "enabled",
+              "trusted",
+              "trustSource"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "revision": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "name": {
+                "type": "string",
+                "maxLength": 4096
+              },
+              "point": {
+                "type": "string",
+                "maxLength": 4096
+              },
+              "source": {
+                "type": "string",
+                "maxLength": 4096
+              },
+              "path": {
+                "type": "string",
+                "maxLength": 4096
+              },
+              "command": {
+                "type": "array",
+                "maxItems": 256,
+                "items": {
+                  "type": "string",
+                  "maxLength": 65536
+                }
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "trusted": {
+                "type": "boolean"
+              },
+              "trustSource": {
+                "enum": [
+                  "allowlist",
+                  "plugin"
+                ]
+              },
+              "timeoutMs": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    "ReviewSelection": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "uncommitted"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "ref"
+          ],
+          "properties": {
+            "kind": {
+              "const": "base"
+            },
+            "ref": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "ref"
+          ],
+          "properties": {
+            "kind": {
+              "const": "commit"
+            },
+            "ref": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "instructions"
+          ],
+          "properties": {
+            "kind": {
+              "const": "custom"
+            },
+            "instructions": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4000
+            }
+          }
+        }
+      ]
+    },
+    "SkillReferences": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "$ref": "#/$defs/SkillReference"
       }
     }
   }

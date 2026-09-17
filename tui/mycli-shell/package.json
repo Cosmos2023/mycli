@@ -1,10 +1,12 @@
 {
   "name": "mycli-shell-tui",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "types": "./dist/index.d.ts",
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "exports": {
     ".": {
       "mycli-source": "./src/index.ts",
@@ -33,8 +35,8 @@
     "node": ">=22.19.0"
   },
   "dependencies": {
-    "@mycli/contracts": "0.1.0",
-    "@mycli/gateway": "0.1.0",
+    "@mycli/contracts": "0.1.1",
+    "@mycli/gateway": "0.1.1",
     "cli-highlight": "2.1.11",
     "get-east-asian-width": "1.6.0",
     "linebreak": "1.1.0",

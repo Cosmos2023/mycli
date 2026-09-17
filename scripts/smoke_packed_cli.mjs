@@ -158,8 +158,10 @@ try {
 	output.length = 0;
 	errors.length = 0;
 	nativeRetry = true;
+	// The catalog-backed Azure model requires a supported reasoning level.
 	const nativeEnv = { ...executionEnv, MYCLI_PROVIDER: "azure-openai-responses", MYCLI_API_KEY: undefined,
 		MYCLI_BASE_URL: undefined, MYCLI_STREAM_MAX_RETRIES: "1", MYCLI_REQUEST_MAX_RETRIES: "0",
+		MYCLI_THINKING_ENABLED: "true", MYCLI_REASONING_EFFORT: "low",
 		AZURE_OPENAI_BASE_URL: "http://127.0.0.1:" + server.address().port + "/openai/v1", AZURE_OPENAI_API_KEY: "packed-azure-key" };
 	assert.equal(await runCli({ argv: ["exec", "--json", "--session", "packed-native", "--model", "gpt-5.5", "--timeout", "15", "-"],
 		cwd: workspace, stdin: Readable.from(["Respond to this task"]), env: nativeEnv,
@@ -293,7 +295,7 @@ import {
 	builtinModelReasoningDefaults,
 	listProviderProfiles,
 } from "${APPLICATION_PACKAGE_MODULE_PATH}/dist/node_modules/@mycli/config/dist/index.js";
-import { ProviderRegistry } from "${APPLICATION_PACKAGE_MODULE_PATH}/dist/node_modules/@mycli/providers/dist/index.js";
+import { loadPiAiProviderDirectory, ProviderRegistry } from "${APPLICATION_PACKAGE_MODULE_PATH}/dist/node_modules/@mycli/providers/dist/index.js";
 
 const curated = [
 	["openrouter", "openrouter/auto", "medium"],
@@ -303,6 +305,14 @@ const curated = [
 	["nvidia", "openai/gpt-oss-120b", "none"],
 	["cerebras", "gpt-oss-120b", "medium"],
 ];
+// Individual snapshots now load only their provider. Explicit discovery owns the full catalog.
+const directory = await loadPiAiProviderDirectory();
+assert.ok(directory.providers.length >= 40);
+for (const [id, model] of curated) {
+	const provider = directory.providers.find((entry) => entry.catalogProviderId === id);
+	assert.equal(provider?.status, "serviceable");
+	assert.ok(provider.models.some((entry) => entry.id === model));
+}
 const profiles = listProviderProfiles().filter((profile) => (
 	curated.some(([provider]) => provider === profile.provider)
 ));

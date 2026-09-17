@@ -6,6 +6,8 @@ import { runPackageGit } from "./package-git.ts";
 
 export interface PluginMarketplaceEntry {
 	readonly name: string;
+	readonly displayName?: string;
+	readonly description?: string;
 	readonly source: PluginPackageSource;
 	readonly available: boolean;
 }
@@ -80,10 +82,18 @@ export async function loadMarketplace(root: string): Promise<PluginMarketplaceMa
 				...(optionalString(raw.path) ? { path: optionalString(raw.path) } : {}), ...(optionalString(raw.sha) ? { sha: optionalString(raw.sha) } : {}) };
 		} else throw new PluginPackageError("plugin_marketplace_source_invalid");
 		const policy = isObject(item.policy) ? item.policy : {};
-		entries.push({ name: item.name, source, available: policy.installation !== "NOT_AVAILABLE" });
+		const ui = isObject(item.interface) ? item.interface : {};
+		const displayName = displayText(ui.displayName ?? item.displayName, 128);
+		const description = displayText(item.description ?? ui.shortDescription, 512);
+		entries.push({ name: item.name, source, available: policy.installation !== "NOT_AVAILABLE",
+			...(displayName ? { displayName } : {}), ...(description ? { description } : {}) });
 	}
 	if (new Set(entries.map((entry) => entry.name)).size !== entries.length) throw new PluginPackageError("plugin_marketplace_duplicate");
 	return { name: value.name, entries: Object.freeze(entries) };
+}
+
+function displayText(value: unknown, limit: number): string | undefined {
+	return typeof value === "string" ? value.replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/gu, " ").trim().slice(0, limit) : undefined;
 }
 
 function optionalString(value: unknown): string | undefined {

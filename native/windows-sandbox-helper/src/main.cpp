@@ -8,44 +8,24 @@
 #include <vector>
 
 #include "acl.hpp"
+#include "state.hpp"
+#include "maintenance.hpp"
+#include "path-guard.hpp"
 #include "protocol.hpp"
 #include "sandbox.hpp"
 #include "firewall.hpp"
 #include "elevation.hpp"
 #include "identity.hpp"
+#include "token.hpp"
+#include "wfp.hpp"
 #include "win32.hpp"
 
 namespace {
 
 constexpr wchar_t kHelperName[] = L"mycli-windows-sandbox";
-constexpr bool kEnforcementReleased = false;
+using mycli::sandbox::SandboxIdentityKind;
 
-class SetupStateLock {
-  public:
-    explicit SetupStateLock(const std::wstring& owner_sid)
-        : handle_{CreateMutexW(
-              nullptr,
-              FALSE,
-              (L"Local\\mycli-windows-sandbox-setup-" + owner_sid).c_str())} {
-        if (!handle_) throw mycli::sandbox::Win32Error("CreateMutexW(sandbox setup)");
-        const DWORD wait_result = WaitForSingleObject(handle_.get(), INFINITE);
-        if (wait_result != WAIT_OBJECT_0 && wait_result != WAIT_ABANDONED) {
-            throw mycli::sandbox::Win32Error("WaitForSingleObject(sandbox setup)");
-        }
-        owns_mutex_ = true;
-    }
-
-    ~SetupStateLock() {
-        if (owns_mutex_) ReleaseMutex(handle_.get());
-    }
-
-    SetupStateLock(const SetupStateLock&) = delete;
-    SetupStateLock& operator=(const SetupStateLock&) = delete;
-
-  private:
-    mycli::sandbox::UniqueHandle handle_;
-    bool owns_mutex_ = false;
-};
+using mycli::sandbox::SetupStateLock;
 
 std::filesystem::path CurrentExecutablePath() {
     std::vector<wchar_t> path(32768);
@@ -60,12 +40,28 @@ std::filesystem::path CurrentExecutablePath() {
 bool SetupComplete() {
     const auto state_directory = mycli::sandbox::SandboxStateDirectory();
     const auto owner_sid = mycli::sandbox::CurrentUserSidString();
-    if (!mycli::sandbox::OfflineIdentityCredentialsExist(state_directory)) return false;
     try {
-        const auto identity = mycli::sandbox::LoadOfflineIdentity(
-            state_directory, owner_sid);
+        if (!mycli::sandbox::SandboxIdentityCredentialsExist(state_directory, SandboxIdentityKind::kOffline) ||
+            !mycli::sandbox::SandboxIdentityCredentialsExist(state_directory, SandboxIdentityKind::kOnline) ||
+            !mycli::sandbox::SandboxIdentityCredentialsExist(state_directory, SandboxIdentityKind::kProxy)) return false;
+        const auto identity = mycli::sandbox::LoadSandboxIdentity(
+            state_directory, owner_sid, SandboxIdentityKind::kOffline);
+        const auto online = mycli::sandbox::LoadSandboxIdentity(
+            state_directory, owner_sid, SandboxIdentityKind::kOnline);
+        const auto proxy = mycli::sandbox::LoadSandboxIdentity(
+            state_directory, owner_sid, SandboxIdentityKind::kProxy);
+        if (EqualSid(identity.sid.get(), online.sid.get()) != 0 ||
+            EqualSid(identity.sid.get(), proxy.sid.get()) != 0 ||
+            EqualSid(online.sid.get(), proxy.sid.get()) != 0) return false;
+        const auto capability = mycli::sandbox::DeriveCapabilitySid(state_directory, L"read-only");
+        for (const auto token : {identity.token.get(), online.token.get(), proxy.token.get()}) {
+            const auto restricted = mycli::sandbox::CreateRestrictedPrimaryTokenFrom(
+                token, {capability.get()});
+            if (IsTokenRestricted(restricted.get()) == 0) return false;
+        }
         return mycli::sandbox::OfflineFirewallSetupReady(
-            identity.sid_string, state_directory);
+            identity.sid_string, state_directory) &&
+            mycli::sandbox::ProxyWfpReady(proxy.sid_string, owner_sid);
     } catch (const std::exception&) {
         return false;
     }
@@ -74,14 +70,15 @@ bool SetupComplete() {
 void SetupForUser(
     const std::filesystem::path& state_directory,
     const std::wstring& owner_sid) {
-    std::cerr << "setup: identity-start\n" << std::flush;
-    mycli::sandbox::SetupOfflineIdentity(state_directory, owner_sid);
-    std::cerr << "setup: identity-done\n" << std::flush;
-    const auto identity = mycli::sandbox::LoadOfflineIdentity(
-        state_directory, owner_sid);
-    std::cerr << "setup: firewall-start\n" << std::flush;
+    mycli::sandbox::SetupSandboxIdentity(state_directory, owner_sid, SandboxIdentityKind::kOffline);
+    mycli::sandbox::SetupSandboxIdentity(state_directory, owner_sid, SandboxIdentityKind::kOnline);
+    mycli::sandbox::SetupSandboxIdentity(state_directory, owner_sid, SandboxIdentityKind::kProxy);
+    const auto identity = mycli::sandbox::LoadSandboxIdentity(
+        state_directory, owner_sid, SandboxIdentityKind::kOffline);
     mycli::sandbox::SetupOfflineFirewall(identity.sid_string, state_directory);
-    std::cerr << "setup: firewall-done\n" << std::flush;
+    const auto proxy = mycli::sandbox::LoadSandboxIdentity(
+        state_directory, owner_sid, SandboxIdentityKind::kProxy);
+    mycli::sandbox::SetupProxyWfp(proxy.sid_string, owner_sid, state_directory);
 }
 
 void EnsureSetupComplete() {
@@ -107,8 +104,58 @@ void ResetSetupState() {
     const SetupStateLock setup_lock{owner_sid};
     static_cast<void>(setup_lock);
     const auto state_directory = mycli::sandbox::SandboxStateDirectory();
-    mycli::sandbox::ResetOfflineIdentityCredentials(state_directory);
+    if (std::filesystem::exists(state_directory)) {
+        mycli::sandbox::AclJournal journal{state_directory};
+        journal.Cleanup();
+    }
+    mycli::sandbox::ResetSandboxIdentityCredentials(state_directory);
     mycli::sandbox::ResetOfflineFirewallState(state_directory);
+}
+
+void MaintainSandbox(bool uninstall) {
+    using namespace mycli::sandbox;
+    const auto owner_sid = CurrentUserSidString();
+    const auto directory = SandboxStateDirectory();
+    const SetupStateLock lock{owner_sid};
+    std::unique_ptr<AclJournal> journal;
+    if (std::filesystem::exists(directory)) {
+        journal = std::make_unique<AclJournal>(directory);
+        journal->StopHelpers();
+    }
+    if (RunElevatedMaintenance(ElevatedMaintenance::kQuiesce, directory, owner_sid) != 0) {
+        throw std::runtime_error("could not stop sandbox accounts for maintenance");
+    }
+    if (journal) journal->Cleanup();
+    if (uninstall) {
+        if (RunElevatedMaintenance(ElevatedMaintenance::kUninstall, directory, owner_sid) != 0) {
+            throw std::runtime_error("sandbox uninstall did not complete; accounts remain disabled");
+        }
+        ResetSandboxIdentityCredentials(directory);
+        ResetOfflineFirewallState(directory);
+        journal.reset();
+        if (std::filesystem::exists(directory)) {
+            const PathGuard guard{directory};
+            for (const auto* name : {L"acl-state.v1.json", L"acl-state.v1.tmp", L"proxy-access.v1.json", L"proxy-access.v1.tmp"}) {
+                std::filesystem::remove(directory / name);
+            }
+        }
+        if (SandboxAccountsExist(owner_sid)) throw std::runtime_error("sandbox accounts remain after uninstall");
+    } else {
+        journal.reset();
+        if (RunElevatedSetup(directory, owner_sid) != 0 || !SetupComplete()) {
+            throw std::runtime_error("sandbox repair did not pass readiness verification");
+        }
+    }
+}
+
+bool ManagedStatePresent() {
+    const auto directory = mycli::sandbox::SandboxStateDirectory();
+    if (mycli::sandbox::SandboxAccountsExist(mycli::sandbox::CurrentUserSidString())) return true;
+    for (const auto* name : {L"offline.credential", L"online.credential", L"proxy.credential",
+            L"firewall.v1", L"acl-state.v1.json", L"acl-state.v1.tmp", L"proxy-access.v1.json", L"proxy-access.v1.tmp"}) {
+        if (std::filesystem::exists(directory / name)) return true;
+    }
+    return false;
 }
 
 int Run(int argc, wchar_t* argv[]) {
@@ -120,7 +167,9 @@ int Run(int argc, wchar_t* argv[]) {
                    << L",\"setup_complete\":"
                    << (setup_complete ? L"true" : L"false")
                    << L",\"sandbox_ready\":"
-                   << (setup_complete && kEnforcementReleased ? L"true" : L"false")
+                   << (setup_complete ? L"true" : L"false")
+                   << L",\"managed_state_present\":"
+                   << (ManagedStatePresent() ? L"true" : L"false")
                    << L"}\n";
         return 0;
     }
@@ -134,6 +183,18 @@ int Run(int argc, wchar_t* argv[]) {
     if (argc == 4 && std::wstring_view{argv[1]} == L"--setup-for-user") {
         SetupForUser(std::filesystem::path{argv[2]}, argv[3]);
         std::wcout << L"Windows sandbox setup completed\n";
+        return 0;
+    }
+    if (argc == 4 && std::wstring_view{argv[1]} == L"--quiesce-for-user") {
+        mycli::sandbox::QuiesceSandboxAccounts(std::filesystem::path{argv[2]}, argv[3]);
+        return 0;
+    }
+    if (argc == 4 && std::wstring_view{argv[1]} == L"--uninstall-for-user") {
+        mycli::sandbox::UninstallSandboxAccounts(std::filesystem::path{argv[2]}, argv[3]);
+        return 0;
+    }
+    if (argc == 2 && (std::wstring_view{argv[1]} == L"--repair" || std::wstring_view{argv[1]} == L"--uninstall")) {
+        MaintainSandbox(std::wstring_view{argv[1]} == L"--uninstall");
         return 0;
     }
     if (argc == 2 && std::wstring_view{argv[1]} == L"--ensure-setup") {
@@ -157,23 +218,32 @@ int Run(int argc, wchar_t* argv[]) {
         EnsureSetupComplete();
         const auto state_directory = mycli::sandbox::SandboxStateDirectory();
         const auto owner_sid = mycli::sandbox::CurrentUserSidString();
-        const auto identity = mycli::sandbox::LoadOfflineIdentity(
-            state_directory, owner_sid);
-        mycli::sandbox::PrepareSandboxRequest(request, identity.sid.get());
+        const auto kind = request.network_proxy_port != 0 ? SandboxIdentityKind::kProxy
+            : request.network == mycli::sandbox::NetworkPolicy::kEnabled
+                ? SandboxIdentityKind::kOnline : SandboxIdentityKind::kOffline;
+        const auto identity = mycli::sandbox::LoadSandboxIdentity(
+            state_directory, owner_sid, kind);
         const auto helper = CurrentExecutablePath();
-        const auto helper_root = helper.parent_path().has_parent_path()
-            ? helper.parent_path().parent_path()
-            : helper.parent_path();
-        mycli::sandbox::GrantReadableRoot(helper_root, identity.sid.get());
-        return static_cast<int>(mycli::sandbox::RunAsOfflineIdentity(
+        {
+            // ACL updates are read/merge/write operations. Serialize preparation
+            // across this owner's concurrent Shells without serializing execution.
+            const SetupStateLock preparation_lock{owner_sid};
+            static_cast<void>(preparation_lock);
+            mycli::sandbox::AclJournal journal{state_directory};
+            journal.Begin(request.denied_read_roots);
+            mycli::sandbox::PrepareSandboxRequest(request, identity.sid.get());
+            mycli::sandbox::GrantReadableRoot(helper.parent_path(), identity.sid.get());
+        }
+        return static_cast<int>(mycli::sandbox::RunAsSandboxIdentity(
             state_directory,
             owner_sid,
+            kind,
             {helper.wstring(), L"--run-prepared-json", argv[2], identity.sid_string},
-            std::filesystem::path{request.cwd}));
+            std::filesystem::path{request.cwd}, request.network_proxy_port));
     }
     throw std::runtime_error(
         "expected --handshake, --setup, --setup-for-user, --ensure-setup, "
-        "--reset, or --request-json <json>");
+        "--reset, --repair, --uninstall, or --request-json <json>");
 }
 
 }  // namespace

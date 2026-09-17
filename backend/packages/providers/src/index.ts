@@ -8,6 +8,7 @@ export {
 export type { ProviderFailureOptions, ProviderFailureProjection } from "./errors.ts";
 export type {
 	ModelProvider,
+	ProviderCapabilities,
 	ProviderStreamOptions,
 	ProviderStreamPhase,
 } from "./model-provider.ts";
@@ -34,7 +35,7 @@ export type {
 	ProviderRouteSource,
 	ProviderRouteSupportTier,
 } from "./registry/provider-directory-types.ts";
-export { loadPiAiProviderDirectory } from "./registry/provider-directory.ts";
+export { loadPiAiProviderDirectory, loadPiAiProviderEntry } from "./registry/provider-directory.ts";
 export {
 	mergePiAiCompatOverrides,
 	validatePiAiCompatOverride,

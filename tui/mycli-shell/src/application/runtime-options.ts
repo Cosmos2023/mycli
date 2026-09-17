@@ -1,4 +1,6 @@
+import type { SkillReference, ReviewSelection } from "@mycli/contracts";
 import type { ModelSelectionScope } from "@mycli/contracts";
+import type { MycliShellPluginManager, MycliShellSkillManager, MycliShellHookManager } from "../model.ts";
 import type { ProjectTrustDecision } from "../components/selectors/trust-selector.ts";
 import type { PlanImplementationAction } from "../interaction/plan-implementation.ts";
 import type { MycliUiActionDispatcher } from "../interaction/ui-actions.ts";
@@ -26,6 +28,11 @@ import type {
 import type { Terminal } from "../tui-core/terminal.ts";
 
 export type MycliShellRuntimeOptions = {
+	onWorkspaceDiffLoad?: (signal: AbortSignal) => Promise<string>;
+	onSessionConversationPreview?: (sessionId: string, signal: AbortSignal) => Promise<string>;
+	skillManager?: MycliShellSkillManager;
+	hookManager?: MycliShellHookManager;
+	pluginManager?: MycliShellPluginManager;
 	initialState: MycliShellState;
 	terminal?: Terminal;
 	requireTrust?: boolean;
@@ -113,10 +120,14 @@ export type MycliShellLocalImageAttachment = {
 };
 
 export type MycliShellSubmitAttachments = {
+	review?: ReviewSelection;
+	collaborationMode?: "default" | "plan";
 	localImages?: MycliShellLocalImageAttachment[];
+	skillReferences?: readonly SkillReference[];
 };
 
 export type MycliShellQueuedInput = {
 	text: string;
 	localImages?: MycliShellLocalImageAttachment[];
+	skillReferences?: readonly SkillReference[];
 };

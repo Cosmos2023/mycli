@@ -2110,6 +2110,7 @@ function userMessage(input: ReserveTurnInput): Readonly<Record<string, unknown>>
 			client_user_message_id: input.clientUserMessageId,
 			...(input.queueId ? { queue_id: input.queueId } : {}),
 			source: input.inputSource ?? "submit",
+			...(input.skillReferences?.length ? { skill_references: input.skillReferences } : {}),
 			...(input.imagePaths && input.imagePaths.length > 0
 				? { image_paths: [...input.imagePaths] }
 				: {}),
@@ -2135,6 +2136,7 @@ function userHistoryItem(input: ReserveTurnInput): Readonly<Record<string, unkno
 			client_user_message_id: input.clientUserMessageId,
 			...(input.queueId ? { queue_id: input.queueId } : {}),
 			source: input.inputSource ?? "submit",
+			...(input.skillReferences?.length ? { skill_references: input.skillReferences } : {}),
 			image_paths: [...(input.imagePaths ?? [])],
 		},
 	};

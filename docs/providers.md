@@ -10,6 +10,11 @@ after the dependency update passes. Credentials remain owned by mycli through `M
 private `~/.mycli/auth.json` store. Supported native routes can also use provider environment
 authentication and OAuth through mycli's credential adapter.
 
+Startup and session restoration read login metadata without loading the complete pi-ai catalog.
+Native credential checks load the relevant auth adapter locally without refreshing OAuth or sending
+a model request. Opening `/model` discovers the full directory; executing a turn captures its
+selected route and model metadata before dispatch.
+
 The three route tiers are:
 
 - `stable`: product-supported routes with backward-compatible defaults.
@@ -44,6 +49,11 @@ metadata. Mycli does not duplicate those wire facts in provider profiles. An unc
 an explicit declaration for semantic metadata such as images and reasoning; pi-ai automatic
 detection, plus an optional validated `compat` override, owns its wire format. Hosted web search
 remains a separate Responses-only mycli capability.
+
+Hosted search and assistant text share a bounded stream queue. A slow consumer pauses upstream
+delivery; the queue retains at most 64 events and 8 MiB of serialized UTF-8 payloads. Exceeding a
+limit reports `response_stream_error` with a buffering-limit detail. Cancelling a turn or stopping
+consumption releases pending stream reads.
 
 Request caching is expressed once as `request.cache_retention = "none" | "short" | "long"`, with
 `short` as the default. Mycli passes that preference and the stable session id to pi-ai. Pi-ai maps

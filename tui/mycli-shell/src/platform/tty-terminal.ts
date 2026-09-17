@@ -155,6 +155,7 @@ export class StreamTerminal implements Terminal {
 		this.streams.input.resume();
 		if (this.startInAlternateScreen) this.enterAlternateScreen();
 		this.write("\x1b[?2004h");
+		this.write("\x1b[?1004h");
 		this.streams.output.on("resize", this.resizeHandler);
 		if (this.platform !== "win32") {
 			this.sigwinchHandler = () => this.resizeHandler?.();
@@ -175,6 +176,7 @@ export class StreamTerminal implements Terminal {
 	stop(): void {
 		this.write("\x1b[?1006l\x1b[?1000l");
 		this.write("\x1b[?2004l");
+		this.write("\x1b[?1004l");
 		this.stdinBuffer?.destroy();
 		this.stdinBuffer = undefined;
 		if (this.stdinDataHandler) {

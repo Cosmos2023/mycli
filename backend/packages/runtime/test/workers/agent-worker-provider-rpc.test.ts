@@ -7,6 +7,7 @@ import {
 	parseProviderRouteId,
 	providerNativeEndpointSha256,
 	providerNativeProtocol,
+	toolDiscovery,
 	type ProviderNativeApi,
 } from "@mycli/core";
 import {
@@ -67,6 +68,17 @@ test("parses the complete provider request schema across the Worker boundary", (
 	assert(Object.isFrozen(parsed.route.compat));
 	assert(Object.isFrozen(parsed.route.modelCompat));
 	assert(Object.isFrozen(parsed.route.modelCompat?.["test-model"]));
+});
+
+test("Worker requests retain validated tool-discovery load points", () => {
+	const command = executeCommand();
+	const tool = { id: "mcp:docs:search", name: "mcp_docs_search", description: "Search", inputSchema: { type: "object" } };
+	const discovery = toolDiscovery(tool);
+	const request = { ...command.request, tools: [...command.request.tools, tool], items: [...command.request.items,
+		{ type: "tool_result", callId: "discovery", toolName: "tool_search", output: "Found", success: true, toolDiscoveries: [discovery] }] };
+	const parsed = parseAgentWorkerProviderCommand({ ...command, request });
+	assert.equal(parsed.type, "provider_step_execute");
+	assert.deepEqual(parsed.request.items?.at(-1), request.items.at(-1));
 });
 
 test("extended stream diagnostics require an explicit supported version", () => {

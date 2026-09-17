@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
+import { NODE_RUNTIME_CONTEXT_DEFAULTS, type NodeRuntimeConfig } from "@mycli/config";
 import type { CanonicalConversationItem } from "@mycli/core";
 import type {
 	ProviderEvent,
 	ProviderRequest,
-	ProviderRequestConfig,
 } from "@mycli/core";
 import type { ModelProvider } from "@mycli/providers";
 import { CompactionProviderError } from "../../src/context/compaction-model-executor.ts";
@@ -18,7 +18,8 @@ import {
 	type CompactionRuntimeEvent,
 } from "../../src/context/compaction-coordinator.ts";
 import { TokenCounter } from "../../src/context/token-counter.ts";
-import * as compactionModule from "../../src/context/compaction-coordinator.ts";
+import { summarizeCompactionWithProvider } from "../../src/context/compaction-coordinator.ts";
+import { compactionSummaryItem } from "../../src/context/compaction-summary.ts";
 
 test("summarizes through the provider abstraction with a bounded no-tool request", async () => {
 	const requests: ProviderRequest[] = [];
@@ -33,17 +34,9 @@ test("summarizes through the provider abstraction with a bounded no-tool request
 			]);
 		},
 	};
-	const summarize = Reflect.get(compactionModule, "summarizeCompactionWithProvider") as
-		| ((provider: ModelProvider, config: ProviderRequestConfig, input: {
-			readonly items: readonly CanonicalConversationItem[];
-			readonly instruction: string;
-			readonly maxOutputTokens: number;
-			readonly model?: string;
-			readonly signal: AbortSignal;
-		}) => Promise<string>)
-		| undefined;
-	assert.equal(typeof summarize, "function");
-	const config: ProviderRequestConfig = {
+	const config: NodeRuntimeConfig = {
+		...providerConfig(),
+		maxOutputTokens: 600,
 		provider: "openai",
 		protocol: "responses",
 		model: "main-model",
@@ -52,34 +45,29 @@ test("summarizes through the provider abstraction with a bounded no-tool request
 		cacheRetention: "short",
 	};
 
-	const summary = await summarize!(provider, config, {
+	const summary = await summarizeCompactionWithProvider(provider, config, {
 		items: [{ type: "user", text: "old work" }],
 		instruction: "Summarize only.",
 		model: "summary-model",
-		maxOutputTokens: 600,
+		baseInstructions: "Base coding instructions.",
 		signal: new AbortController().signal,
 	});
 
 	assert.equal(summary, "Compact summary.");
 	assert.equal(requests[0]?.model, "summary-model");
-	assert.equal(requests[0]?.reasoningEffort, "none");
+	assert.equal(requests[0]?.reasoningEffort, "high");
 	assert.equal(requests[0]?.maxOutputTokens, 600);
 	assert.equal(requests[0]?.sessionId, "session-1");
 	assert.equal(requests[0]?.cacheRetention, "short");
 	assert.deepEqual(requests[0]?.tools, []);
-	assert.deepEqual(requests[0]?.items, [{ type: "user", text: "old work" }]);
+	assert.equal(requests[0]?.instructions, "Base coding instructions.");
+	assert.deepEqual(requests[0]?.items, [
+		{ type: "user", text: "old work" },
+		{ type: "user", text: "Summarize only." },
+	]);
 });
 
 test("rejects a tool call from the compaction summarizer", async () => {
-	const summarize = Reflect.get(compactionModule, "summarizeCompactionWithProvider") as
-		| ((provider: ModelProvider, config: ProviderRequestConfig, input: {
-			readonly items: readonly CanonicalConversationItem[];
-			readonly instruction: string;
-			readonly maxOutputTokens: number;
-			readonly signal: AbortSignal;
-		}) => Promise<string>)
-		| undefined;
-	assert.equal(typeof summarize, "function");
 	const provider: ModelProvider = {
 		stream: () => providerEvents([
 			{ type: "tool_call", callId: "call-1", name: "Read", argumentsJson: "{}" },
@@ -88,10 +76,10 @@ test("rejects a tool call from the compaction summarizer", async () => {
 	};
 
 	await assert.rejects(
-		() => summarize!(provider, providerConfig(), {
+		() => summarizeCompactionWithProvider(provider, providerConfig(), {
 			items: [{ type: "user", text: "old work" }],
 			instruction: "Summarize only.",
-			maxOutputTokens: 600,
+			baseInstructions: "Base coding instructions.",
 			signal: new AbortController().signal,
 		}),
 		(error: unknown) => error instanceof CompactionProviderError
@@ -124,24 +112,16 @@ test("keeps fresh input out of the summary and preserves raw history", async () 
 
 	assert.equal(result.status, "compressed");
 	assert.match(renderItems(summaryInput), /first request|first answer/u);
-	assert.doesNotMatch(renderItems(summaryInput), /second request|second answer/u);
+	assert.match(renderItems(summaryInput), /second request|second answer/u);
 	assert.doesNotMatch(renderItems(summaryInput), /current request|fresh steer/);
 	assert.equal(store.historyItems.length, conversation.length);
 	assert.equal(store.commitInput?.checkpoint.status, "completed");
 	assert.deepEqual(store.commitInput?.replacementItems, [
-		{ type: "user", text: "[compact-summary]\nEarlier work and decisions." },
-		{ type: "user", text: "second request " + "context ".repeat(20) },
-		{ type: "assistant", text: "second answer " + "result ".repeat(20) },
-		{ type: "user", text: "current request" },
-		{ type: "user", text: "fresh steer" },
+		conversation[0], conversation[2], compactionSummaryItem("Earlier work and decisions."),
+		conversation[4], conversation[5],
 	]);
-	assert.deepEqual(store.providerConversation.map((message) => message.content), [
-		"[compact-summary]\nEarlier work and decisions.",
-		"second request " + "context ".repeat(20),
-		"second answer " + "result ".repeat(20),
-		"current request",
-		"fresh steer",
-	]);
+	assert.deepEqual(store.providerConversation.map((message) => message.content),
+		store.commitInput?.replacementItems?.map((item) => "text" in item ? item.text : ""));
 	assert.deepEqual(events.map((event) => event.type), [
 		"compaction_started",
 		"compaction_completed",
@@ -269,7 +249,7 @@ test("classifies an interrupted summary request as interrupted", async () => {
 	]);
 	assert.equal(events[1]?.type, "compaction_completed");
 	if (events[1]?.type === "compaction_completed") {
-		assert.equal(events[1].status, "failed");
+		assert.equal(events[1].status, "interrupted");
 		assert.equal(events[1].beforeTokens, events[1].afterTokens);
 	}
 });
@@ -356,13 +336,13 @@ test("late success without a cooperative abort cannot replace a successor compac
 	assert.equal(store.state?.window_id, "new");
 });
 
-test("cancellation during the post-summary await never installs a compaction", async () => {
+test("cancellation after summary generation never installs a compaction", async () => {
 	const conversation = conversationFixture();
 	const store = new FakeCompactionStore(conversation, historyFixture(conversation));
 	const controller = new AbortController();
 	const result = await createCoordinator({
 		store,
-		failpoint: () => { queueMicrotask(() => controller.abort()); },
+		failpoint: () => { controller.abort(); },
 	}).compact({
 		clientTurnId: "client-current", turnId: "turn-current", source: "pre_turn",
 		conversation, freshItemIds: new Set(["current-user", "steer-q1"]),
@@ -402,7 +382,7 @@ test("increments the persisted compaction window and records raw history size", 
 	assert.equal(store.commitInput?.checkpoint.history_item_count, history.length);
 });
 
-test("skips below threshold and rejects summaries that save too little", async () => {
+test("skips below threshold and accepts completed summaries without a savings gate", async () => {
 	const shortConversation: readonly CanonicalConversationItem[] = [
 		{ type: "user", text: "short" },
 		{ type: "assistant", text: "answer" },
@@ -437,9 +417,7 @@ test("skips below threshold and rejects summaries that save too little", async (
 	const events: CompactionRuntimeEvent[] = [];
 	const skipped = await createCoordinator({
 		store,
-		minSavingsRatio: 0.99,
 		summarize: async () => "summary " + "still large ".repeat(50),
-		summaryMaxTokens: 1_000,
 	}).compact({
 		clientTurnId: "client-current",
 		turnId: "turn-current",
@@ -449,17 +427,10 @@ test("skips below threshold and rejects summaries that save too little", async (
 		emit: events.push.bind(events),
 		signal: new AbortController().signal,
 	});
-	assert.equal(skipped.status, "skipped");
-	assert.equal(store.commitInput, undefined);
-	assert.equal(store.state, undefined);
-	assert.deepEqual(events.map((event) => event.type), [
-		"compaction_started",
-		"compaction_completed",
-	]);
-	assert.equal(events[1]?.type, "compaction_completed");
-	if (events[1]?.type === "compaction_completed") {
-		assert.equal(events[1].status, "skipped");
-	}
+	assert.equal(skipped.status, "compressed");
+	assert.ok(store.commitInput);
+	assert.equal(store.state?.status, "completed");
+	assert.equal(events.at(-1)?.type, "compaction_completed");
 });
 
 test("does not tokenize opaque fields in legacy provider replay state", async () => {
@@ -779,10 +750,7 @@ test("summarizes the active tool turn after a context rejection", async () => {
 		),
 		true,
 	);
-	assert.deepEqual(result.providerConversation.at(-1), {
-		type: "user",
-		text: "[compact-summary]\nold work summary",
-	});
+	assert.deepEqual(result.providerConversation.at(-1), compactionSummaryItem("old work summary"));
 });
 
 test("mid-turn compaction uses the normal summary path and drops completed tool artifacts", async () => {
@@ -838,12 +806,12 @@ test("mid-turn compaction uses the normal summary path and drops completed tool 
 	assert.deepEqual(summaryItems, conversation);
 	assert.deepEqual(store.commitInput?.replacementItems, [
 		{ type: "user", text: "inspect the repository" },
-		{ type: "user", text: "[compact-summary]\nThe README was inspected." },
+		compactionSummaryItem("The README was inspected."),
 	]);
 	assert.deepEqual(result.providerConversation, store.commitInput?.replacementItems);
 });
 
-test("active-turn compaction does not rehydrate file contents", async (t) => {
+test("all local compaction sources omit file rehydration", async (t) => {
 	const workspace = await workspaceFixture(t);
 	await mkdir(join(workspace, "src"), { recursive: true });
 	await writeFile(
@@ -880,7 +848,7 @@ test("active-turn compaction does not rehydrate file contents", async (t) => {
 		}, "call-edit"),
 	];
 
-	for (const source of ["mid_turn", "context_overflow"] as const) {
+	for (const source of ["pre_turn", "user_requested", "mid_turn", "context_overflow"] as const) {
 		const store = new FakeCompactionStore(conversation, history);
 		const result = await createCoordinator({
 			store,
@@ -893,7 +861,7 @@ test("active-turn compaction does not rehydrate file contents", async (t) => {
 			turnId: "turn-current",
 			source,
 			conversation,
-			freshItemIds: new Set(["current-user"]),
+			freshItemIds: new Set(),
 			emit: () => {},
 			signal: new AbortController().signal,
 		});
@@ -916,118 +884,6 @@ test("active-turn compaction does not rehydrate file contents", async (t) => {
 	}
 });
 
-test("rehydrates edited files before reads within path, item, total, and count bounds", async (t) => {
-	const workspace = await workspaceFixture(t);
-	await mkdir(join(workspace, "src"), { recursive: true });
-	await mkdir(join(workspace, ".mycli"), { recursive: true });
-	await writeFile(join(workspace, "src", "edited.ts"), "edited current content\n", "utf8");
-	await writeFile(join(workspace, "src", "read.ts"), "read current content\n", "utf8");
-	await writeFile(join(workspace, ".mycli", "state.md"), "state must stay private\n", "utf8");
-	const outside = join(workspace, "..", "outside.ts");
-	await writeFile(outside, "outside content\n", "utf8");
-	await symlink(outside, join(workspace, "src", "escaped.ts"));
-	const conversation = conversationFixture();
-	const conversationHistory = historyFixture(conversation);
-	const history = [
-		...conversationHistory.slice(0, -2),
-		toolResult("edit-result", "Edit", {
-			file_changes: [{ path: "src/edited.ts", kind: "update" }],
-		}),
-		toolCall("read-call", "Read", { file_path: "src/read.ts" }),
-		toolResult("read-result", "Read", { success: true }, "read-call"),
-		toolCall("state-call", "Read", { file_path: ".mycli/state.md" }),
-		toolResult("state-result", "Read", { success: true }, "state-call"),
-		toolCall("escape-call", "Read", { file_path: "src/escaped.ts" }),
-		toolResult("escape-result", "Read", { success: true }, "escape-call"),
-		...conversationHistory.slice(-2),
-	];
-	const store = new FakeCompactionStore(conversation, history);
-	const result = await createCoordinator({
-		store,
-		workspaceRoot: workspace,
-		rehydrationMaxFiles: 2,
-		rehydrationMaxItemTokens: 20,
-		rehydrationMaxTotalTokens: 30,
-	}).compact({
-		clientTurnId: "client-current",
-		turnId: "turn-current",
-		source: "pre_turn",
-		conversation,
-		freshItemIds: new Set(["current-user", "steer-q1"]),
-		emit: () => {},
-		signal: new AbortController().signal,
-	});
-
-	assert.equal(result.status, "compressed");
-	assert.deepEqual(result.rehydration.map((item) => item.path), [
-		"src/edited.ts",
-		"src/read.ts",
-	]);
-	assert.ok(result.rehydration.reduce((total, item) => total + item.tokens, 0) <= 30);
-	assert.equal(JSON.stringify(store.commitInput?.replacementMessages).includes("rehydration"), false);
-	const boundaryCheckpoint = recordValue(store.commitInput?.checkpoint);
-	assert.equal(Array.isArray(boundaryCheckpoint.retained_tail_messages), true);
-	assert.deepEqual(
-		(boundaryCheckpoint.rehydration_items as readonly { readonly path: string }[])
-			.map((item) => item.path),
-		["src/edited.ts", "src/read.ts"],
-	);
-	assert.match(JSON.stringify(boundaryCheckpoint.rehydration_items), /edited current content/u);
-	assert.equal(JSON.stringify(result.providerConversation).includes("edited current content"), true);
-	assert.equal(JSON.stringify(result.providerConversation).includes("state must stay private"), false);
-	assert.equal(JSON.stringify(result.providerConversation).includes("outside content"), false);
-	const counter = new TokenCounter({
-		loadEncoder: () => { throw new Error("force deterministic fallback"); },
-	});
-	const storedTokens = countConversationTokens(counter, store.commitInput?.replacementItems ?? []);
-	const providerTokens = countConversationTokens(counter, result.providerConversation);
-	assert.equal(result.afterTokens, providerTokens);
-	assert.ok(result.afterTokens > storedTokens);
-});
-
-test("uses provider-only rehydration when enforcing the minimum savings ratio", async (t) => {
-	const workspace = await workspaceFixture(t);
-	await mkdir(join(workspace, "src"), { recursive: true });
-	await writeFile(
-		join(workspace, "src", "large.ts"),
-		"rehydration payload ".repeat(3_000),
-		"utf8",
-	);
-	const conversation: readonly CanonicalConversationItem[] = [
-		{ type: "user", text: "old request " + "history ".repeat(1_500) },
-		{ type: "assistant", text: "old answer " + "detail ".repeat(1_500) },
-		{ type: "user", text: "retained request" },
-		{ type: "assistant", text: "retained answer" },
-		{ type: "user", text: "current request" },
-	];
-	const history = [
-		...historyFixture(conversation.slice(0, 4), ["u1", "a1", "u2", "a2"]),
-		toolResult("edit-result", "Edit", {
-			success: true,
-			file_changes: [{ path: "src/large.ts", kind: "update" }],
-		}),
-		{ id: "current-user", turn_id: "turn-current", type: "user_message", text: "current request", metadata: {} },
-	];
-	const store = new FakeCompactionStore(conversation, history);
-
-	const result = await createCoordinator({
-		store,
-		workspaceRoot: workspace,
-		minSavingsRatio: 0.5,
-	}).compact({
-		clientTurnId: "client-current",
-		turnId: "turn-current",
-		source: "pre_turn",
-		conversation,
-		freshItemIds: new Set(["current-user"]),
-		emit: () => {},
-		signal: new AbortController().signal,
-	});
-
-	assert.equal(result.status, "skipped");
-	assert.equal(store.commitInput, undefined);
-});
-
 function createCoordinator(overrides: Partial<Omit<CompactionCoordinatorOptions, "store">> & {
 	readonly store: FakeCompactionStore;
 }): CompactionCoordinator {
@@ -1043,14 +899,8 @@ function createCoordinator(overrides: Partial<Omit<CompactionCoordinatorOptions,
 		tokenLimit: 30,
 		reservedOutputTokens: 10,
 		triggerRatio: 1,
-		tailTurns: 1,
-		tailMaxTokens: 100,
-		minSavingsRatio: 0,
-		summaryMaxTokens: 100,
+		retainedUserMaxTokens: 20_000,
 		summaryModel: "summary-model",
-		rehydrationMaxFiles: 5,
-		rehydrationMaxItemTokens: 5_000,
-		rehydrationMaxTotalTokens: 50_000,
 		summarize: async () => "Earlier work and decisions.",
 		createCheckpointId: () => "compact-1",
 		clock: () => "2026-08-04T00:00:00.000Z",
@@ -1152,29 +1002,6 @@ function renderItems(items: readonly CanonicalConversationItem[]): string {
 	}).join("\n");
 }
 
-function countConversationTokens(
-	counter: TokenCounter,
-	items: readonly CanonicalConversationItem[],
-): number {
-	return items.reduce((total, item) => total + counter.count(renderConversationItem(item)), 0);
-}
-
-function renderConversationItem(item: CanonicalConversationItem): string {
-	switch (item.type) {
-		case "user":
-		case "assistant":
-			return `${item.type}: ${item.text}`;
-		case "context":
-			return `context ${item.metadata.kind}: ${item.text}`;
-		case "assistant_tool_calls":
-			return `assistant_tool_calls: ${item.text}\n${item.calls.map((call) => (
-				`${call.name} ${call.callId} ${call.argumentsJson}`
-			)).join("\n")}`;
-		case "tool_result":
-			return `tool_result ${item.toolName} ${item.callId} ${String(item.success)}: ${item.output}`;
-	}
-}
-
 function recordValue(value: unknown): Readonly<Record<string, unknown>> {
 	return typeof value === "object" && value !== null && !Array.isArray(value)
 		? value as Readonly<Record<string, unknown>>
@@ -1187,8 +1014,13 @@ async function workspaceFixture(t: TestContext): Promise<string> {
 	return root;
 }
 
-function providerConfig(): ProviderRequestConfig {
+function providerConfig(): NodeRuntimeConfig {
 	return {
+		...NODE_RUNTIME_CONTEXT_DEFAULTS,
+		workspaceRoot: "/workspace", homeDir: "/unused", apiBaseUrl: "https://offline.invalid/v1",
+		authRef: "test", sessionId: "test", sessionsDbPath: "/unused/session.db", maxPromptTokens: 16_000,
+		requestMaxRetries: 0, streamMaxRetries: 0, reasoningEffort: "none", thinkingEnabled: false,
+		supportsImages: false, webSearchMode: "disabled", requestPermissionsToolEnabled: false, updatesCheckOnStartup: false,
 		provider: "openai",
 		protocol: "responses",
 		model: "main-model",

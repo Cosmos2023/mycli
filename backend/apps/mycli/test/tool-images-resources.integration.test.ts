@@ -35,7 +35,6 @@ test("Worker turns deliver local and MCP images, resources, approvals, and durab
 		{ name: "read_mcp_resource", args: { server: "local", uri: "data:///readme" } },
 		{ name: "read_mcp_resource", args: { server: "local", uri: "data:///image" } },
 		{ name: "view_image", args: { path: "image.png", detail: "original" } },
-		{ name: "tool_search", args: { query: "local inspect_image", limit: 1 } },
 		{ name: "mcp_local_inspect_image", args: {} },
 	];
 	const bodies: Json[] = [];
@@ -98,12 +97,12 @@ test("Worker turns deliver local and MCP images, resources, approvals, and durab
 		backend = undefined;
 		await rm(join(workspace, "image.png"), { force: true });
 	}
-	assert.equal(bodies.length, 10);
+	assert.equal(bodies.length, 9);
 	assert.ok(JSON.stringify(bodies[1]).includes("data:///readme"));
 	assert.ok(JSON.stringify(bodies[2]).includes("data:///notes/{name}"));
 	assert.ok(JSON.stringify(bodies[3]).includes("Note example"));
 	assert.ok(JSON.stringify(bodies[4]).includes("Resource text reached the model."));
-	for (const body of [bodies[8], bodies[9]]) {
+	for (const body of [bodies[7], bodies[8]]) {
 		const serialized = JSON.stringify(body);
 		assert.equal(serialized.split(`data:image/png;base64,${IMAGE}`).length - 1, 3);
 		assert.ok(serialized.includes('"detail":"original"'));
@@ -111,7 +110,7 @@ test("Worker turns deliver local and MCP images, resources, approvals, and durab
 	const store = openRuntimeSessionStore({ dbPath: join(home, ".mycli", "sessions.db") });
 	try {
 		const results = store.loadConversationItems("image-tools").filter((item) => item.type === "tool_result");
-		assert.equal(results.length, 8);
+		assert.equal(results.length, 7);
 		assert.equal(results.every((result) => result.success), true);
 		assert.equal(results.find((result) => result.toolName === "view_image")?.images?.[0]?.detail, "original");
 		assert.deepEqual(results.filter((result) => result.images?.length).map((result) => result.toolName), ["read_mcp_resource", "view_image", "mcp_local_inspect_image"]);

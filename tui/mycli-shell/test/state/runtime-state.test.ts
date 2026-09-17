@@ -1054,6 +1054,7 @@ test("runtime adapter projects runtime-backed visual settings", () => {
 		hardwareCursor: true,
 		clearOnShrink: false,
 		terminalProgress: false,
+		terminalNotifications: true,
 		subagentDensity: "detailed",
 		colorMode: "256",
 		reducedMotion: true,
@@ -1854,7 +1855,7 @@ test("approval rejection keeps the failed tool between its preamble and final an
 		final: true,
 	});
 
-	const tail = projectRuntimeState(state).transcript?.slice(-3) ?? [];
+	const tail = projectRuntimeState(state).transcript?.filter((block) => !block.id.startsWith("approval-decision:")).slice(-3) ?? [];
 	assert.deepEqual(tail.map((block) => block.kind), ["message", "file_change", "message"]);
 	assert.equal(tail[0]?.kind === "message" ? tail[0].message.text : "", "I will try the requested write.");
 	assert.equal(tail[1]?.kind === "file_change" ? tail[1].fileChange.status : "", "error");

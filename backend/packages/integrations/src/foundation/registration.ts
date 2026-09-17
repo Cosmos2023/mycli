@@ -1,6 +1,8 @@
-import type { ToolDefinition } from "@mycli/core";
-import type { ToolAdapter } from "@mycli/tools";
+import { parseExtensionApprovalScope } from "@mycli/core";
+import type { ExtensionApprovalScope, ToolDefinition } from "@mycli/core";
+import type { ExtensionToolApprovalPolicy, ToolAdapter } from "@mycli/tools";
 import {
+	createToolSchemaValidator,
 	EXTENSION_ORIGIN_MAX_ENTRIES,
 	EXTENSION_ORIGIN_MAX_KEY_LENGTH,
 	EXTENSION_ORIGIN_MAX_VALUE_LENGTH,
@@ -20,6 +22,8 @@ export interface IntegrationRegistration {
 	readonly sourceDescription?: string;
 	readonly supportsParallelToolCalls: boolean;
 	readonly modelVisible?: boolean;
+	readonly approvalPolicy?: ExtensionToolApprovalPolicy["approvalPolicy"];
+	readonly approvalScope?: ExtensionApprovalScope;
 }
 
 const PROVIDER_SAFE_NAME = /^[A-Za-z0-9_]+$/;
@@ -42,6 +46,10 @@ export function defineIntegrationRegistration(
 		|| input.definition.name.length > PROVIDER_SAFE_TOOL_NAME_MAX_LENGTH) {
 		throw new Error("invalid_integration_route");
 	}
+	if (input.approvalPolicy !== undefined && !["auto_allow", "request", "always_request"].includes(input.approvalPolicy)
+		|| input.approvalScope !== undefined && (!parseExtensionApprovalScope(input.approvalScope) || input.approvalScope.id !== input.id)) {
+		throw new Error("invalid_integration_approval_policy");
+	}
 	const originEntries = Object.entries(input.originMetadata);
 	if (originEntries.length > EXTENSION_ORIGIN_MAX_ENTRIES) {
 		throw new Error("integration_origin_too_large");
@@ -55,15 +63,23 @@ export function defineIntegrationRegistration(
 			throw new Error("invalid_integration_origin");
 		}
 	}
+	const definition = freezeDefinition(input.definition);
+	try {
+		createToolSchemaValidator().compile(definition.inputSchema);
+	} catch {
+		throw new Error("invalid_integration_tool_schema");
+	}
 	return Object.freeze({
 		id: input.id,
 		source: input.source,
-		definition: freezeDefinition(input.definition),
+		definition,
 		adapter: input.adapter,
 		originMetadata: Object.freeze(Object.fromEntries(originEntries)),
 		...(input.sourceDescription === undefined ? {} : { sourceDescription: input.sourceDescription }),
 		supportsParallelToolCalls: input.adapter.supportsParallelToolCalls === true,
 		modelVisible: input.modelVisible ?? true,
+		...(input.approvalPolicy ? { approvalPolicy: input.approvalPolicy } : {}),
+		...(input.approvalScope ? { approvalScope: Object.freeze({ ...input.approvalScope }) } : {}),
 	});
 }
 

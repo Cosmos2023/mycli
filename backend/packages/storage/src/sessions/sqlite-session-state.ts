@@ -1,3 +1,4 @@
+import { parseSkillReferences, parseSessionGoal, type SkillReference } from "@mycli/contracts";
 import { ContractValidationError, parseRuntimeState } from "@mycli/contracts";
 import {
 	ApprovalConflictError,
@@ -945,7 +946,7 @@ export class SQLiteSessionStateRepository implements SessionStateStore {
 
 	commitCompaction(input: CommitCompactionInput): boolean {
 		const sessionId = nonEmpty(input.sessionId, "sessionId");
-		const summary = boundedSummary(input.summary);
+		const summary = nonEmpty(input.summary, "summary");
 		const messages = input.replacementMessages.map(validateMessage);
 		const checkpoint = validateStatePayload("compact_checkpoint", {
 			...input.checkpoint,
@@ -1400,6 +1401,10 @@ function parseStateJson(value: unknown, key: RuntimeStateKey): unknown {
 }
 
 function validateStatePayload(key: RuntimeStateKey, payload: unknown): unknown {
+	if (key === "session_goal") {
+		try { return parseSessionGoal(payload); }
+		catch { throw new SessionStateError("session_state_invalid", key); }
+	}
 	if (!isRecord(payload)) {
 		throw new SessionStateError("session_state_invalid", key);
 	}
@@ -1514,6 +1519,7 @@ function queueRecordFromPayload(payload: {
 	readonly claim_turn_id?: string | null;
 	readonly text: string;
 	readonly image_paths: readonly string[];
+	readonly skill_references?: readonly SkillReference[];
 	readonly source: string;
 	readonly created_at: string;
 	readonly updated_at: string;
@@ -1528,6 +1534,7 @@ function queueRecordFromPayload(payload: {
 		...(payload.claim_turn_id ? { claimTurnId: payload.claim_turn_id } : {}),
 		text: payload.text,
 		imagePaths: Object.freeze([...payload.image_paths]),
+		...(payload.skill_references?.length ? { skillReferences: parseSkillReferences(payload.skill_references) } : {}),
 		source: payload.source,
 		createdAt: payload.created_at,
 		updatedAt: payload.updated_at,
@@ -1570,6 +1577,7 @@ function queueRecordPayload(
 		claim_turn_id: record.claimTurnId ?? null,
 		text: record.text,
 		image_paths: [...record.imagePaths],
+		...(record.skillReferences?.length ? { skill_references: record.skillReferences } : {}),
 		source: record.source,
 		created_at: record.createdAt,
 		updated_at: record.updatedAt,
@@ -1652,6 +1660,7 @@ function queuedUserMessage(
 			queue_id: record.queueId,
 			source: record.source,
 			image_paths: [...record.imagePaths],
+		...(record.skillReferences?.length ? { skill_references: record.skillReferences } : {}),
 		},
 		blocks: imageBlocks(images),
 		tool_calls: [],
@@ -1676,6 +1685,7 @@ function queuedHistoryItem(
 			queue_id: record.queueId,
 			source: record.source,
 			image_paths: [...record.imagePaths],
+		...(record.skillReferences?.length ? { skill_references: record.skillReferences } : {}),
 		},
 	};
 }
@@ -1834,6 +1844,7 @@ function freezeJson<Value>(value: Value): Value {
 }
 
 const RUNTIME_STATE_KEYS = new Set<RuntimeStateKey>([
+	"session_goal",
 	"input_queue",
 	"session_metadata",
 	"session_preferences",

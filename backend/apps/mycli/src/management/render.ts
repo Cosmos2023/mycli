@@ -76,6 +76,14 @@ function renderUpdate(response: UpdateManagementResponse): string {
 function renderSession(response: SessionManagementResponse): string {
 	if (response.exportedSession) return `${JSON.stringify(response.exportedSession, null, 2)}\n`;
 	const lines = [`mycli session ${response.action}`];
+	if (response.trainingExport) {
+		const { output_path: outputPath, report } = response.trainingExport;
+		lines.push(`output=${JSON.stringify(outputPath)}`, `messages=${report.messages} turns=${report.turns}`,
+			`tool_calls=${report.tool_calls} tool_results=${report.tool_results} reasoning_blocks=${report.reasoning_blocks} images=${report.images}`,
+			`redactions=${report.redactions} bytes=${report.bytes_written}`);
+		for (const warning of report.warnings) lines.push(`warning=${warning}`);
+		return `${lines.join("\n")}\n`;
+	}
 	for (const session of response.sessions ?? []) lines.push(renderSessionSummary(session));
 	if (response.session) lines.push(renderSessionSummary(response.session));
 	if (!response.ok || (!response.session && (response.sessions?.length ?? 0) === 0)) {
@@ -359,9 +367,12 @@ function responseRows(
 		];
 	}
 	if (command.kind === "mcp") {
-		return rows(response, "servers").map((row) => fields("mcp", row, [
-			"serverId", "transport", "enabled", "status", "toolCount", "timeoutMs",
-		]));
+		return [
+			...rows(response, "servers").map((row) => fields("mcp", row, [
+				"serverId", "selector", "pluginId", "pluginServerName", "source", "transport", "enabled", "required", "status", "authStatus", "toolCount", "startupTimeoutMs", "toolTimeoutMs", "defaultToolsApprovalMode",
+			])),
+			...rows(response, "approvals").map((row) => fields("approval", row, ["id"])),
+		];
 	}
 	return [];
 }

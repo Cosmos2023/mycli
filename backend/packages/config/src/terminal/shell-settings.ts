@@ -173,6 +173,7 @@ function settingsFromPayload(
 			"terminal_progress",
 			settingValue(payload, "terminal_progress") ?? fallback.terminal_progress,
 		),
+		terminal_notifications: booleanValue("terminal_notifications", settingValue(payload, "terminal_notifications") ?? fallback.terminal_notifications),
 		subagent_density: enumValue(
 			"subagent_density",
 			settingValue(payload, "subagent_density") ?? fallback.subagent_density,

@@ -78,6 +78,17 @@ test("integration domains have independent common entries and tools remains diag
 	assert.equal(commandDiscoveryManifest("tui").find((command) => command.name === "/tools")?.search_only, true);
 });
 
+test("conversation export is discoverable without arguments and cannot run during a model turn", () => {
+	for (const surface of ["tui", "cli"] as const) {
+		const command = commandManifest(surface).find((item) => item.name === "/export");
+		assert.equal(command?.category, "session");
+		assert.equal(command?.argument_hint ?? "", "");
+		assert.equal(resolveSlashCommand({ text: "/export", surface, turnRunning: false }).owner, "backend");
+		assert.throws(() => resolveSlashCommand({ text: "/export", surface, turnRunning: true }),
+			(error: unknown) => error instanceof SlashCommandError && error.code === "unavailable_during_turn");
+	}
+});
+
 test("Node slash registry matches the current command and retirement matrix", () => {
 	const fixture = JSON.parse(readFileSync(new URL(
 		"./fixtures/node-slash-command-matrix.json",

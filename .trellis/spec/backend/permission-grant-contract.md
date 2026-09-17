@@ -25,6 +25,9 @@
 
 ### 3. Contracts
 
+- The ordinary `workspace` profile enables networking without a temporary grant and retains its
+  canonical workspace write roots. `read-only` starts offline. Shell launch, `web_fetch`, model
+  policy context, child inheritance, and permission-selector defaults use the effective profile.
 - Managed configuration is loaded independently from user and project configuration and is passed
   to runtime only as an upper-bound constraint layer. Ordinary configuration cannot override it.
 - Startup validates managed configuration before resolving ordinary model configuration or
@@ -44,13 +47,19 @@
   runtime process unless a future explicit durable-revocation design is added.
 - `Read` accepts an outside target only under unrestricted filesystem access or an exact canonical
   `readableRoots`/`writableRoots` boundary. Write/Edit/Patch use the corresponding writable roots.
+- Writable roots are the complete write allowlist, not additions to an implicitly writable
+  workspace. Empty roots deny all mutations; a narrowed managed/granted root authorizes only its
+  descendants (or the exact file). Approval and actual file operations enforce this independently,
+  including symlink targets, Patch move sources/destinations, and runtime-owned approval overrides.
+- Only standalone file adapters without an execution policy default to workspace writes. An
+  explicitly empty list must survive every projection without becoming an omitted value.
 - An approved sandbox override uses the runtime-owned override policy. Managed roots and network
   constraints still cap it; the approval boolean alone never constructs unrestricted access.
 - `web_fetch` checks the initial URL and every redirect against the effective domain list. Exact
   entries match one host. `*.example.com` matches subdomains only, not the apex.
-- Domain-constrained Shell on macOS uses a process-owned HTTP/CONNECT proxy and a Seatbelt rule
-  allowing only its loopback TCP port. Linux and Windows reject enabled, non-empty domain policies
-  with `network_proxy_unavailable` until native routing exists. Disabled/empty policies stay offline;
+- Domain-constrained Shell uses a process-owned HTTP/CONNECT proxy: macOS Seatbelt permits
+  only its loopback TCP port; Windows WFP binds that port to the runner's unique logon SID.
+  Linux rejects enabled, non-empty domain policies with `network_proxy_unavailable`. Disabled/empty policies stay offline;
   raw sandbox launches without a proxy stay offline on every platform.
 - File-system full access does not discard network constraints. A model escalation request alone
   retains the original policy; an approved fallback without an explicit override preserves any
@@ -73,10 +82,13 @@
 | Requested path outside a managed root | Return a constrained grant without that path |
 | Read under a granted readable root | Execute and keep normal bounded output rules |
 | Read outside all effective roots | Return `workspace_escape` |
+| Write/Edit/Patch with read-only or empty writable roots | Return `workspace_escape`; no file or history effects |
+| Write grant narrowed to a workspace subdirectory | Deny other workspace files, including through symlinks |
+| Approved override with managed writable roots | Recheck those exact roots before committing |
 | Initial web host outside allowlist | Return `network_domain_denied`; make no request |
 | Redirect outside allowlist | Return `network_domain_denied`; do not fetch the redirect target |
-| Enabled, non-empty domain-constrained Shell on macOS | Use a frozen per-process proxy and deny direct egress |
-| Enabled, non-empty domain-constrained Shell on Linux/Windows | Return `network_proxy_unavailable`; start no process |
+| Enabled, non-empty domain-constrained Shell on macOS / restricted Windows | Use a frozen per-process proxy and deny direct egress |
+| Enabled, non-empty domain-constrained Shell on Linux | Return `network_proxy_unavailable`; start no process |
 | Network-disabled, empty domain list, or raw launch without a proxy | Preserve offline sandbox enforcement |
 | Child requests broader roots/domains | Reject with `AgentAuthorityError` |
 
@@ -151,3 +163,8 @@ const [config, managed] = await Promise.all([
 const managed = await loadManagedExecutionPolicy(options);
 const config = await resolveModelRuntimeConfig(options);
 ```
+
+Managed `denied_read_roots` / `denied_read_globs` are immutable upper bounds. Normalize/copy them in
+run snapshots and child-agent authority, union them when restoring current managed constraints,
+and reject grants for protected targets. Full Access cannot erase them. Glob resolution must use
+the original workspace even when a stdio MCP or plugin process launches from a different directory.

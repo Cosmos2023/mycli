@@ -279,7 +279,7 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
 	},
 	{
 		name: "sandbox",
-		usage: "sandbox status|setup|reset [--confirm] [--json]",
+		usage: "sandbox status|setup|reset|repair|uninstall [--confirm] [--json]",
 		description: "Inspect or recover platform sandbox readiness",
 		execution: "management",
 		subcommands: [
@@ -300,6 +300,11 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
 					JSON_OPTION,
 				],
 			},
+			...(["repair", "uninstall"] as const).map((name) => ({
+				name,
+				description: name === "repair" ? "Stop sandbox processes, clean stale ACLs, and repair setup" : "Stop sandbox processes and remove managed Windows sandbox state",
+				options: [{ flags: ["--confirm"], description: "Perform the previewed maintenance" }, JSON_OPTION],
+			})),
 		],
 	},
 	{
@@ -363,11 +368,36 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
 	},
 	{
 		name: "mcp",
-		usage: "mcp list|inspect [server-id] [--json]",
-		description: "Inspect MCP servers",
+		usage: "mcp list|inspect|add|remove|approvals|revoke|login|logout [arguments] [--json]",
+		description: "Manage MCP servers and remembered tool approvals",
 		execution: "management",
 		subcommands: [
 			{ name: "list", description: "List configured MCP servers", options: [JSON_OPTION] },
+			{ name: "approvals", description: "List remembered MCP tool approvals", options: [JSON_OPTION] },
+			{ name: "login", description: "Authorize a Streamable HTTP MCP server using OAuth", arguments: [{ name: "server-id", description: "MCP server id" }], options: [JSON_OPTION] },
+			{ name: "logout", description: "Remove saved OAuth credentials for an MCP server", arguments: [{ name: "server-id", description: "MCP server id" }], options: [JSON_OPTION] },
+			{ name: "remove", description: "Remove user MCP configuration", arguments: [{ name: "server-id", description: "MCP server id" }], options: [JSON_OPTION] },
+			{ name: "revoke", description: "Revoke remembered approvals for a server", arguments: [{ name: "server-id", description: "MCP server id" }], options: [JSON_OPTION] },
+			{
+				name: "add", description: "Add user MCP configuration without starting the server; use -- <command> [args...] for stdio",
+				arguments: [{ name: "server-id", description: "MCP server id" }],
+				options: [
+					valueOption("--url", "url", "Streamable HTTP endpoint"),
+					valueOption("--cwd", "path", "Server working directory"),
+					valueOption("--env", "NAME=VALUE", "Server environment entry (repeatable)"),
+					valueOption("--header", "NAME=VALUE", "HTTP header (repeatable)"),
+					valueOption("--bearer-token-env-var", "name", "Environment variable containing a bearer token"),
+					valueOption("--startup-timeout-sec", "seconds", "Connection and discovery request deadline"),
+					valueOption("--tool-timeout-sec", "seconds", "Tool and resource call deadline"),
+					valueOption("--enabled-tool", "name", "Allowed raw tool name (repeatable)"),
+					valueOption("--disabled-tool", "name", "Excluded raw tool name (repeatable)"),
+					valueOption("--approval-mode", "mode", "Default tool approval", ["auto", "prompt", "approve"]),
+					valueOption("--network", "mode", "Server network access", ["enabled", "disabled"]),
+					valueOption("--sandbox-mode", "mode", "Server filesystem access", ["read-only", "workspace-write"]),
+					{ flags: ["--required"], description: "Require live discovery before runtime readiness" },
+					JSON_OPTION,
+				],
+			},
 			{
 				name: "inspect",
 				description: "Inspect one configured MCP server",
@@ -435,7 +465,17 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
 				arguments: [SESSION_ID_ARGUMENT, { name: "title", description: "New title" }],
 				options: [JSON_OPTION],
 			},
-			...sessionIdSubcommands(["archive", "unarchive", "export"]),
+			...sessionIdSubcommands(["archive", "unarchive"]),
+			{
+				name: "export",
+				description: "Export readable session text or training JSONL",
+				arguments: [SESSION_ID_ARGUMENT],
+				options: [
+					{ flags: ["--training"], description: "Export one complete conversation with reasoning and tools as JSONL" },
+					valueOption("--output", "path", "New JSONL file; required with --training; never overwritten"),
+					JSON_OPTION,
+				],
+			},
 			{
 				name: "delete",
 				description: "Delete a session",
@@ -490,12 +530,23 @@ export function renderRootHelp(): string {
 	].join("\n");
 }
 
-export function renderCommandHelp(name: string): string {
+export function renderCommandHelp(name: string, path: readonly string[] = []): string {
 	const command = findCliCommand(name);
 	if (!command) return renderRootHelp();
+	let node: CliCommandNode = command;
+	const selected: string[] = [];
+	for (const segment of path) {
+		const child = node.subcommands?.find((candidate) => candidate.name === segment);
+		if (!child) break;
+		node = child;
+		selected.push(segment);
+	}
+	const usage = selected.length ? [command.name, ...selected, ...(node.arguments ?? []).map((argument) => `<${argument.name}>`), "[options]"].join(" ") : command.usage;
 	return [
-		`Usage: mycli ${command.usage}`, "", command.description, "", "Options:",
-		...(command.options ?? []).flatMap((option) => formatHelpEntry(optionUsage(option), option.description)),
+		`Usage: mycli ${usage}`, "", node.description, "",
+		...(node.subcommands?.length ? ["Commands:", ...node.subcommands.flatMap((child) => formatHelpEntry(child.name, child.description)), ""] : []),
+		"Options:",
+		...(node.options ?? []).flatMap((option) => formatHelpEntry(optionUsage(option), option.description)),
 		"  -h, --help                          Show help", "",
 	].join("\n");
 }

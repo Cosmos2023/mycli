@@ -28,7 +28,7 @@ test("complete provider directory remains lazy until directory demand", async ()
 	assert(loadedProviders.includes("radius"));
 });
 
-test("catalog providers remain lazy until snapshot selection", async () => {
+test("snapshot selection loads only the selected catalog provider", async () => {
 	const imported = await loadedPiAiModules(`await import(${JSON.stringify(SOURCE_URL)});`);
 	assert.deepEqual(providerModules(imported.loaded), ["faux"]);
 
@@ -47,11 +47,7 @@ test("catalog providers remain lazy until snapshot selection", async () => {
 
 	assert.deepEqual(JSON.parse(selected.stdout), { "NVCF-POLL-SECONDS": "3600" });
 	const loadedProviders = providerModules(selected.loaded);
-	assert(loadedProviders.includes("all"));
-	assert(loadedProviders.includes("amazon-bedrock"));
-	assert(loadedProviders.includes("google"));
-	assert(loadedProviders.includes("nvidia"));
-	assert(loadedProviders.includes("openrouter"));
+	assert.deepEqual(loadedProviders, ["faux", "nvidia", "nvidia.models"]);
 	assert(!selected.loaded.some((url) => /\/auth\/oauth\/(?!load\.js)/u.test(url)));
 });
 

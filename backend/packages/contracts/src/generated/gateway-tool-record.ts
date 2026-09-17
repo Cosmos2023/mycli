@@ -41,6 +41,8 @@ export type ErrorReasonDetails =
       reason:
         | "provider.invalid_request"
         | "provider.context_limit"
+        | "provider.output_limit"
+        | "provider.empty_response"
         | "provider.rate_limited"
         | "provider.quota_exceeded"
         | "provider.overloaded"
@@ -116,6 +118,7 @@ export type ErrorReasonDetails =
         | "runtime.retry_exhausted"
         | "runtime.tool_budget_exceeded"
         | "runtime.continuation_unavailable"
+        | "runtime.compaction_summary_too_long"
         | "runtime.effect_outcome_unknown"
         | "runtime.internal_error";
       details?: RuntimeErrorDetails;
@@ -189,6 +192,8 @@ export interface ProviderErrorDetails {
   provider_code?: string;
   provider_type?: string;
   retry_after_seconds?: number;
+  finish_reason?: "length" | "stop" | "toolUse" | "error" | "aborted";
+  max_output_tokens?: number;
 }
 export interface CapabilityErrorDetails {
   provider?: string;
@@ -240,6 +245,8 @@ export interface RuntimeErrorDetails {
   request_retries?: number;
   stream_retries?: number;
   omitted_causes?: number;
+  summary_tokens?: number;
+  summary_max_tokens?: number;
   exit_code?: number;
   signal?: string;
 }

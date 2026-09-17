@@ -11,28 +11,28 @@ profile, user, system, legacy user, then built-in defaults. Credentials belong i
 | Key | Type | Default | Writable | Canonical TOML path | Description |
 | --- | --- | --- | :---: | --- | --- |
 | `context.compaction_l4_buffer_tokens` | `integer` | `13000` | yes | `context.compaction_l4_buffer_tokens` | Keeps this many prompt tokens free when deciding whether automatic compaction should run. |
-| `context.compaction_l4_carry_cost_per_1k` | `number` | `0` | yes | `context.compaction_l4_carry_cost_per_1k` | Estimates the cost per thousand tokens retained after compaction for savings decisions. |
-| `context.compaction_l4_carry_turns` | `integer` | `1` | yes | `context.compaction_l4_carry_turns` | Keeps this many recent conversation turns in addition to the generated compaction summary. |
-| `context.compaction_l4_expected_summary_tokens` | `integer` | `500` | yes | `context.compaction_l4_expected_summary_tokens` | Estimates the summary size used by the compaction savings calculation. |
-| `context.compaction_l4_input_cost_per_1k` | `number` | `0` | yes | `context.compaction_l4_input_cost_per_1k` | Estimates the input cost per thousand tokens used by compaction economics. |
-| `context.compaction_l4_min_savings_ratio` | `number` | `unset` | yes | `context.compaction_l4_min_savings_ratio` | Requires this minimum estimated savings ratio before optional compaction is accepted. |
-| `context.compaction_l4_output_cost_per_1k` | `number` | `0` | yes | `context.compaction_l4_output_cost_per_1k` | Estimates the output cost per thousand summary tokens used by compaction economics. |
+| `context.compaction_l4_carry_cost_per_1k` | `number` | `0` | yes | `context.compaction_l4_carry_cost_per_1k` | Legacy compatibility setting; unused by local context compaction. |
+| `context.compaction_l4_carry_turns` | `integer` | `1` | yes | `context.compaction_l4_carry_turns` | Legacy compatibility setting; unused by local context compaction. |
+| `context.compaction_l4_expected_summary_tokens` | `integer` | `500` | yes | `context.compaction_l4_expected_summary_tokens` | Legacy compatibility setting; unused by local context compaction. |
+| `context.compaction_l4_input_cost_per_1k` | `number` | `0` | yes | `context.compaction_l4_input_cost_per_1k` | Legacy compatibility setting; unused by local context compaction. |
+| `context.compaction_l4_min_savings_ratio` | `number` | `unset` | yes | `context.compaction_l4_min_savings_ratio` | Legacy compatibility setting; unused by local context compaction. |
+| `context.compaction_l4_output_cost_per_1k` | `number` | `0` | yes | `context.compaction_l4_output_cost_per_1k` | Legacy compatibility setting; unused by local context compaction. |
 | `context.compaction_l4_summarizer_model` | `string` | `unset` | yes | `context.compaction_l4_summarizer_model` | Selects an optional model override for compaction summaries. |
 | `context.compaction_l4_trigger_ratio` | `number` | `0.9` | yes | `context.compaction_l4_trigger_ratio` | Starts automatic compaction when estimated prompt use reaches this fraction of the active context window. |
 | `context.compaction_l4_trigger_ratios_by_model` | `number_map` | `{}` | no | `context.compaction_l4_trigger_ratios_by_model` | Reports per-model compaction trigger overrides; this structured setting is read-only through config commands. |
-| `context.compaction_rehydration_file_max_item_tokens` | `integer` | `5000` | yes | `context.compaction_rehydration_file_max_item_tokens` | Limits tokens restored from any single recently used file after compaction. |
-| `context.compaction_rehydration_file_max_total_tokens` | `integer` | `50000` | yes | `context.compaction_rehydration_file_max_total_tokens` | Limits total file-context tokens restored after compaction. |
-| `context.compaction_rehydration_max_files` | `integer` | `5` | yes | `context.compaction_rehydration_max_files` | Limits how many recently used files are restored after compaction. |
+| `context.compaction_rehydration_file_max_item_tokens` | `integer` | `5000` | yes | `context.compaction_rehydration_file_max_item_tokens` | Legacy compatibility setting; unused by local context compaction. |
+| `context.compaction_rehydration_file_max_total_tokens` | `integer` | `50000` | yes | `context.compaction_rehydration_file_max_total_tokens` | Legacy compatibility setting; unused by local context compaction. |
+| `context.compaction_rehydration_max_files` | `integer` | `5` | yes | `context.compaction_rehydration_max_files` | Legacy compatibility setting; unused by local context compaction. |
 | `context.compaction_reserved_output_tokens` | `integer` | `13000` | yes | `context.compaction_reserved_output_tokens` | Reserves context capacity for the next model response during compaction budgeting. |
-| `context.compaction_tail_max_tokens` | `integer` | `8000` | yes | `context.compaction_tail_max_tokens` | Caps the token budget for recent turns retained verbatim after compaction. |
-| `context.compaction_tail_turns` | `integer` | `2` | yes | `context.compaction_tail_turns` | Keeps this many recent turns verbatim after compaction. |
+| `context.compaction_tail_max_tokens` | `integer` | `20000` | yes | `context.compaction_tail_max_tokens` | Caps retained user-message text after compaction (default 20000 tokens); the boundary message is truncated with a marker. |
+| `context.compaction_tail_turns` | `integer` | `2` | yes | `context.compaction_tail_turns` | Legacy compatibility setting; unused by local context compaction. |
 | `context.compaction_token_limit` | `integer` | `9600` | yes | `context.compaction_token_limit` | Sets the prompt-token ceiling used to trigger compaction. |
 | `context.compression_threshold_tokens` | `integer` | `8000` | yes | `context.compression_threshold_tokens` | Sets the size threshold at which oversized tool results are compressed before replay. |
 | `features.request_permissions_tool` | `boolean` | `false` | yes | `features.request_permissions_tool` | Exposes the structured permission-request tool when the active runtime supports it. |
 | `memory.enabled` | `boolean` | `false` | yes | `memory.enabled` | Enables durable memory discovery and injection for the active agent runtime. |
 | `model.api_base_url` | `string` | `"https://api.openai.com/v1"` | yes | `model.api_base_url` | Sets the HTTP(S) API endpoint used by the configured provider. |
 | `model.auth_ref` | `string` | `"openai"` | yes | `model.auth_ref` | Selects the credential-store reference without placing a credential in TOML. |
-| `model.name` | `string` | `"gpt-5"` | yes | `model.name` | Selects the provider model used for new runtime requests. |
+| `model.name` | `string` | `"gpt-5.5"` | yes | `model.name` | Selects the provider model used for new runtime requests. |
 | `model.protocol` | `string` | `"responses"` | yes | `model.protocol` | Selects the provider wire protocol used for model requests. |
 | `model.provider` | `string` | `"openai"` | yes | `model.provider` | Selects a stable profile or an explicitly configured provider route. |
 | `model.supports_images` | `boolean` | `false` | yes | `model.supports_images` | Overrides whether the selected compatible endpoint accepts image inputs. |
@@ -54,6 +54,7 @@ profile, user, system, legacy user, then built-in defaults. Credentials belong i
 | `tui.reduced_motion` | `boolean` | `false` | yes | `tui_reduced_motion` | Uses static progress indicators instead of animated terminal frames |
 | `tui.statusbar_mode` | `string` | `"full"` | yes | `tui_statusbar_mode` | Controls how much session and model status is shown in the footer |
 | `tui.subagent_density` | `string` | `"normal"` | yes | `tui_subagent_density` | Controls the density of subagent task summaries |
+| `tui.terminal_notifications` | `boolean` | `true` | yes | `tui_terminal_notifications` | Notifies when unfocused and a turn finishes or needs your attention |
 | `tui.terminal_progress` | `boolean` | `true` | yes | `tui_terminal_progress` | Shows compact progress while an agent turn is running |
 | `tui.theme` | `string` | `"dark"` | yes | `tui_theme` | Selects the terminal color theme |
 | `tui.tool_details_default` | `string` | `"collapsed"` | yes | `tui_tool_details_default` | Controls whether completed tool details start collapsed or expanded |
@@ -105,6 +106,7 @@ Aliases remain readable for compatibility, emit deprecation diagnostics, and are
 - `tui.reduced_motion`: `reducedMotion`, `reduced_motion`
 - `tui.statusbar_mode`: `statusbarMode`, `statusbar_mode`, `statusline_enabled`
 - `tui.subagent_density`: `subagentDensity`, `subagent_density`
+- `tui.terminal_notifications`: `terminalNotifications`, `terminal_notifications`
 - `tui.terminal_progress`: `terminalProgress`, `terminal_progress`
 - `tui.theme`: `theme`
 - `tui.tool_details_default`: `toolDetailsDefault`, `tool_details_default`

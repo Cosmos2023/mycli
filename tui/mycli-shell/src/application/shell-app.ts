@@ -1,4 +1,6 @@
 import { FooterComponent } from "../components/composer/footer.ts";
+import { WorkStatusComponent } from "../components/composer/work-status.ts";
+import { StatusMessageComponent, sanitizeStatusText } from "../components/composer/status-line.ts";
 import { rawKeyHint } from "../components/shared/keybinding-hints.ts";
 import {
 	isResolvedSubagent,
@@ -24,6 +26,12 @@ export class MycliShellApp extends Container {
 		this.clear();
 		this.addChild(new Text(this.headerText(), 0, 0));
 		this.addChild(new TranscriptBlocksComponent(this.transcriptBlocks(), this.state.settings?.hideThinking));
+		const liveState = sanitizeStatusText(this.state.footer.liveState ?? "");
+		if (liveState && !["idle", "completed"].includes(liveState.toLowerCase())) {
+			this.addChild(new Spacer(1));
+			this.addChild(new StatusMessageComponent(liveState));
+		}
+		this.addChild(new WorkStatusComponent(this.state.footer));
 		if (this.state.pendingNotice) {
 			this.addChild(new Spacer(1));
 			this.addChild(new Text(theme.fg("warning", this.state.pendingNotice), 1, 0));
@@ -37,8 +45,6 @@ export class MycliShellApp extends Container {
 			}));
 		}
 		this.addChild(new FooterComponent(this.state.footer, {
-			turnRunning: this.state.footer.turnRunning ?? false,
-			hasQueuedInput: this.state.footer.hasPendingInput ?? false,
 			statusbarMode: this.state.settings?.statusbarMode ?? "full",
 		}));
 	}

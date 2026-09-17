@@ -28,7 +28,8 @@
 - Storage: `saveParallelApprovalBatch({ sessionId, workspaceRoot, threadId, suspendedTurn,
   expectedRevision? })` and `clearParallelApprovalBatch(sessionId, turnId, batchId)`.
 - Runtime lookup: `NodeRuntimeRegistry.get(sessionId)`, `set(sessionId, runtime)`,
-  `delete(sessionId, expected)`, and `refreshExtensions()`.
+  `delete(sessionId, expected)`, `getOrCreate(sessionId, create)`,
+  `dispose(sessionId, expected)`, `stop()`, `close()`, and `refreshExtensions()`.
 - Resource lifecycle: `NodeBackendResourceOwner.bindIntegration(close)` and `close()`.
 - Embedded client lifecycle: app-owned `BackendService.attach()`, `snapshot()`, and `close()`.
 - Derived artifacts: `SerializedSessionArtifactQueue.run(operation)`, `drain()`, and `close()`.
@@ -78,7 +79,12 @@
   claim returned by `begin`; a stale claim cannot close replacement work.
 - `NodeRuntimeRegistry` is the sole session-to-runtime registry. Conditional delete requires the
   expected runtime instance so late child cleanup cannot remove a replacement binding. Extension
-  refresh iterates a stable snapshot of registered runtimes.
+  refresh iterates a stable snapshot of registered runtimes. Async creation coalesces per session
+  without blocking other sessions. Each binding owns its integration composition/subscription;
+  conditional disposal closes that instance only. Shutdown cancels preparation and disposes late
+  successful results without publication. No second session/runtime map is permitted. Register
+  a newly prepared runtime before `AgentMailbox.repair`: delivery resolves its queue through this
+  registry. Repair before publication silently omits the restored follow-up from model input.
 - `BackendService` owns the supervisor lifetime independently of local client attachments.
   Its controller/observer registry contains connection state only, never session bindings or
   another turn scheduler. A detached controller's accepted mutating RPCs fence handoff until
@@ -95,10 +101,12 @@
   canonical SQLite state. `node-runtime-trace.ts` owns allowlisted, bounded, best-effort diagnostic
   serialization. Neither module reconstructs provider truth from its derived files.
 - `SessionCoordinator.prepare(sessionId, intent)` distinguishes `resume` from `inspect`. Before
-  constructing a resumed runtime, `interruptSessionForResume(sessionId)` requires this store's
+  constructing a cold resumed runtime, `interruptSessionForResume(sessionId)` requires this store's
   session lease and atomically closes unfinished turns, synthetic tool results, one interrupted
   notice, and pending approval/question/effect state. Completed sibling results survive; claimed
-  effects retain unknown-outcome diagnostics. Inspection and live `session.bootstrap` never call it.
+  effects retain unknown-outcome diagnostics. Inspection, live runtime reuse and `session.bootstrap`
+  never call it. Transcript inspection and degraded read-only snapshots use a non-executing binding
+  and start no MCP clients or plugins. Retained virtual sessions reuse their original workspace.
 - Gateway RPCs, runtime/TUI events, SQLite schema, provider wire requests, and Write/Edit/Patch
   semantics do not change merely because a responsibility moves behind one of these owners.
 
@@ -122,6 +130,10 @@
 | All approvals answered before restart | Validate the absent pending projection, interrupt the orphan, and clear batch state |
 | Approved Shell reaches its yield deadline | Commit its running handle; retain output, stop, and exit tracking in the manager |
 | Runtime cleanup races a replacement binding | Conditional delete leaves the replacement registered |
+| Two preparations request the same session | Share one initialization; other sessions proceed independently |
+| Shutdown races initialization | Abort discovery; close late source results without publishing or starting later sources |
+| A child waits for approval while its parent inspects an update | Parent adopts new content; child retains its original client and tool scope |
+| A restored follow-up exists before runtime creation | Register the queue first, then repair delivery before any provider step |
 | `close()` is called repeatedly | Return the same promise and execute each cleanup operation once |
 | An early close operation fails | Continue later cleanup, then reject with the first failure |
 | Artifact work is submitted after close starts | Reject it without extending the accepted drain prefix |
@@ -153,6 +165,9 @@
   interruption, no late persistence, and provider-order replay.
 - Backend integration tests cover startup failure cleanup, Worker root/child execution, session
   recovery, exclusive leases, extension refresh, durable approvals, and close-drain behavior.
+  `plugin-mcp-lifecycle.integration.test.ts` verifies real SDK/gateway child approval retention
+  across independent parent updates, selected-session catalogs, and no extra clients on repeat
+  resume. `node-backend.integration.test.ts` must retain the original follow-up text after reload.
 - `parallel-approval-coordinator.test.ts` uses production SQLite storage to verify independent
   waiters, CAS rollback, identity checks, cancellation, frozen inputs, effect reuse, and unknown
   outcome recovery. Gateway/child/Worker tests verify live response forwarding and retained ownership.

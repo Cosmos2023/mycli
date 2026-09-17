@@ -144,16 +144,27 @@ export class ProviderAgentLoop {
 			let eventsObserved = 0;
 			let assistantText = "";
 			let usage: ProviderUsage = {};
+			let usageObserved = false;
 			let responseId: string | undefined;
 			let providerState: ProviderReplayState | undefined;
 			const toolCalls: CanonicalToolCall[] = [];
 			const webSearchCalls = new Map<string, WebSearchCall>();
 			let completed = false;
 			const now = (): number => input.monotonicClock?.() ?? performance.now();
+			const recordUsage = async (): Promise<void> => {
+				try {
+					await input.recordUsage?.(usage, attempt);
+					usageObserved = true;
+				} catch {
+					throw new ProviderFailure({ code: "persistence_error", message: "provider usage could not be committed" });
+				}
+			};
 			const recordTerminalAttempt = async (
 				state: "completed" | "recovered" | "cancelled" | "failed",
 				failure?: ProviderAgentLoopFailure,
 			): Promise<void> => {
+				// Successful responses and interrupted output with no usage are unknown, not free.
+				if (!usageObserved && eventsObserved > 0) await recordUsage();
 				if (!input.recordAttempt) return;
 				const startedAt = now();
 				try {
@@ -195,11 +206,7 @@ export class ProviderAgentLoop {
 							break;
 						case "usage":
 							usage = { ...usage, ...event.usage };
-							try {
-								if (input.recordUsage) await input.recordUsage(usage, attempt);
-							} catch {
-								throw new ProviderFailure({ code: "persistence_error", message: "provider usage could not be committed" });
-							}
+							await recordUsage();
 							break;
 						case "completed":
 							completed = true;

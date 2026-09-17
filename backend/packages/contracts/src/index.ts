@@ -17,6 +17,7 @@ export type {
 export { GATEWAY_RPC_METHODS, GatewayRpcValidationError, isGatewayMethod, parseGatewayParams, parseGatewayResult } from "./gateway/rpc.ts";
 export type { GatewayMethod, GatewayParams, GatewayResult, GatewayTranscriptItem } from "./gateway/rpc.ts";
 export type { GatewayRpcMethods } from "./generated/gateway-rpc.ts";
+export type { PluginCatalog, PluginCatalogEntry, PluginMarketplaceEntry, PluginChange, PluginOperation, PluginCapabilitySummary, PluginDetail } from "./generated/gateway-rpc.ts";
 export type { GatewayToolRecord, GatewayShellRecord, GatewayTerminalInteraction } from "./generated/gateway-tool-record.ts";
 export { terminalInteractionFromArguments, projectTerminalInteraction } from "./gateway/terminal-interaction.ts";
 export { GATEWAY_TOOL_PREVIEW_MAX_CHARS, projectGatewayToolRecord, gatewayToolLifecycleRecord } from "./gateway/tool-record.ts";
@@ -40,6 +41,7 @@ export { parsePackageVersion } from "./package-version.ts";
 export type { PackageVersionManifest } from "./package-version.ts";
 export {
 	isModelSelectionScope,
+	modelSelectionNotice,
 	MODEL_SELECTION_SCOPES,
 } from "./gateway/model-selection.ts";
 export type { ModelSelectionScope } from "./gateway/model-selection.ts";
@@ -79,6 +81,9 @@ export type {
 } from "./gateway/runtime-errors.ts";
 export {
 	TURN_INTERRUPTED_NOTICE,
+	turnInterruptionNotice,
+	isTurnInterruptionReason,
+	type TurnInterruptionReason,
 	turnCompletedDurationId,
 	turnInterruptedNoticeId,
 } from "./gateway/transcript-messages.ts";
@@ -100,6 +105,8 @@ export type { JsonRpcMessage } from "./generated/json-rpc-message.ts";
 export type { PluginV2Manifest } from "./generated/plugin-v2-manifest.ts";
 export type { PluginV2ProtocolMessage } from "./generated/plugin-v2-protocol.ts";
 export type { RuntimeStateRecord } from "./generated/runtime-state-record.ts";
+export type { SessionGoal } from "./generated/session-goal.ts";
+export { parseSessionGoal } from "./validation.ts";
 export type {
 	RuntimeErrorCode,
 	RuntimeTurnRecord,
@@ -107,3 +114,8 @@ export type {
 export { providerAttemptId } from "./provider-attempt.ts";
 export { projectGatewayErrorData, projectGatewayErrorPayload } from "./gateway/error-context-projection.ts";
 export { LOCAL_CONNECTION_REASONS, localConnectionReason, storageErrorReason } from "./errors/boundaries.ts";
+export type { McpElicitationRequest, McpElicitationField } from "./generated/mcp-elicitation.ts";
+export { MAX_SKILL_REFERENCES, parseSkillReferences, skillReferencesInText } from "./gateway/skill-reference.ts";
+export type { SkillReference } from "./gateway/skill-reference.ts";
+
+export type { ReviewSelection } from "./generated/gateway-rpc.ts";

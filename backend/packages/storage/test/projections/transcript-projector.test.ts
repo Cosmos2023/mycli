@@ -20,9 +20,83 @@ test("Read ranges survive transcript projection without exposing private tool me
 	assert.equal(projected.length, 1);
 	const restored = sanitizeTranscriptItem(projected[0]);
 	assert.ok(restored);
+	assert.deepEqual(restored.metadata?.input, { file_path: "src/app.ts", offset: 10, limit: 20 });
 	const record = projectGatewayToolRecord({ text: "Read", metadata: { ...restored.metadata, tool_name: "Read" } });
 	assert.equal(record.summary_preview, "Lines 10-29 of 120");
 	assert.doesNotMatch(JSON.stringify(projected), /private-argument|private-digest/u);
+});
+
+test("retains allowlisted tool inputs through snapshot sanitization", () => {
+	const cases = [
+		{ name: "Shell", input: { cwd: "packages/app", tty: false } },
+		{ name: "tool_search", input: { query: "browser tabs", limit: 3 } },
+		{ name: "Grep", input: { pattern: "TODO|FIXME", path: "src", glob: "*.ts", output_mode: "content", "-i": true, "-C": 2 } },
+		{ name: "Glob", input: { pattern: "**/*.test.ts", path: "backend" } },
+		{ name: "LS", input: { path: "backend" } },
+		{ name: "Write", input: { file_path: "notes.txt" } },
+		{ name: "Edit", input: { file_path: "notes.txt" } },
+		{ name: "view_image", input: { path: "preview.png" } },
+	];
+	for (const { name, input } of cases) {
+		const [item] = projectTranscript([{
+			...historyItem("call", "turn", "tool_call", "", {
+				arguments: { ...input, env: { TOKEN: "private-env" }, content: "private-content",
+					old_string: "private-before", new_string: "private-after", justification: "private-reason" },
+			}), tool_name: name, call_id: "call",
+		}], []);
+		const restored = sanitizeTranscriptItem(item);
+		assert.deepEqual(restored?.metadata?.input, input, name);
+		assert.doesNotMatch(JSON.stringify(restored), /private-/u);
+	}
+	const custom = sanitizeTranscriptItem({ id: "custom", type: "tool", tool_name: "mcp_example_search",
+		metadata: { input: { query: "private-query", token: "private-token" } },
+	});
+	assert.equal(custom?.metadata, undefined);
+});
+
+test("long tool text and commands keep their truncation flags after results and Shell snapshots merge", () => {
+	const longCommand = `echo ${"x".repeat(16_000)}`;
+	const [call] = projectTranscript([{
+		...historyItem("call", "turn", "tool_call", "t".repeat(9_000), { arguments: { command: longCommand } }),
+		tool_name: "Shell", call_id: "call",
+	}, {
+		...historyItem("result", "turn", "tool_result", "o".repeat(9_000)),
+		tool_name: "Shell", call_id: "call",
+	}, {
+		...historyItem("shell", "turn", "shell_session", "", {
+			terminal_state: "completed", command_preview: longCommand, output: "done",
+		}), tool_name: "Shell", call_id: "call",
+	}], []);
+	assert.equal(call?.command?.length, TRANSCRIPT_TEXT_MAX_CHARS);
+	assert.equal(call?.text?.length, TRANSCRIPT_TEXT_MAX_CHARS);
+	assert.match(call?.command ?? "", /output omitted/u);
+	assert.equal(call?.truncated, true);
+	assert.ok((call?.omitted_chars ?? 0) > 8_000);
+	assert.equal(sanitizeTranscriptItem(call)?.omitted_chars, call?.omitted_chars);
+	for (const type of ["tool_call", "tool_result", "shell_session"]) {
+		const [item] = projectTranscript([{
+			...historyItem(type, "turn", type, "", { command: longCommand, command_preview: longCommand }),
+			tool_name: "Shell", call_id: type,
+		}], []);
+		assert.equal(item?.command?.length, TRANSCRIPT_TEXT_MAX_CHARS, type);
+		assert.equal(item?.truncated, true, type);
+	}
+});
+
+test("input and diff truncation survive repeated snapshot sanitization", () => {
+	const items = projectTranscript([{
+		...historyItem("grep", "turn", "tool_call", "", { arguments: { pattern: "p".repeat(10_000) } }),
+		tool_name: "Grep", call_id: "grep",
+	}, historyItem("diff", "turn", "file_change", "edited notes", {
+		file_changes: [{ path: "notes.txt", diff: `+${"d".repeat(10_000)}` }],
+	})], []);
+	for (const item of items) {
+		assert.equal(item.truncated, true);
+		assert.ok((item.omitted_chars ?? 0) > 0);
+		const restored = sanitizeTranscriptItem(item);
+		assert.deepEqual(restored, item);
+		assert.deepEqual(sanitizeTranscriptItem(restored), restored);
+	}
 });
 
 test("terminal interactions retain bounded input and process state across call/result projection", () => {

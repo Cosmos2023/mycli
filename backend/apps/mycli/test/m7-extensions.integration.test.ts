@@ -112,25 +112,15 @@ test("M7 live smoke emits only structural extension and cleanup state", {
 			const number = parentRequests.push(payload);
 			if (number === 1) writeSse(response, responsesTool("skill", "Skill", { name: "review" }));
 			else if (number === 2) {
-				writeSse(response, responsesTool("search-mcp", "tool_search", {
-					query: "local echo",
-					limit: 1,
-				}));
-			} else if (number === 3) {
 				writeSse(response, responsesTool("mcp", "mcp_local_echo", { text: "smoke" }));
-			} else if (number === 4) {
-				writeSse(response, responsesTool("search-plugin", "tool_search", {
-					query: "good echo",
-					limit: 1,
-				}));
-			} else if (number === 5) {
+			} else if (number === 3) {
 				writeSse(response, responsesTool("plugin", "plugin_good_echo", { text: "smoke" }));
-			} else if (number === 6) {
+			} else if (number === 4) {
 				writeSse(response, responsesTool("task", "spawn_agent", {
 					task_name: "m7-smoke",
 					message: "Return a structural child report.",
 				}));
-			} else if (number === 7) {
+			} else if (number === 5) {
 				writeSse(response, responsesTool("wait", "wait_agent", { timeout_ms: 5_000 }));
 			} else writeSse(response, responsesFinal("private provider text", "final"));
 		});
@@ -159,20 +149,20 @@ test("M7 live smoke emits only structural extension and cleanup state", {
 	assert.equal(result.code, 0, result.stdout);
 	assert.equal(result.stderr, "");
 	assert.deepEqual(singleJsonLine(result.stdout), smokeResult("responses", "completed"));
-	assert.equal(requests.length, 9);
-	assert.equal(providerToolNames(parentRequests[0]!).includes("mcp_local_echo"), false);
-	assert.equal(providerToolNames(parentRequests[0]!).includes("plugin_good_echo"), false);
-	assert.equal(providerToolNames(parentRequests[2]!).includes("mcp_local_echo"), true);
-	assert.equal(providerToolNames(parentRequests[2]!).includes("plugin_good_echo"), false);
-	assert.equal(providerToolNames(parentRequests[4]!).includes("mcp_local_echo"), true);
-	assert.equal(providerToolNames(parentRequests[4]!).includes("plugin_good_echo"), true);
+	assert.equal(requests.length, 7);
+	assert.equal(providerToolNames(parentRequests[0]!).includes("mcp_local_echo"), true);
+	assert.equal(providerToolNames(parentRequests[0]!).includes("plugin_good_echo"), true);
+	assert.equal(providerToolNames(parentRequests[0]!).includes("tool_search"), false);
+	for (const payload of parentRequests) {
+		assert.deepEqual(payload.tools, parentRequests[0]!.tools);
+	}
 	assert.doesNotMatch(
 		result.stdout + result.stderr,
 		new RegExp(`${secret}|127\\.0\\.0\\.1|private child text|private provider text`, "u"),
 	);
 });
 
-test("Worker-backed root receives refreshed MCP tools on a later provider step", {
+test("Worker-backed root directly exposes and approves a small MCP catalog", {
 	timeout: M7_TEST_TIMEOUT_MS,
 }, async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-m7-worker-mcp-"));
@@ -199,11 +189,10 @@ test("Worker-backed root receives refreshed MCP tools on a later provider step",
 			const payload = JSON.parse(raw) as JsonObject;
 			requests.push(payload);
 			writeSse(response, requests.length === 1
-				? responsesTool("search-mcp-worker", "tool_search", {
-					query: "local echo",
-					limit: 1,
+				? responsesTool("mcp-worker", "mcp_local_echo", {
+					text: "worker echo",
 				})
-				: responsesFinal("Worker MCP refresh completed.", "worker-mcp-final"));
+				: responsesFinal("Worker MCP call completed.", "worker-mcp-final"));
 		});
 	});
 	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -249,28 +238,39 @@ test("Worker-backed root receives refreshed MCP tools on a later provider step",
 	await waitFor(() => event(messages, "runtime.ready"));
 	await waitForExtensionTool(backend, messages, "mcp_local_echo", M7_EVENT_TIMEOUT_MS);
 	send(backend, "worker-mcp-turn", "turn.submit", {
-		message: "Find the refreshed MCP echo tool.",
+		message: "Call the MCP echo tool.",
 		client_turn_id: "worker-mcp-turn",
 		client_user_message_id: "worker-mcp-message",
+	});
+	const approval = await waitFor(() => event(messages, "approval.request"), M7_EVENT_TIMEOUT_MS);
+	const approvalIndex = messages.indexOf(approval);
+	await waitFor(() => messages.slice(approvalIndex + 1).find((message) => (
+		message.method === "status.changed"
+		&& isObject(message.params)
+		&& message.params.pending_decision === true
+		&& message.params.turn_running === false
+	)), M7_EVENT_TIMEOUT_MS);
+	await request(backend, messages, "approve-worker-mcp", "approval.respond", {
+		decision_id: requiredParam(approval, "decision_id"),
+		choice: "approve_once",
 	});
 	const final = await waitFor(() => messages.find((message) => (
 		message.method === "message.complete"
 		&& isObject(message.params)
 		&& message.params.final === true
 	)), M7_EVENT_TIMEOUT_MS);
-	assert.equal(isObject(final.params) ? final.params.text : undefined, "Worker MCP refresh completed.");
+	assert.equal(isObject(final.params) ? final.params.text : undefined, "Worker MCP call completed.");
 	assert.equal(requests.length, 2);
-	assert.equal(providerToolNames(requests[0]!).includes("mcp_local_echo"), false);
-	assert.equal(providerToolNames(requests[1]!).includes("mcp_local_echo"), true);
-	const discoveryTool = (requests[0]!.tools as JsonObject[]).find((tool) => tool.name === "tool_search");
-	assert.match(String(discoveryTool?.description), /"mcp:local": "Echo text and read fixture resources\."/u);
-	assert.match(String(discoveryTool?.description), /even when the user has not named the MCP server or plugin/u);
-	assert.doesNotMatch(String(discoveryTool?.description), /MCP_PID_FILE|mcp\.pid|mcp-stdio-server/u);
+	assert.equal(providerToolNames(requests[0]!).includes("mcp_local_echo"), true);
+	assert.equal(providerToolNames(requests[0]!).includes("tool_search"), false);
+	assert.deepEqual(requests[1]!.tools, requests[0]!.tools);
+	assert.equal(events(messages, "approval.request").length, 1);
+	assert.equal(events(messages, "tool.failed").length, 0);
 	assert.deepEqual(
 		events(messages, "tool.complete").map((message) => (
 			isObject(message.params) ? message.params.name : undefined
 		)),
-		["tool_search"],
+		["mcp_local_echo"],
 	);
 
 	assert.equal(existsSync(mcpPidFile), true);
@@ -416,25 +416,15 @@ test("M7 runs skills MCP hooks plugins and a subagent entirely in Node", {
 			if (number === 1) {
 				writeSse(response, responsesTool("skill-call", "Skill", { name: "review" }));
 			} else if (number === 2) {
-				writeSse(response, responsesTool("search-mcp-call", "tool_search", {
-					query: "local echo",
-					limit: 1,
-				}));
-			} else if (number === 3) {
 				writeSse(response, responsesTool("mcp-call", "mcp_local_echo", { text: "m7" }));
-			} else if (number === 4) {
-				writeSse(response, responsesTool("search-plugin-call", "tool_search", {
-					query: "good echo",
-					limit: 1,
-				}));
-			} else if (number === 5) {
+			} else if (number === 3) {
 				writeSse(response, responsesTool("plugin-call", "plugin_good_echo", { text: "m7" }));
-			} else if (number === 6) {
+			} else if (number === 4) {
 				writeSse(response, responsesTool("task-call", "spawn_agent", {
 					task_name: "m7",
 					message: "Return a structural child report.",
 				}));
-			} else if (number === 7) {
+			} else if (number === 5) {
 				writeSse(response, responsesTool("wait-call", "wait_agent", { timeout_ms: 5_000 }));
 			} else {
 				writeSse(response, responsesFinal("M7 completed.", "resp-final"));
@@ -546,28 +536,26 @@ test("M7 runs skills MCP hooks plugins and a subagent entirely in Node", {
 		}, null, 2));
 	}
 	assert.equal(isObject(final.params) ? final.params.text : undefined, "M7 completed.");
-	assert.equal(requests.length, 9);
+	assert.equal(requests.length, 7);
 	assert.deepEqual(
 		events(messages, "tool.complete").map((message) => (
 			isObject(message.params) ? message.params.name : undefined
 		)),
 		[
 			"Skill",
-			"tool_search",
 			"mcp_local_echo",
-			"tool_search",
 			"plugin_good_echo",
 			"spawn_agent",
 			"wait_agent",
 		],
 		JSON.stringify(extensionDiagnostics(requests, messages)),
 	);
-	assert.equal(providerToolNames(parentRequests[0]!).includes("mcp_local_echo"), false);
-	assert.equal(providerToolNames(parentRequests[0]!).includes("plugin_good_echo"), false);
-	assert.equal(providerToolNames(parentRequests[2]!).includes("mcp_local_echo"), true);
-	assert.equal(providerToolNames(parentRequests[2]!).includes("plugin_good_echo"), false);
-	assert.equal(providerToolNames(parentRequests[4]!).includes("mcp_local_echo"), true);
-	assert.equal(providerToolNames(parentRequests[4]!).includes("plugin_good_echo"), true);
+	assert.equal(providerToolNames(parentRequests[0]!).includes("mcp_local_echo"), true);
+	assert.equal(providerToolNames(parentRequests[0]!).includes("plugin_good_echo"), true);
+	assert.equal(providerToolNames(parentRequests[0]!).includes("tool_search"), false);
+	for (const payload of parentRequests) {
+		assert.deepEqual(payload.tools, parentRequests[0]!.tools);
+	}
 	assert.deepEqual(
 		events(messages, "subagent.updated").map((message) => {
 			const subagent = isObject(message.params) && isObject(message.params.subagent)
@@ -588,7 +576,7 @@ test("M7 runs skills MCP hooks plugins and a subagent entirely in Node", {
 	try {
 		const history = store.loadHistoryItems("m7-parent");
 		assert.equal(history.some((item) => item.type === "skill_instructions"), true);
-		assert.equal(history.filter((item) => item.type === "tool_result").length, 7);
+		assert.equal(history.filter((item) => item.type === "tool_result").length, 5);
 		const tasks = store.subagentTasks.list("m7-parent");
 		assert.equal(tasks.length, 1);
 		assert.equal(tasks[0]?.status, "completed");

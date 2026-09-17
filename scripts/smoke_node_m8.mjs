@@ -10,7 +10,7 @@ import { parseJsonRpcMessage } from "@mycli/contracts";
 import { startNodeBackend } from "../backend/apps/mycli/dist/node-runtime/node-backend.js";
 
 const DEADLINE_MS = 15_000;
-const EXPECTED_DISCOVERABLE_COMMANDS = 38;
+const EXPECTED_DISCOVERABLE_COMMANDS = 44;
 
 async function main() {
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-m8-smoke-"));

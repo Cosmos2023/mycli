@@ -85,6 +85,69 @@ test("adapts a Draft-07 MCP schema for the host AJV without mutating the descrip
 	assert.equal((await router.execute(call('{"path":"README.md"}'), executionOptions())).success, true);
 });
 
+test("validates standard MCP URI formats before calling the server", async () => {
+	const calls: Readonly<Record<string, unknown>>[] = [];
+	const registration = createMcpToolRegistration({
+		callTool: async (_name, argumentsValue): Promise<McpToolCallResult> => {
+			calls.push(argumentsValue);
+			return { content: [{ type: "text", text: "page" }], isError: false };
+		},
+	}, {
+		...descriptor(),
+		inputSchema: {
+			$schema: "http://json-schema.org/draft-07/schema#",
+			type: "object",
+			properties: { url: { type: "string", format: "uri" } },
+			required: ["url"],
+			additionalProperties: false,
+		},
+	});
+	const router = new ToolRouter({ adapters: [], exposure: [] });
+	router.replaceDynamicAdapters([registration.adapter]);
+
+	const invalid = await router.execute(call('{"url":"not a URI"}'), executionOptions());
+	assert.equal(invalid.errorKind, "invalid_arguments");
+	assert.deepEqual(calls, []);
+	const valid = await router.execute(call('{"url":"https://example.com/weather"}'), executionOptions());
+	assert.equal(valid.success, true);
+	assert.deepEqual(calls, [{ url: "https://example.com/weather" }]);
+});
+
+test("rejects uncompileable MCP schemas before advertising their tools", () => {
+	assert.throws(() => createMcpToolRegistration({
+		callTool: async () => assert.fail("invalid schemas must never be executed"),
+	}, {
+		...descriptor(),
+		inputSchema: {
+			type: "object",
+			properties: { url: { type: "string", format: "private-custom-format" } },
+		},
+	}), /^Error: invalid_integration_tool_schema$/u);
+});
+
+test("independent MCP tools can reuse a schema id across catalog refreshes", async () => {
+	const registrations = ["first", "second"].map((serverId) => createMcpToolRegistration({
+		callTool: async (): Promise<McpToolCallResult> => ({ content: [{ type: "text", text: serverId }], isError: false }),
+	}, {
+		...descriptor(), serverId,
+		inputSchema: {
+			...descriptor().inputSchema,
+			$id: "https://example.com/shared-tool-schema",
+		},
+	}));
+	const router = new ToolRouter({ adapters: [], exposure: [] });
+	for (let refresh = 0; refresh < 2; refresh += 1) {
+		router.replaceDynamicAdapters(registrations.map((registration) => registration.adapter));
+		for (const registration of registrations) {
+			const result = await router.execute({
+				...call('{"path":"README.md"}'), name: registration.definition.name,
+			}, executionOptions());
+			assert.equal(result.success, true);
+			assert.equal(result.modelOutput, registration.originMetadata.server);
+		}
+	}
+});
+
 test("bounds mixed MCP results and preserves server error semantics", async () => {
 	const results: McpToolCallResult[] = [
 		{

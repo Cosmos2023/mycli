@@ -7,7 +7,7 @@ export interface SseStreamBoundaryOptions {
 	readonly supportsFinishReason?: boolean;
 	readonly onFailure: (error: unknown) => void;
 	readonly onTerminal?: () => void;
-	readonly onEvent?: (event: Readonly<Record<string, unknown>>) => void;
+	readonly onEvent?: (event: Readonly<Record<string, unknown>>) => void | Promise<void>;
 }
 
 interface SseFrame {
@@ -169,8 +169,9 @@ function forwardFrames(
 				if (consumedEvent) {
 					const event = consumedEvent;
 					consumedEvent = undefined;
-					onEvent?.(event);
+					await onEvent?.(event);
 				}
+				if (cancelled) return;
 				const result = await reader.read();
 				if (cancelled) return;
 				if (result.done) {

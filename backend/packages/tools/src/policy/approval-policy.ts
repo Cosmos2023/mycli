@@ -1,3 +1,4 @@
+import { deniedReadPath } from "./denied-read-policy.ts";
 import {
 	isAbsolute,
 	posix,
@@ -11,7 +12,9 @@ import type {
 	ApprovalPreviewDetails,
 	CanonicalToolCall,
 	PermissionRequestProfile,
+	ExtensionApprovalScope,
 } from "@mycli/core";
+import { extensionApprovalKey, parseExtensionApprovalScope } from "@mycli/core";
 import {
 	matchExecPolicyRule,
 	validateExecPolicyProposal,
@@ -40,11 +43,12 @@ import {
 } from "../shell/shell-sandbox-permissions.ts";
 import {
 	parsePermissionRequest,
-	pathWithinRoot,
 	permissionRequestPreview,
 	permissionRequestSatisfied,
 	REQUEST_PERMISSIONS_TOOL_NAME,
 } from "./permission-grants.ts";
+import { isWithinRoots } from "../path-containment.ts";
+import { canonicalMutationPath } from "../files/canonical-path.ts";
 import type { ToolExecutionResult } from "../types.ts";
 
 const MAX_PREVIEW_CHARS = 512;
@@ -82,6 +86,7 @@ export interface ApprovalPolicyRequest extends ApprovalPolicyDecisionBase {
 	readonly commandPattern?: readonly string[];
 	readonly proposedExecPolicyPattern?: readonly string[];
 	readonly permissionRequest?: PermissionRequestProfile;
+	readonly extensionApproval?: ExtensionApprovalScope;
 }
 
 export interface ApprovalPolicyDeny extends ApprovalPolicyDecisionBase {
@@ -101,7 +106,8 @@ export interface ApprovalPolicyOptions {
 
 export interface ExtensionToolApprovalPolicy {
 	readonly name: string;
-	readonly approvalPolicy: "auto_allow" | "request";
+	readonly approvalPolicy: "auto_allow" | "request" | "always_request";
+	readonly approvalScope?: ExtensionApprovalScope;
 }
 
 export function fileMutationApprovalPreview(
@@ -149,6 +155,8 @@ export class ApprovalPolicy {
 	#permissionProfile: PermissionProfile;
 	#execPolicyRules: readonly ExecPolicyRule[];
 	#sessionRules: readonly ExecPolicyRule[] = Object.freeze([]);
+	readonly #sessionExtensions = new Set<string>();
+	#rememberedExtensions: ReadonlySet<string> = new Set();
 
 	constructor(options: ApprovalPolicyOptions) {
 		if (!options.workspaceRoot.trim()) {
@@ -182,11 +190,37 @@ export class ApprovalPolicy {
 	}
 
 	replaceExtensionTools(tools: readonly ExtensionToolApprovalPolicy[]): void {
-		this.#extensionTools = extensionToolPolicies(tools);
+		this.prepareExtensionTools(tools)();
+	}
+
+	prepareExtensionTools(tools: readonly ExtensionToolApprovalPolicy[]): () => void {
+		const policies = extensionToolPolicies(tools);
+		return () => { this.#extensionTools = policies; };
 	}
 
 	replaceExecPolicyRules(rules: readonly ExecPolicyRule[]): void {
 		this.#execPolicyRules = freezeRules(rules.filter((rule) => rule.source !== "session"));
+	}
+
+	hasScopedExtensionTool(name: string, turnId?: string): boolean {
+		return (turnId ? this.#turnExtensionTools.get(turnId) ?? this.#extensionTools : this.#extensionTools).get(name)?.approvalScope !== undefined;
+	}
+
+	matchesExtensionApproval(scope: ExtensionApprovalScope, name: string, turnId: string): boolean {
+		const expected = (this.#turnExtensionTools.get(turnId) ?? this.#extensionTools).get(name)?.approvalScope;
+		return expected?.id === scope.id && expected.fingerprint === scope.fingerprint;
+	}
+
+	allowExtensionSession(scope: ExtensionApprovalScope): void {
+		const validated = parseExtensionApprovalScope(scope);
+		if (!validated) throw new TypeError("invalid extension approval scope");
+		this.#sessionExtensions.add(extensionApprovalKey(validated));
+	}
+
+	replaceRememberedExtensions(scopes: readonly ExtensionApprovalScope[]): void {
+		const validated = scopes.map((scope) => parseExtensionApprovalScope(scope));
+		if (validated.some((scope) => !scope)) throw new TypeError("invalid extension approval scope");
+		this.#rememberedExtensions = new Set(validated.map((scope) => extensionApprovalKey(scope!)));
 	}
 
 	allowSession(pattern: readonly string[]): void {
@@ -232,7 +266,7 @@ export class ApprovalPolicy {
 		const manifest = builtinToolManifest().tools.find((tool) => tool.name === call.name);
 		const argumentsValue = parseArguments(call.argumentsJson);
 		if (!argumentsValue) {
-			return deny(call, "Tool call is not valid for the active policy.");
+			return deny(call, "Tool arguments are invalid.", "invalid_arguments");
 		}
 		if (!manifest) return this.#evaluateExtension(call, fullAccess, turnId);
 		if (call.name === REQUEST_PERMISSIONS_TOOL_NAME) {
@@ -244,7 +278,7 @@ export class ApprovalPolicy {
 					request.errorKind,
 				);
 			}
-			if (permissionRequestSatisfied(request.permissions, executionPolicy)) {
+			if (permissionRequestSatisfied(request.permissions, executionPolicy, this.#workspaceRoot)) {
 				return allow(call, "Requested permissions are already available");
 			}
 			return Object.freeze({
@@ -274,14 +308,19 @@ export class ApprovalPolicy {
 				: "File sandbox justification is not valid for the active policy.", sandbox.errorKind);
 		}
 		const paths = mutationPaths(argumentsValue);
+		if (paths.some((path) => deniedReadPath(this.#workspaceRoot, path, executionPolicy ?? {}))) {
+			return deny(call, "The target is protected by a managed denied-read rule.", "permission_denied");
+		}
 		const projected = paths.map((path) => this.#projectWorkspacePath(path));
-		const permittedByRoots = executionPolicy !== undefined
-			&& paths.every((path) => this.#pathAllowedByPolicy(path, executionPolicy));
+		const targetsWritable = fullAccess || (executionPolicy !== undefined
+			? executionPolicy.filesystem !== "read_only"
+				&& paths.every((path) => this.#pathAllowedByPolicy(path, executionPolicy))
+			: this.#permissionProfile !== "read-only" && projected.every((path) => path !== undefined));
 		const previewTarget = mutationPreviewTarget(
 			manifest.name,
 			paths,
 			projected,
-			fullAccess || permittedByRoots,
+			targetsWritable,
 		);
 		if (sandbox.permissions === "danger-full-access") {
 			const escalationTarget = mutationPreviewTarget(manifest.name, paths, projected, true);
@@ -305,9 +344,9 @@ export class ApprovalPolicy {
 				options: APPROVAL_OPTIONS,
 			});
 		}
-		if (!previewTarget) {
+		if (!previewTarget || !targetsWritable) {
 			this.#rememberMutationSandboxDenial(call, turnId);
-			return deny(call, "Mutation target is outside the workspace.", "workspace_escape");
+			return deny(call, "Mutation target is outside the allowed writable roots.", "workspace_escape");
 		}
 		const preview = bounded(previewTarget);
 		if (fullAccess || this.#autoApproveMedium) {
@@ -347,8 +386,11 @@ export class ApprovalPolicy {
 	): ApprovalPolicyDecision {
 		const policies = turnId ? this.#turnExtensionTools.get(turnId) ?? this.#extensionTools : this.#extensionTools;
 		const policy = policies.get(call.name);
-		if (!policy) return deny(call, "Tool call is not valid for the active policy.");
-		if (policy.approvalPolicy === "auto_allow" || fullAccess) {
+		if (!policy) return deny(call, "Tool is not registered in the active policy.", "unknown_tool");
+		const scope = policy.approvalScope;
+		const remembered = scope && (this.#sessionExtensions.has(extensionApprovalKey(scope))
+			|| this.#rememberedExtensions.has(extensionApprovalKey(scope)));
+		if (policy.approvalPolicy === "auto_allow" || remembered || fullAccess && policy.approvalPolicy !== "always_request") {
 			return allow(call, `${call.name} local integration`);
 		}
 		return Object.freeze({
@@ -357,7 +399,8 @@ export class ApprovalPolicy {
 			toolName: call.name,
 			preview: bounded(`${call.name} integration request`),
 			reason: "External integration requires one-time approval.",
-			options: APPROVAL_OPTIONS,
+			options: scope ? Object.freeze(["approve_once", "reject", "allow_session", "always_allow"] as const) : APPROVAL_OPTIONS,
+			...(scope ? { extensionApproval: scope } : {}),
 		});
 	}
 
@@ -490,7 +533,8 @@ export class ApprovalPolicy {
 
 	#projectWorkspacePath(rawPath: string): string | undefined {
 		const normalized = rawPath.trim();
-		if (!normalized || normalized.includes("\0") || WINDOWS_ABSOLUTE_PATH.test(normalized)) {
+		if (!normalized || normalized.includes("\0")
+			|| this.#platform !== "win32" && WINDOWS_ABSOLUTE_PATH.test(normalized)) {
 			return undefined;
 		}
 		const candidate = resolve(this.#workspaceRoot, normalized);
@@ -503,13 +547,15 @@ export class ApprovalPolicy {
 
 	#pathAllowedByPolicy(rawPath: string, policy: ExecutionPolicy): boolean {
 		const normalized = rawPath.trim();
-		if (!normalized || normalized.includes("\0") || WINDOWS_ABSOLUTE_PATH.test(normalized)) {
+		if (!normalized || normalized.includes("\0")
+			|| this.#platform !== "win32" && WINDOWS_ABSOLUTE_PATH.test(normalized)) {
 			return false;
 		}
 		const candidate = isAbsolute(normalized)
 			? resolve(normalized)
 			: resolve(this.#workspaceRoot, normalized);
-		return policy.writableRoots.some((root) => pathWithinRoot(root, candidate));
+		const canonical = canonicalMutationPath(candidate);
+		return canonical !== undefined && isWithinRoots(canonical, policy.writableRoots);
 	}
 
 	#rememberMutationSandboxDenial(call: CanonicalToolCall, turnId: string | undefined): void {
@@ -563,11 +609,13 @@ function extensionToolPolicies(
 	const result = new Map<string, ExtensionToolApprovalPolicy>();
 	for (const policy of policies) {
 		if (!/^[A-Za-z0-9_]{1,128}$/u.test(policy.name)
-			|| (policy.approvalPolicy !== "auto_allow" && policy.approvalPolicy !== "request")) {
+			|| (policy.approvalPolicy !== "auto_allow" && policy.approvalPolicy !== "request" && policy.approvalPolicy !== "always_request")
+			|| policy.approvalScope !== undefined && !parseExtensionApprovalScope(policy.approvalScope)) {
 			throw new TypeError("invalid extension tool approval policy");
 		}
 		if (result.has(policy.name)) throw new TypeError("duplicate extension tool approval policy");
-		result.set(policy.name, Object.freeze({ ...policy }));
+		result.set(policy.name, Object.freeze({ ...policy,
+			...(policy.approvalScope ? { approvalScope: parseExtensionApprovalScope(policy.approvalScope)! } : {}) }));
 	}
 	return result;
 }

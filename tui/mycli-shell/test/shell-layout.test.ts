@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { stripVTControlCharacters as stripAnsi } from "node:util";
+import { parseSessionGoal } from "@mycli/contracts";
 import { BashExecutionComponent } from "../src/components/transcript/bash-execution.ts";
 import type { MycliShellBash, MycliShellState, MycliShellTranscriptBlock } from "../src/model.ts";
 import {
@@ -141,5 +142,122 @@ function assertActivityAboveComposer(lines: string[]): void {
 	assert.equal(lines.filter((line) => line.includes("esc to interrupt")).length, 1);
 	assert.equal(lines[activity - 1]?.trim(), "");
 	assert.equal(lines[activity + 1]?.trim(), "");
-	assert.ok(composer - activity <= 3, lines.join("\n"));
+	const queued = lines.findIndex((line) => line.includes("queued-marker"));
+	const goal = lines.findIndex((line) => line.includes("Goal active"));
+	if (queued >= 0) assert.ok(activity < queued && queued < composer, lines.join("\n"));
+	if (goal >= 0) assert.ok(goal >= activity + 2 && goal < composer, lines.join("\n"));
+}
+
+test("work changes only invalidate their summary and never duplicate the live state", async (context) => {
+	const terminal = new HeadlessTerminal({ columns: 100, rows: 24 });
+	const runtime = new MycliShellRuntime({ initialState: stateFor(shellBlocks(10)), terminal, now: () => 10_000 });
+	context.after(async () => { await runtime.shutdown(); terminal.dispose(); });
+	const footer = runtime.footerContainer.children[0];
+	const activity = runtime.statusContainer.children[0];
+	const transcriptRevision = runtime.chatContainer.getRenderCacheKey();
+	const goal = layoutGoal();
+	runtime.setState({ ...runtime.getState(), footer: { ...runtime.getState().footer, goal, backgroundShellCount: 2, taskProgress: { completed: 1, total: 3 } } });
+	assert.equal(runtime.footerContainer.children[0], footer);
+	assert.equal(runtime.statusContainer.children[0], activity);
+	assert.equal(runtime.chatContainer.getRenderCacheKey(), transcriptRevision);
+	assert.match(stripAnsi(runtime.workStatusContainer.render(100).join("\n")), /Goal active.*2 shells/);
+	runtime.setState({ ...runtime.getState(), footer: { ...runtime.getState().footer, goal: { ...goal, status: "paused", tokens_used: 4321 }, backgroundShellCount: 0 } });
+	assert.equal(runtime.footerContainer.children[0], footer);
+	assert.equal(runtime.chatContainer.getRenderCacheKey(), transcriptRevision);
+	assert.match(stripAnsi(runtime.workStatusContainer.render(100).join("\n")), /Goal paused.*4321.*\/goal resume/);
+	assert.doesNotMatch(stripAnsi(runtime.workStatusContainer.render(100).join("\n")), /shells/);
+	runtime.setState({ ...runtime.getState(), footer: { ...runtime.getState().footer, turnRunning: false, liveState: "Waiting for input", liveStateKind: "waiting" } });
+	assert.equal(stripAnsi(runtime.ui.render(100).join("\n")).match(/Waiting for input/gu)?.length, 1);
+	assert.equal(runtime.workStatusContainer.render(100)[0], "");
+});
+
+for (const nativeScrollback of [false, true]) {
+	test(`short transcript keeps activity next to output and the editor at the bottom (native=${nativeScrollback})`, async (context) => {
+		const terminal = new HeadlessTerminal({ columns: 100, rows: 24, nativeScrollback });
+		const runtime = new MycliShellRuntime({ initialState: stateFor([]), terminal, now: () => 10_000 });
+		context.after(async () => { await runtime.shutdown(); await terminal.flush(); terminal.dispose(); });
+		runtime.editor.setText("composer-marker");
+		runtime.start();
+		for (const [columns, rows, text] of [
+			[100, 24, "output-tail"],
+			[100, 24, "streaming line\n\noutput-tail"],
+			[40, 32, "streaming line\n\noutput-tail"],
+		] as const) {
+			terminal.resize(columns, rows);
+			const message = { id: "assistant", role: "assistant", text } as const;
+			runtime.setState({
+				...runtime.getState(), messages: [message],
+				transcript: [{ id: message.id, kind: "message", message }],
+				footer: { ...runtime.getState().footer, goal: layoutGoal() },
+			}, { transcriptUpdate: "tail" });
+			await delay(120);
+			await terminal.flush();
+			const lines = terminal.visibleLines();
+			const output = lines.findIndex((line) => line.includes("output-tail"));
+			const activity = lines.findIndex((line) => line.includes("esc to interrupt"));
+			assert.ok(output >= 0, lines.join("\n"));
+			assert.equal(activity, output + 2, lines.join("\n"));
+			assertActivityAboveComposer(lines);
+			const editor = lines.findIndex((line) => line.includes("composer-marker"));
+			assert.equal(editor, rows - runtime.footerContainer.render(columns).length - 2, lines.join("\n"));
+			assert.equal(terminal.cursorPosition().row, editor);
+			assert.doesNotMatch(terminal.historyLines().join("\n"), /output-tail|esc to interrupt|Goal active|composer-marker/);
+		}
+		runtime.setState({
+			...runtime.getState(),
+			footer: { ...runtime.getState().footer, turnRunning: false, liveState: "Idle", liveStateKind: undefined, goal: undefined },
+		});
+		await delay(40);
+		await terminal.flush();
+		const lines = terminal.visibleLines();
+		assert.doesNotMatch(lines.join("\n"), /esc to interrupt|Goal active/);
+		const editor = lines.findIndex((line) => line.includes("composer-marker"));
+		assert.equal(editor, terminal.rows - runtime.footerContainer.render(terminal.columns).length - 2, lines.join("\n"));
+		assert.equal(terminal.cursorPosition().row, editor);
+	});
+
+	test(`composer regions remain ordered through density changes, resize and session replacement (native=${nativeScrollback})`, async (context) => {
+		const terminal = new HeadlessTerminal({ columns: 100, rows: 24, nativeScrollback });
+		const initial: MycliShellState = {
+			...stateFor(shellBlocks(30)), sessionId: "first",
+			footer: { ...stateFor([]).footer, cwd: "/repo/first", model: "model-marker", contextPercent: 12,
+				goal: layoutGoal(), backgroundShellCount: 2, extensionStatuses: ["extension-marker"] },
+		};
+		const runtime = new MycliShellRuntime({ initialState: initial, terminal, now: () => 10_000 });
+		context.after(async () => { await runtime.shutdown(); await terminal.flush(); terminal.dispose(); });
+		runtime.editor.setText("composer-marker");
+		runtime.start();
+		for (const statusbarMode of ["full", "compact", "off"] as const) {
+			for (const [columns, rows] of [[100, 24], [40, 16]] as const) {
+				terminal.resize(columns, rows);
+				runtime.setState({ ...runtime.getState(), settings: { reducedMotion: true, statusbarMode } });
+				await delay(120);
+				await terminal.flush();
+				const lines = terminal.visibleLines();
+				assertActivityAboveComposer(lines);
+				const editor = lines.findIndex((line) => line.includes("composer-marker"));
+				const activity = lines.findIndex((line) => line.includes("esc to interrupt"));
+				const goal = lines.findIndex((line) => line.includes("Goal active"));
+				const model = lines.findIndex((line) => line.includes("model-marker"));
+				assert.ok(activity < goal && goal < editor, lines.join("\n"));
+				assert.equal(lines.filter((line) => line.includes("Goal active")).length, 1);
+				assert.equal(runtime.footerContainer.render(columns).length, statusbarMode === "full" ? 2 : statusbarMode === "compact" ? 1 : 0);
+				assert.ok(statusbarMode === "off" ? model === -1 : model > editor, lines.join("\n"));
+				assert.doesNotMatch(terminal.historyLines().join("\n"), /Goal active|extension-marker|model-marker|esc to interrupt/);
+			}
+		}
+		runtime.replaceSessionState({ ...stateFor([]), sessionId: "second", settings: { reducedMotion: true }, footer: { cwd: "/repo/second", model: "new-model", turnRunning: false, liveState: "Idle" } });
+		runtime.editor.setText("second-draft");
+		await delay(40);
+		await terminal.flush();
+		assert.doesNotMatch(terminal.visibleLines().join("\n"), /Goal active|extension-marker|2 shells|model-marker|composer-marker/);
+		assert.match(terminal.visibleLines().join("\n"), /second-draft/);
+	});
+}
+
+function layoutGoal(): ReturnType<typeof parseSessionGoal> {
+	return parseSessionGoal({
+		goal_id: "layout-goal", revision: 1, objective: "Fix layout", status: "active", token_budget: 50000, tokens_used: 1250,
+		elapsed_ms: 1000, rounds_started: 2, audit_turns: 3, created_at: "2026-09-14T00:00:00Z", updated_at: "2026-09-14T00:00:00Z", stop_reason: null, usage_incomplete: false,
+	});
 }

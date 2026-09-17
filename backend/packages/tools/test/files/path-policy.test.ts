@@ -181,6 +181,30 @@ test("rejects directories workspace root and blank mutation paths", async (t) =>
 	);
 });
 
+test("explicit empty writable roots deny existing and new workspace files", async (t) => {
+	const fixture = await workspaceFixture(t);
+	const resolveWritableWorkspaceFile = requiredWritableResolver();
+	for (const path of [fixture.file, "src/a.ts", "generated/deep/new.ts"]) {
+		await assert.rejects(() => resolveWritableWorkspaceFile(fixture.root, path, { allowedRoots: [] }), hasKind("workspace_escape"));
+	}
+	assert.equal(await requiredResolver()(fixture.root, "src/a.ts", { allowedRoots: [] }), await realpath(fixture.file));
+});
+
+test("explicit write grants exclude the rest of the workspace", async (t) => {
+	const fixture = await workspaceFixture(t);
+	const resolveWritableWorkspaceFile = requiredWritableResolver();
+	const grantedRoot = await realpath(join(fixture.root, "src"));
+	const options = { allowedRoots: [grantedRoot] };
+	assert.equal((await resolveWritableWorkspaceFile(fixture.root, "src/a.ts", options)).target, await realpath(fixture.file));
+	assert.equal((await resolveWritableWorkspaceFile(fixture.root, "src/new/deep.ts", options)).target, join(grantedRoot, "new/deep.ts"));
+	for (const path of ["new.ts", "src-other/new.ts", "src/../new.ts"]) {
+		await assert.rejects(() => resolveWritableWorkspaceFile(fixture.root, path, options), hasKind("workspace_escape"));
+	}
+	const onlyFile = { allowedRoots: [await realpath(fixture.file)] };
+	assert.equal((await resolveWritableWorkspaceFile(fixture.root, "src/a.ts", onlyFile)).target, await realpath(fixture.file));
+	await assert.rejects(() => resolveWritableWorkspaceFile(fixture.root, "src/new.ts", onlyFile), hasKind("workspace_escape"));
+});
+
 interface ResolutionOptions {
 	readonly allowOutsideWorkspace?: boolean;
 	readonly allowedRoots?: readonly string[];

@@ -32,6 +32,8 @@ test("timeouts, invalid replies, explicit rejections and unknown outcomes remain
 		[new SyntaxError("private invalid JSON"), "schema_error", "unknown"],
 		[new Error("invalid_mcp_http_response"), "schema_error", "unknown"],
 		[new McpHttpError(404, true), "transport_error", "not_started"],
+		[new McpHttpError(401, true), "transport_error", "not_started"],
+		[new McpHttpError(401), "transport_error", "unknown"],
 		[new McpHttpError(503, true), "transport_error", "unknown"],
 	] as const) {
 		const failure = describeMcpFailure(error, { operation: "tools/call", timeoutMs: 1_000 });

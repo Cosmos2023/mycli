@@ -260,11 +260,9 @@ export class TranscriptViewportComponent implements Component {
 		this.scrollOffset = Math.min(this.scrollOffset, Math.max(0, lines.length - height));
 
 		const start = this.visibleStart(lines, height, this.committedStart(lines, width));
-		const visible = lines.slice(start, start + height);
-		while (visible.length < height) {
-			visible.push("");
-		}
-		return visible;
+		// The enclosing transcript area adds spare rows after live activity so
+		// activity follows output while the input stays at the bottom.
+		return lines.slice(start, start + height);
 	}
 
 	private committedStart(lines: string[], width: number): number {

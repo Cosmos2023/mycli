@@ -1,3 +1,5 @@
+import type { SessionGoal } from "@mycli/contracts";
+import type { SkillReference } from "@mycli/contracts";
 import type {
 	DiagnosticCategory,
 	DiagnosticRecoveryAction,
@@ -5,7 +7,27 @@ import type {
 	ProviderAttemptRecord,
 	GatewayTerminalInteraction,
 	ErrorContext,
+	McpElicitationRequest,
+	PluginCatalog,
+	PluginCatalogEntry,
+	PluginChange,
+	PluginDetail,
+	PluginOperation,
+	GatewayResult,
 } from "@mycli/contracts";
+
+export type MycliShellSkillCatalog = GatewayResult<"skills.list">;
+export type MycliShellSkill = MycliShellSkillCatalog["skills"][number];
+export interface MycliShellSkillManager {
+	load(signal: AbortSignal): Promise<MycliShellSkillCatalog>;
+	setEnabled(skill: MycliShellSkill, enabled: boolean, revision: string, signal: AbortSignal): Promise<MycliShellSkillCatalog>;
+}
+
+export interface MycliShellPluginManager {
+	load(signal: AbortSignal, marketplace?: string): Promise<PluginCatalog>;
+	inspect?(plugin: PluginCatalogEntry, signal: AbortSignal): Promise<PluginDetail>;
+	change(change: PluginChange, signal: AbortSignal): Promise<PluginOperation>;
+}
 
 export type TranscriptUpdateKind = "unchanged" | "tail" | "replace";
 
@@ -298,6 +320,8 @@ export type MycliShellTranscriptBlock =
 	| { id: string; kind: "command_result"; commandResult: MycliShellCommandResult };
 
 export type MycliShellFooterData = {
+	transientHint?: string;
+	goal?: SessionGoal | null;
 	cwd: string;
 	gitBranch?: string;
 	sessionName?: string;
@@ -323,6 +347,8 @@ export type MycliShellFooterData = {
 	queueActivity?: string;
 	trust?: string;
 	collaborationMode?: "default" | "plan";
+	operationRunning?: boolean;
+	liveOperationId?: string;
 	liveState?: string;
 	liveStateKind?: string;
 	liveStateDetail?: string;
@@ -345,6 +371,7 @@ export type MycliShellQueuedInputPreview = {
 	text: string;
 	hasImages: boolean;
 	localImages?: MycliShellLocalImageAttachment[];
+	skillReferences?: readonly SkillReference[];
 	source?: string;
 };
 
@@ -433,6 +460,7 @@ export type MycliShellVisualSettings = {
 	hardwareCursor?: boolean;
 	clearOnShrink?: boolean;
 	terminalProgress?: boolean;
+	terminalNotifications?: boolean;
 	subagentDensity?: "compact" | "normal" | "detailed";
 	colorMode?: "auto" | "truecolor" | "256" | "16" | "none";
 	reducedMotion?: boolean;
@@ -645,6 +673,7 @@ type MycliShellClarificationOption = {
 };
 
 export type MycliShellPendingClarification = {
+	elicitation?: McpElicitationRequest;
 	requestId: string;
 	turnId?: string;
 	sessionId?: string;
@@ -751,3 +780,10 @@ export type MycliShellClientAction = {
 	args: string;
 	commandId: string;
 };
+
+export type MycliShellHookCatalog = GatewayResult<"hooks.list">;
+export type MycliShellHook = MycliShellHookCatalog["hooks"][number];
+export interface MycliShellHookManager {
+	load(signal: AbortSignal): Promise<MycliShellHookCatalog>;
+	write(hook: MycliShellHook, action: "enable" | "disable" | "trust" | "revoke", revision: string, signal: AbortSignal): Promise<MycliShellHookCatalog>;
+}

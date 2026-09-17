@@ -74,6 +74,7 @@ export async function runHeadlessCommand(options: RunHeadlessCommandOptions): Pr
 			backend = await (options.startBackend ?? startSupervisedNodeBackend)({
 				cwd, env: options.env, args: command.runtimeArgs, signal: controller.signal,
 				approvalMode: "suspend",
+				enableGoals: false,
 				...(command.kind === "review" ? { executionMode: "review" } : {}),
 				...(reviewRevision ? { reviewRevision } : {}),
 			});

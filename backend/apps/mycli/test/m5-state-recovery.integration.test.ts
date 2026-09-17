@@ -218,7 +218,7 @@ test("Worker-backed Responses root retries compaction, injects memory, resumes, 
 		if (instructions.includes("select memory files")) {
 			return responsesFinal(JSON.stringify({ selected_memories: ["tone.md"] }), `selector-${index}`);
 		}
-		if (instructions.includes("Summarize the supplied conversation")) {
+		if (JSON.stringify(body.input).includes("CONTEXT CHECKPOINT COMPACTION")) {
 			summaryAttempts += 1;
 			if (summaryAttempts === 1) return [{ type: "error", error: {
 				code: "stream_read_error", message: "stream_read_error", type: "upstream_error",
@@ -262,11 +262,14 @@ test("Worker-backed Responses root retries compaction, injects memory, resumes, 
 	assert.ok(events(first.messages, "message.delta").every((message) =>
 		!String(paramValue(message, "text")).includes("Earlier turns established")));
 	const summaryRequest = provider.requests.find((request) => (
-		responsesAuthorityText(request.body).includes("Summarize the supplied conversation")
+		JSON.stringify(request.body.input).includes("CONTEXT CHECKPOINT COMPACTION")
 	));
-	assert.equal(summaryRequest?.body.max_output_tokens, 4_096);
+	assert.ok(summaryRequest);
+	assert.ok(Number(summaryRequest.body.max_output_tokens) > 4_096);
+	assert.ok(responsesAuthorityText(summaryRequest.body).startsWith("# Identity\n"));
 	const mainRequest = provider.requests.find((request) => (
 		responsesAuthorityText(request.body).startsWith("# Identity\n")
+			&& !JSON.stringify(request.body.input).includes("CONTEXT CHECKPOINT COMPACTION")
 	));
 	assert.ok(mainRequest);
 	assert.match(JSON.stringify(mainRequest.body.input), /Prefer concise output\./u);
@@ -711,8 +714,7 @@ test("M5 live smoke bounds provider calls and reports only structural recovery s
 	const paths = await scenarioPaths(t, "smoke-completed");
 	const secret = "test-live-secret";
 	const provider = await providerFixture(t, (body, index) => {
-		const instructions = responsesAuthorityText(body);
-		return instructions.includes("Summarize the supplied conversation")
+		return JSON.stringify(body.input).includes("CONTEXT CHECKPOINT COMPACTION")
 			? responsesFinal("A compact safe summary.", `smoke-summary-${index}`)
 			: responsesFinal("OK", `smoke-turn-${index}`);
 	});

@@ -304,8 +304,9 @@ export function builtinModelReasoningDefaults(selection: {
 	readonly protocol: ProtocolId;
 	readonly model: string;
 }): ModelReasoningDefaults {
+	const provider = selection.provider === "codex" ? "openai" : selection.provider;
 	const entry = BUILTIN_MODEL_CATALOG.find((candidate) =>
-		candidate.provider === selection.provider
+		candidate.provider === provider
 		&& candidate.protocol === selection.protocol
 		&& candidate.model === selection.model);
 	const effort = entry?.defaultReasoningEffort

@@ -167,6 +167,7 @@ export class SendAgentMessageTool implements ToolAdapter {
 		try {
 			const result = await this.#control.sendAgent({
 				ownerSessionId: options.ownerSessionId,
+				...(options.ownerTurnId ? { ownerTurnId: options.ownerTurnId } : {}),
 				target: stringValue(argumentsValue.target),
 				message: stringValue(argumentsValue.message),
 				triggerMode: this.#triggerMode,

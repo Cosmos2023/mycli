@@ -357,6 +357,7 @@ function approvalFixture(options: {
 		readonly shellApproval?: boolean;
 	readonly refreshFailure?: boolean;
 	readonly permissionGrant?: boolean;
+	readonly extensionApproval?: { readonly stale?: boolean; readonly failStorage?: boolean };
 } = {}) {
 	const trace: string[] = [];
 	const state = new Map<string, RuntimeStateRecord>();
@@ -486,6 +487,12 @@ function approvalFixture(options: {
 			publishExecPolicyRules: () => {
 				trace.push("rules:publish");
 				if (options.refreshFailure) throw new Error("refresh failed");
+			},
+			validateExtensionApproval: () => !options.extensionApproval?.stale,
+			allowExtensionSession: () => { trace.push("extensions:session"); },
+			rememberExtension: async () => {
+				trace.push("extensions:remember");
+				if (options.extensionApproval?.failStorage) throw new Error("grant storage unavailable");
 			},
 			allowSession: (pattern: readonly string[]) => {
 				trace.push("rules:allow_session");
@@ -716,4 +723,44 @@ function effectState(
 
 function hasCode(error: unknown, code: string): boolean {
 	return typeof error === "object" && error !== null && "code" in error && error.code === code;
+}
+
+for (const choice of ["allow_session", "always_allow"] as const) {
+	test(`MCP ${choice} survives durable suspension and uses integration authorization before execution`, async () => {
+		const fixture = approvalFixture({ extensionApproval: {} });
+		fixture.coordinator.suspend(extensionSuspension());
+		const coordinator = fixture.reopen();
+		assert.deepEqual(coordinator.pending()?.options, ["approve_once", "reject", "allow_session", "always_allow"]);
+		await coordinator.resolve({ decisionId: "call-1", choice, signal: new AbortController().signal });
+		assert.equal(fixture.executeCalls, 1);
+		assert.ok(fixture.trace.indexOf(choice === "allow_session" ? "extensions:session" : "extensions:remember") < fixture.trace.indexOf("router:execute"));
+		assert.deepEqual(fixture.persistedPatterns, []);
+		assert.deepEqual(fixture.sessionPatterns, []);
+	});
+}
+
+test("stale MCP approvals and failed grant persistence cannot claim or execute an effect", async () => {
+	for (const options of [{ stale: true }, { failStorage: true }]) {
+		const fixture = approvalFixture({ extensionApproval: options });
+		fixture.coordinator.suspend(extensionSuspension());
+		await assert.rejects(fixture.reopen().resolve({ decisionId: "call-1", choice: "always_allow", signal: new AbortController().signal }));
+		assert.equal(fixture.executeCalls, 0);
+		assert.equal(fixture.effect.status, "waiting");
+	}
+});
+
+test("mismatched restored MCP approval metadata fails closed", () => {
+	const fixture = approvalFixture({ extensionApproval: {} });
+	fixture.coordinator.suspend(extensionSuspension());
+	const state = fixture.state.get("pending_decision");
+	assert.ok(state?.kind === "pending_decision");
+	fixture.state.set("pending_decision", { ...state, payload: { ...state.payload, metadata: { ...state.payload.metadata,
+		extension_approval: { id: "mcp:docs:read", fingerprint: "b".repeat(64) } } } });
+	assert.throws(() => fixture.reopen().pending(), /approval_not_pending/u);
+});
+
+function extensionSuspension() {
+	return { ...suspension(), call: { callId: "call-1", name: "mcp_docs_read", argumentsJson: "{}" },
+		options: ["approve_once", "reject", "allow_session", "always_allow"] as const,
+		extensionApproval: { id: "mcp:docs:read", fingerprint: "a".repeat(64) } };
 }

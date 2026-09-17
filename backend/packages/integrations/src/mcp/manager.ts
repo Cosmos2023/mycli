@@ -1,8 +1,14 @@
 import type { IntegrationRegistration } from "../foundation/registration.ts";
+import { createErrorContext, failureScope } from "@mycli/contracts";
+import { normalizeIntegrationToolNames } from "../foundation/tool-catalog.ts";
 import { classifyMcpFailure, describeMcpFailure, isMcpAbort } from "./diagnostics.ts";
 import { createMcpToolRegistration } from "./tool-adapter.ts";
+import { SharedMcpOperation } from "./shared-operation.ts";
+import { collectMcpPages } from "./pagination.ts";
+import { mcpToolEnabled } from "./config-options.ts";
 import type {
 	McpManagedClient,
+	McpDiscoveryFailure,
 	McpResourceContent,
 	McpResourceDescriptor,
 	McpResourceFailure,
@@ -32,11 +38,20 @@ export interface McpManagerDiscovery {
 }
 
 interface McpServerDiscoveryResult {
-	readonly client?: McpManagedClient;
 	readonly catalog?: McpCachedServerCatalog;
 	readonly registrations: readonly IntegrationRegistration[];
 	readonly resources: readonly McpResourceDescriptor[];
 	readonly server: McpServerDiscovery;
+}
+
+export class McpRequiredServerError extends Error {
+	readonly code = "mcp_required_server_failed";
+	readonly errorContext = createErrorContext({ reason: "integration.unavailable", source: "integration",
+		scope: failureScope("request", "required-mcp-startup"), outcome: { state: "not_started", effects: "none" },
+		details: { operation: "initialize", phase: "connect", legacy_kind: "mcp_required_server_failed" } });
+	constructor(readonly servers: readonly string[]) {
+		super(`Required MCP servers could not start: ${servers.filter((id) => /^[A-Za-z0-9._-]{1,64}$/u.test(id)).slice(0, 20).join(", ")}`);
+	}
 }
 
 export class McpManager {
@@ -44,9 +59,10 @@ export class McpManager {
 	readonly #createClient: (config: McpServerConfig) => McpManagedClient;
 	readonly #catalogCache?: McpCatalogCacheContract;
 	readonly #clients = new Map<string, McpManagedClient>();
-	readonly #lifecycles: McpManagedClient[] = [];
-	#cachePromise?: Promise<McpManagerDiscovery | undefined>;
-	#refreshPromise?: Promise<McpManagerDiscovery>;
+	readonly #cacheOperation = new SharedMcpOperation<McpManagerDiscovery | undefined>();
+	readonly #refreshOperation = new SharedMcpOperation<McpManagerDiscovery>();
+	readonly #requiredOperation = new SharedMcpOperation<McpManagerDiscovery>();
+	#cached?: { readonly discovery: McpManagerDiscovery | undefined };
 	#currentDiscovery?: McpManagerDiscovery;
 	#closePromise?: Promise<void>;
 	#closed = false;
@@ -63,26 +79,49 @@ export class McpManager {
 
 	discover(signal: AbortSignal): Promise<McpManagerDiscovery> {
 		if (this.#closed) return Promise.reject(new Error("mcp_manager_closed"));
+		if (signal.aborted) return Promise.reject(signal.reason);
 		if (this.#currentDiscovery) return Promise.resolve(this.#currentDiscovery);
 		return this.#discover(signal);
 	}
 
 	loadCached(signal: AbortSignal): Promise<McpManagerDiscovery | undefined> {
 		if (this.#closed) return Promise.reject(new Error("mcp_manager_closed"));
-		this.#cachePromise ??= this.#loadCached(signal).then((discovery) => {
+		if (signal.aborted) return Promise.reject(signal.reason);
+		if (this.#cached) return Promise.resolve(this.#cached.discovery);
+		return this.#cacheOperation.run(signal, async (activeSignal) => {
+			const discovery = await this.#loadCached(activeSignal);
+			activeSignal.throwIfAborted();
+			this.#cached = { discovery };
 			if (discovery) this.#currentDiscovery ??= discovery;
 			return discovery;
 		});
-		return this.#cachePromise;
 	}
 
 	refresh(signal: AbortSignal): Promise<McpManagerDiscovery> {
 		if (this.#closed) return Promise.reject(new Error("mcp_manager_closed"));
-		this.#refreshPromise ??= this.#discoverLive(signal).then((discovery) => {
+		return this.#refreshOperation.run(signal, async (activeSignal) => {
+			// A delayed cache read cannot replace a live catalog or create a second client.
+			await this.loadCached(activeSignal);
+			const discovery = await this.#discoverLive(activeSignal);
+			activeSignal.throwIfAborted();
 			this.#currentDiscovery = discovery;
 			return discovery;
 		});
-		return this.#refreshPromise;
+	}
+
+	discoverRequired(signal: AbortSignal): Promise<McpManagerDiscovery> {
+		if (this.#closed) return Promise.reject(new Error("mcp_manager_closed"));
+		return this.#requiredOperation.run(signal, async (activeSignal) => {
+			await this.loadCached(activeSignal);
+			const results = await Promise.all(this.#configs.filter((config) => config.enabled && config.required)
+				.map((config) => this.#discoverServer(config, activeSignal)));
+			activeSignal.throwIfAborted();
+			const failed = results.filter(({ server }) => server.status === "failed"
+				|| server.failures?.some((failure) => failure.capability === "tools" && !failure.tool));
+			if (failed.length) throw new McpRequiredServerError(failed.map(({ server }) => server.serverId));
+			return Object.freeze({ registrations: normalizeIntegrationToolNames(results.flatMap((result) => result.registrations)),
+				resources: Object.freeze(results.flatMap((result) => result.resources)), servers: Object.freeze(results.map((result) => result.server)) });
+		});
 	}
 
 	listResources(signal: AbortSignal, serverId?: string): Promise<McpResourceListing> {
@@ -138,21 +177,11 @@ export class McpManager {
 			const settled = await Promise.allSettled(configs.map(async (config) => {
 				const client = this.#clients.get(config.id);
 				if (!client) throw new Error("mcp_server_unavailable");
-				const templates: McpResourceTemplateDescriptor[] = [];
-				const seen = new Set<string>();
-				let next = cursor;
-				do {
-					activeSignal.throwIfAborted();
+				if (serverId !== undefined) return client.listResourceTemplates?.(activeSignal, cursor) ?? { resourceTemplates: [] };
+				const templates = await collectMcpPages(activeSignal, async (next) => {
 					const page = await client.listResourceTemplates?.(activeSignal, next) ?? { resourceTemplates: [] };
-					if (serverId !== undefined) return page;
-					templates.push(...page.resourceTemplates);
-					next = page.nextCursor;
-					if (templates.length > 10_000 || seen.size >= 100
-						|| (next !== undefined && (typeof next !== "string" || !next || next.length > 4_096 || seen.has(next)))) {
-						throw new Error("invalid_mcp_resource_pagination");
-					}
-					if (next) seen.add(next);
-				} while (next !== undefined);
+					return { items: page.resourceTemplates, ...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }) };
+				}, "invalid_mcp_resource_pagination");
 				return { resourceTemplates: templates };
 			}));
 			activeSignal.throwIfAborted();
@@ -195,71 +224,38 @@ export class McpManager {
 	}
 
 	async #discover(signal: AbortSignal): Promise<McpManagerDiscovery> {
-		try {
-			const cached = await this.loadCached(signal);
-			if (cached) return cached;
-			return await this.refresh(signal);
-		} catch (error) {
-			await this.close().catch(() => undefined);
-			throw error;
+		const cached = await this.loadCached(signal);
+		return cached ?? await this.refresh(signal);
+	}
+
+	#getClient(config: McpServerConfig): McpManagedClient {
+		if (this.#closed) throw new Error("mcp_manager_closed");
+		let client = this.#clients.get(config.id);
+		if (!client) {
+			client = this.#createClient(config);
+			this.#clients.set(config.id, client);
 		}
+		return client;
 	}
 
 	async #discoverLive(signal: AbortSignal): Promise<McpManagerDiscovery> {
-		const registrations: IntegrationRegistration[] = [];
-		const resources: McpResourceDescriptor[] = [];
-		const servers: McpServerDiscovery[] = [];
-		const discoveredClients: McpManagedClient[] = [];
-		try {
-			const settled = await Promise.allSettled(
-				this.#configs.map((config) => this.#discoverServer(config, signal)),
-			);
-			const rejected = settled.find(
-				(result): result is PromiseRejectedResult => result.status === "rejected",
-			);
-			if (rejected) {
-				await Promise.all(settled.flatMap((result) => (
-					result.status === "fulfilled" && result.value.client
-						? [closeIgnoringFailure(result.value.client)]
-						: []
-				)));
-				throw rejected.reason;
-			}
-			for (const result of settled) {
-				if (result.status !== "fulfilled") continue;
-				const discovery = result.value;
-				registrations.push(...discovery.registrations);
-				resources.push(...discovery.resources);
-				servers.push(discovery.server);
-				if (discovery.client) {
-					discoveredClients.push(discovery.client);
-					this.#clients.set(discovery.server.serverId, discovery.client);
-					this.#lifecycles.push(discovery.client);
-				}
-			}
-			const result = Object.freeze({
-				registrations: Object.freeze(registrations),
-				resources: Object.freeze(resources),
-				servers: Object.freeze(servers),
-			});
-			if (servers.every((server) => server.status !== "failed")) {
-				const catalogs = settled.flatMap((entry) => (
-					entry.status === "fulfilled" && entry.value.catalog ? [entry.value.catalog] : []
-				));
-				await this.#catalogCache?.save(this.#configs, catalogs).catch(() => undefined);
-			}
-			return result;
-		} catch (error) {
-			await Promise.all(discoveredClients.map(closeIgnoringFailure));
-			for (const client of discoveredClients) {
-				const lifecycleIndex = this.#lifecycles.indexOf(client);
-				if (lifecycleIndex >= 0) this.#lifecycles.splice(lifecycleIndex, 1);
-				for (const [serverId, current] of this.#clients) {
-					if (current === client) this.#clients.delete(serverId);
-				}
-			}
-			throw error;
+		const settled = await Promise.allSettled(this.#configs.map((config) => this.#discoverServer(config, signal)));
+		signal.throwIfAborted();
+		const discoveries = settled.map((entry) => {
+			if (entry.status === "rejected") throw entry.reason;
+			return entry.value;
+		});
+		const result: McpManagerDiscovery = Object.freeze({
+			registrations: normalizeIntegrationToolNames(discoveries.flatMap((discovery) => discovery.registrations)),
+			resources: Object.freeze(discoveries.flatMap((discovery) => discovery.resources)),
+			servers: Object.freeze(discoveries.map((discovery) => discovery.server)),
+		});
+		if (result.servers.every((server) => server.status === "ok" || server.status === "disabled")) {
+			const catalogs = discoveries.flatMap((discovery) => discovery.catalog ? [discovery.catalog] : []);
+			await this.#catalogCache?.save(this.#configs, catalogs).catch(() => undefined);
 		}
+		signal.throwIfAborted();
+		return result;
 	}
 
 	async #loadCached(signal: AbortSignal): Promise<McpManagerDiscovery | undefined> {
@@ -275,7 +271,6 @@ export class McpManager {
 			|| expected.some((config) => !byServer.has(config.id))) {
 			return undefined;
 		}
-		const created: McpManagedClient[] = [];
 		try {
 			const registrations: IntegrationRegistration[] = [];
 			const resources: McpResourceDescriptor[] = [];
@@ -287,29 +282,24 @@ export class McpManager {
 					continue;
 				}
 				const catalog = byServer.get(config.id)!;
-				const client = this.#createClient(config);
-				created.push(client);
-				registrations.push(...catalog.tools.map(
-					(tool) => createMcpToolRegistration(client, tool),
+				const client = this.#getClient(config);
+				const tools = catalog.tools.filter((tool) => mcpToolEnabled(config, tool.name));
+				registrations.push(...tools.map(
+					(tool) => createMcpToolRegistration(client, tool, config),
 				));
 				servers.push(serverResult(
 					config,
 					"ok",
-					catalog.tools.length,
+					tools.length,
 					catalog.resourceCount,
 				));
-				this.#clients.set(config.id, client);
-				this.#lifecycles.push(client);
 			}
 			return Object.freeze({
-				registrations: Object.freeze(registrations),
+				registrations: normalizeIntegrationToolNames(registrations),
 				resources: Object.freeze(resources),
 				servers: Object.freeze(servers),
 			});
 		} catch (error) {
-			await Promise.all(created.map(closeIgnoringFailure));
-			this.#clients.clear();
-			this.#lifecycles.length = 0;
 			if (signal.aborted || isMcpAbort(error)) throw error;
 			return undefined;
 		}
@@ -327,32 +317,42 @@ export class McpManager {
 				server: serverResult(config, "disabled", 0, 0),
 			});
 		}
-		let client: McpManagedClient | undefined;
 		try {
-			client = this.#createClient(config);
+			const client = this.#getClient(config);
 			const [toolsResult, resourcesResult] = await Promise.allSettled([
-				client.listTools(signal),
-				client.listResources(signal),
+				client.listTools(signal), client.listResources(signal),
 			]);
-			if (toolsResult.status === "rejected") throw toolsResult.reason;
-			if (resourcesResult.status === "rejected") throw resourcesResult.reason;
-			const tools = toolsResult.value;
-			const resources = resourcesResult.value;
+			signal.throwIfAborted();
+			const failures: McpDiscoveryFailure[] = [];
+			const tools = toolsResult.status === "fulfilled" ? toolsResult.value : [];
+			const resources = resourcesResult.status === "fulfilled" ? resourcesResult.value : [];
+			if (toolsResult.status === "rejected") failures.push({ capability: "tools", category: classifyMcpFailure(toolsResult.reason) });
+			if (resourcesResult.status === "rejected") failures.push({ capability: "resources", category: classifyMcpFailure(resourcesResult.reason) });
+			const registrations: IntegrationRegistration[] = [];
+			for (const tool of tools) {
+				if (!mcpToolEnabled(config, tool.name)) continue;
+				try {
+					registrations.push(createMcpToolRegistration(client, tool, config));
+				} catch (error) {
+					failures.push({ capability: "tools", category: classifyMcpFailure(error),
+						tool: /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(tool.name) ? tool.name : "tool" });
+				}
+			}
+			const status = failures.length === 0 ? "ok"
+				: registrations.length > 0 || resources.length > 0 ? "partial" : "failed";
 			return Object.freeze({
-				client,
 				catalog: serverCatalog(config.id, tools, resources.length),
-				registrations: Object.freeze(
-					tools.map((tool) => createMcpToolRegistration(client!, tool)),
-				),
-				resources,
-				server: serverResult(config, "ok", tools.length, resources.length),
+				registrations: Object.freeze(registrations), resources,
+				server: Object.freeze({
+					...serverResult(config, status, registrations.length, resources.length, failures[0]?.category),
+					...(failures.length ? { failures: Object.freeze(failures.slice(0, 20).map((failure) => Object.freeze(failure))),
+						failureCount: failures.length } : {}),
+				}),
 			});
 		} catch (error) {
-			if (client) await closeIgnoringFailure(client);
 			if (signal.aborted || isMcpAbort(error)) throw error;
 			return Object.freeze({
-				registrations: Object.freeze([]),
-				resources: Object.freeze([]),
+				registrations: Object.freeze([]), resources: Object.freeze([]),
 				server: serverResult(config, "failed", 0, 0, classifyMcpFailure(error)),
 			});
 		}
@@ -360,21 +360,11 @@ export class McpManager {
 
 	async #closeAll(): Promise<void> {
 		await Promise.allSettled([
-			...this.#resourceOperations,
-			...(this.#cachePromise ? [this.#cachePromise] : []),
-			...(this.#refreshPromise ? [this.#refreshPromise] : []),
+			this.#refreshOperation.close(), this.#requiredOperation.close(), this.#cacheOperation.close(), ...this.#resourceOperations,
 		]);
-		let failed = false;
-		for (const client of [...this.#lifecycles].reverse()) {
-			try {
-				await client.close();
-			} catch {
-				failed = true;
-			}
-		}
-		this.#lifecycles.length = 0;
+		const results = await Promise.allSettled([...this.#clients.values()].reverse().map((client) => client.close()));
 		this.#clients.clear();
-		if (failed) throw new Error("mcp_close_failed");
+		if (results.some((result) => result.status === "rejected")) throw new Error("mcp_close_failed");
 	}
 }
 
@@ -407,14 +397,6 @@ function serverResult(
 		timeoutMs: config.timeoutMs,
 		...(failureCategory ? { failureCategory } : {}),
 	});
-}
-
-async function closeIgnoringFailure(client: McpManagedClient): Promise<void> {
-	try {
-		await client.close();
-	} catch {
-		// The failed server remains isolated from other discoveries.
-	}
 }
 
 function abortError(): Error {

@@ -18,7 +18,7 @@ The current CLI:
 
 M8 retains provider protocols, transcript/session operations, approvals, clarifications, queues,
 compaction, memory, file tools, persistent shells, integrations, subagents, management commands,
-doctor, diagnostics, signals, shutdown, and all 36 Node-owned built-in slash commands.
+doctor, diagnostics, signals, shutdown, and the built-in slash command catalog.
 
 The current subagent implementation uses durable agent threads supervised entirely by Node. Agent
 state, mailbox delivery, frozen permissions, restart recovery, readable artifacts, and TUI

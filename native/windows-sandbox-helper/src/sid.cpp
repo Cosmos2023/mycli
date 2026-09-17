@@ -8,12 +8,7 @@
 #include <vector>
 
 namespace mycli::sandbox {
-LocalSid DeriveCapabilitySid(
-    const std::filesystem::path& root,
-    const std::wstring& capability_scope) {
-    auto normalized = capability_scope + L"\n" +
-        std::filesystem::weakly_canonical(root).wstring();
-    for (auto& ch : normalized) ch = static_cast<wchar_t>(std::towlower(ch));
+std::array<unsigned char, 32> HashSandboxKey(const std::wstring& value) {
     BCRYPT_ALG_HANDLE algorithm = nullptr;
     if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0) {
         throw std::runtime_error("BCryptOpenAlgorithmProvider failed");
@@ -44,8 +39,8 @@ LocalSid DeriveCapabilitySid(
     if (status >= 0) {
         status = BCryptHashData(
             hash,
-            reinterpret_cast<PUCHAR>(normalized.data()),
-            static_cast<ULONG>(normalized.size() * sizeof(wchar_t)),
+            reinterpret_cast<PUCHAR>(const_cast<wchar_t*>(value.data())),
+            static_cast<ULONG>(value.size() * sizeof(wchar_t)),
             0);
     }
     if (status >= 0) {
@@ -55,6 +50,16 @@ LocalSid DeriveCapabilitySid(
     if (hash != nullptr) BCryptDestroyHash(hash);
     BCryptCloseAlgorithmProvider(algorithm, 0);
     if (status < 0) throw std::runtime_error("BCrypt SHA-256 failed");
+    return digest;
+}
+
+LocalSid DeriveCapabilitySid(
+    const std::filesystem::path& root,
+    const std::wstring& capability_scope) {
+    auto normalized = capability_scope + L"\n" +
+        std::filesystem::weakly_canonical(root).wstring();
+    for (auto& ch : normalized) ch = static_cast<wchar_t>(std::towlower(ch));
+    const auto digest = HashSandboxKey(normalized);
     std::wostringstream text;
     text << L"S-1-5-21";
     for (std::size_t offset = 0; offset < 16; offset += 4) {

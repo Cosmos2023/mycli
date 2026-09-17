@@ -7,13 +7,13 @@
 namespace {
 
 constexpr wchar_t kValidRequest[] = LR"({
-    "protocol_version": 1,
+    "protocol_version": 2,
     "command": {"argv": ["cmd.exe", "/c", "echo ok"]},
     "cwd": "C:\\workspace",
     "workspace_roots": ["C:\\workspace"],
     "writable_roots": ["C:\\workspace"],
     "denied_read_roots": ["C:\\workspace\\secret"],
-    "denied_read_globs": ["**/.env"],
+    "denied_read_globs": [],
     "filesystem": "workspace_write",
     "network": "disabled",
     "mode": "workspace-write"
@@ -38,9 +38,9 @@ int RunTests() {
 
     std::wstring wrong_version{kValidRequest};
     wrong_version.replace(
-        wrong_version.find(L"\"protocol_version\": 1"),
-        std::wstring{L"\"protocol_version\": 1"}.size(),
-        L"\"protocol_version\": 2");
+        wrong_version.find(L"\"protocol_version\": 2"),
+        std::wstring{L"\"protocol_version\": 2"}.size(),
+        L"\"protocol_version\": 1");
     if (!Rejects(wrong_version)) {
         std::cerr << "protocol mismatch was accepted\n";
         return 1;
@@ -51,8 +51,52 @@ int RunTests() {
         network_enabled.find(L"\"network\": \"disabled\""),
         std::wstring{L"\"network\": \"disabled\""}.size(),
         L"\"network\": \"enabled\"");
-    if (!Rejects(network_enabled)) {
-        std::cerr << "network-enabled request was accepted\n";
+    if (Rejects(network_enabled)) {
+        std::cerr << "network-enabled request was rejected\n";
+        return 1;
+    }
+
+    auto proxy = network_enabled;
+    proxy.insert(proxy.rfind(L'}'), L", \"network_proxy_port\": 40000");
+    if (Rejects(proxy)) {
+        std::cerr << "valid proxy request was rejected\n";
+        return 1;
+    }
+    for (const auto* port : {L"0", L"-1", L"65536", L"1.5", L"\"40000\""}) {
+        auto invalid_proxy = network_enabled;
+        invalid_proxy.insert(invalid_proxy.rfind(L'}'),
+            std::wstring{L", \"network_proxy_port\": "} + port);
+        if (!Rejects(invalid_proxy)) {
+            std::cerr << "invalid proxy port was accepted\n";
+            return 1;
+        }
+    }
+    auto offline_proxy = std::wstring{kValidRequest};
+    offline_proxy.insert(offline_proxy.rfind(L'}'), L", \"network_proxy_port\": 40000");
+    if (!Rejects(offline_proxy)) {
+        std::cerr << "offline policy accepted a proxy exception\n";
+        return 1;
+    }
+
+    std::wstring empty_write_roots{kValidRequest};
+    const std::wstring write_roots = LR"("writable_roots": ["C:\\workspace"])";
+    empty_write_roots.replace(empty_write_roots.find(write_roots), write_roots.size(),
+        L"\"writable_roots\": []");
+    if (Rejects(empty_write_roots)) {
+        std::cerr << "empty write allowlist was rejected\n";
+        return 1;
+    }
+    std::wstring missing_field{kValidRequest};
+    const std::wstring deny_field = LR"(    "denied_read_globs": [],)";
+    missing_field.erase(missing_field.find(deny_field), deny_field.size());
+    if (!Rejects(missing_field)) {
+        std::cerr << "missing protocol field was accepted\n";
+        return 1;
+    }
+    std::wstring embedded_nul{kValidRequest};
+    embedded_nul.insert(embedded_nul.find(L"echo ok") + 4, LR"(\u0000)");
+    if (!Rejects(embedded_nul)) {
+        std::cerr << "embedded NUL was accepted\n";
         return 1;
     }
 

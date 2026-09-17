@@ -90,6 +90,12 @@ individual model declarations. `@mycli/config` stores immutable JSON DTOs; only
 - Provider and model discovery lazy-loads pi-ai metadata only on explicit directory/catalog demand.
   Directory DTOs expose identity, supported API, input modality, reasoning levels, limits, and cost,
   but never pi-ai `compat`, auth objects, functions, headers, keys, or duplicated wire facts.
+- Bootstrap, session preference activation, and trust reload do not capture the complete model
+  directory. Login rows use profiles, declarations, and shared product activation. Native readiness
+  loads only the selected SDK auth adapter; typed lazy module wiring is checked against the pinned
+  SDK directory. Environment/OAuth/reference semantics remain SDK-owned. Full route/model capture
+  runs on execution or explicit discovery/connectivity demand. Fresh-process compiled tests check
+  both deferred imports and existing credentials, in addition to packed startup smoke.
 - Model input and reasoning metadata comes from the pinned pi-ai catalog. A complete explicit model
   declaration supplies metadata for an uncatalogued private relay. Hosted search stays a separate
   mycli product capability because the current integration has no first-class hosted-search option.
@@ -130,6 +136,18 @@ individual model declarations. `@mycli/config` stores immutable JSON DTOs; only
 - Explicit reasoning is admitted from pi-ai's `getSupportedThinkingLevels()` for catalog models.
   Mycli's `ultra` intent maps to pi-ai level `max` with an explicit `thinkingLevelMap.max = "ultra"`.
   Uncatalogued declared models use their configured reasoning metadata.
+- Keep model reasoning capability separate from request intent. Explicit `none` uses the SDK's
+  off mapping, retaining model capability so the SDK can emit the provider's disable parameter.
+  `streamSimple` encodes off as an absent reasoning option; never pass the unsupported string
+  `off` as `SimpleStreamOptions.reasoning`. For declared models an explicit intent supplies the
+  request model capability; pi-ai still owns wire dialect detection. Catalog models that exclude
+  off must reject it before dispatch. Semantic capabilities expose supported efforts in SDK order
+  and the effective model output/context ceilings without exposing provider wire metadata.
+- The effective generation ceiling is bounded by both user configuration and catalog capacity.
+  Per-request model clones also bound SDK thinking-budget expansion by the caller's total cap.
+  Failed terminal validation (including `length` and empty responses) retains any reported usage
+  exactly once. Preserve `provider.output_limit`/`provider.empty_response` with bounded finish
+  reason and output ceiling; missing upstream usage remains unknown.
 - `onPayload` is absent for ordinary requests. Its allowed uses are inserting
   `{type: "web_search", external_web_access: true}` into a live OpenAI Responses request and
   preserving canonical image detail, which pi-ai 0.84.4 does not yet expose. Image transforms
@@ -144,6 +162,14 @@ individual model declarations. `@mycli/config` stores immutable JSON DTOs; only
   the SDK requests its next frame, acknowledging consumption, not when a network chunk is parsed.
   Merge the activity with SDK events promptly so chunk coalescing and slow consumers cannot move
   a search ahead of preceding assistant text, including deltas in an unfinished message.
+- Await SSE consumption acknowledgements and SDK delivery on downstream drain. The merge queue
+  retains at most 64 events and 8 MiB of serialized UTF-8 payloads; count or byte overflow raises
+  `response_stream_error` with a bounded public detail, without silent drops or automatic replay.
+  Keep only text/thinking deltas, native search events, and terminal SDK messages in this queue;
+  mutable intermediate `partial` snapshots and ignored SDK bookkeeping are not retained.
+  Cancellation and early return release both readers and blocked drain waiters. A pending SDK
+  read/return that ignores cancellation must not hang the caller. Transport abort remains owned
+  by the provider. Slow-reader tests cover upstream pull counts, interleaving, overflow, and cleanup.
 - Emit one `web_search_started` and at most one `web_search_completed` per native call id and
   provider attempt. Completion comes from a completed output item, including terminal output
   fallback. A completion heartbeat without action metadata waits for the output item or a successful

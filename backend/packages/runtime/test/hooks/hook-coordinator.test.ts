@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { HookRunnerContract } from "@mycli/core";
+import type { HookRunnerContract, RuntimeEvent } from "@mycli/core";
 import { HookCoordinator } from "../../src/index.ts";
 
 test("hook coordinator merges modifications and fails closed on pre-hook denial", async () => {
@@ -71,4 +71,26 @@ test("hook coordinator contains post-hook failure after tool completion", async 
 	}, new AbortController().signal);
 
 	assert.deepEqual(result, { contexts: [], failed: true });
+});
+
+test("slow and failed non-tool hooks publish owned lifecycle feedback", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	let reject!: (error: Error) => void;
+	const events: RuntimeEvent[] = [];
+	const coordinator = new HookCoordinator({ sessionId: "s", turnId: "t", emit: (event) => events.push(event),
+		runner: { run: async () => new Promise((_, fail) => { reject = fail; }) },
+	});
+	const pending = coordinator.runPoint("stop", {}, new AbortController().signal);
+	assert.equal(events.length, 0);
+	t.mock.timers.tick(200);
+	assert.equal(events[0]?.type, "hook_started");
+	reject(new Error("private exception payload"));
+	const result = await pending;
+	assert.equal(result.failed, true);
+	assert.equal(events[1]?.type, "hook_completed");
+	assert.equal(Reflect.get(events[0]!, "operationId"), Reflect.get(events[1]!, "operationId"));
+	assert.equal(Reflect.get(events[1]!, "status"), "failed");
+	assert.doesNotMatch(JSON.stringify(events), /private exception payload/);
+	t.mock.timers.tick(1000);
+	assert.equal(events.length, 2);
 });

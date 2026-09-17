@@ -159,7 +159,7 @@ function sandboxRecoveryRemediation(recovery: SandboxRecoveryResult): string | u
 		case "enforcement_unavailable":
 			return "Setup state exists, but this helper does not advertise enforcement readiness; update or repair mycli before using a restricted profile.";
 		case "operation_canceled":
-			return "Windows sandbox setup was canceled; rerun the command and approve the UAC prompt.";
+			return "Windows sandbox maintenance was canceled; rerun the command and approve the UAC prompt.";
 		case "interrupted":
 			return "The sandbox operation was interrupted; check status before retrying.";
 		case "operation_failed":
@@ -169,6 +169,8 @@ function sandboxRecoveryRemediation(recovery: SandboxRecoveryResult): string | u
 			return sandboxReadinessRemediation(recovery.after);
 		case "setup_completed":
 		case "reset_completed":
+		case "repair_completed":
+		case "uninstall_completed":
 		case "already_ready":
 		case "no_managed_state":
 			return undefined;

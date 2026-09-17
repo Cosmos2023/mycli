@@ -1,6 +1,6 @@
 {
   "name": "@mycli/providers",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "types": "./dist/index.d.ts",
@@ -21,12 +21,12 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-		"@earendil-works/pi-ai": "0.84.4",
-		"@mycli/config": "0.1.0",
-		"@mycli/contracts": "0.1.0",
-		"@mycli/core": "0.1.0",
-		"eventsource-parser": "3.1.0"
-	},
+    "@earendil-works/pi-ai": "0.84.4",
+    "@mycli/config": "0.1.1",
+    "@mycli/contracts": "0.1.1",
+    "@mycli/core": "0.1.1",
+    "eventsource-parser": "3.1.0"
+  },
   "devDependencies": {
     "tsx": "^4.22.4",
     "typescript": "^5.9.3"

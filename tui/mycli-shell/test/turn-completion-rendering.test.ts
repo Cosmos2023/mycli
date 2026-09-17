@@ -120,7 +120,7 @@ for (const nativeScrollback of [false, true]) {
 		assert.equal(probe.runtime.getState().footer.turnRunning, false);
 		assert.deepEqual(probe.interrupts, []);
 		assert.deepEqual(probe.commands, ["/mode plan"]);
-		assert.ok(probe.runtime.getState().messages.some((message) => message.text === "Press Ctrl+C again to exit."));
+		assert.equal(probe.runtime.getState().messages.some((message) => message.text === "Press Ctrl+C again to exit."), false);
 		assert.ok(probe.runtime.getState().messages.some((message) => message.text.includes("Synthetic mode save failure")));
 		assert.equal(probe.runtime.getState().transcript?.filter((block) => block.kind === "turn_completed").length, 1);
 		for (const width of [60, 100]) {

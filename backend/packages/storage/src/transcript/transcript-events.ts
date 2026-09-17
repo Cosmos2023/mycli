@@ -1,3 +1,5 @@
+import { isTurnInterruptionReason, type TurnInterruptionReason } from "@mycli/contracts";
+import { parseSessionGoal, parseSkillReferences, type SkillReference } from "@mycli/contracts";
 import { createHash } from "node:crypto";
 import { isRuntimeErrorCode, readErrorContext, sanitizeRuntimeErrorDetail } from "@mycli/contracts";
 import type { ErrorContext, RuntimeErrorCode } from "@mycli/contracts";
@@ -10,7 +12,7 @@ import type {
 	ProviderReplayState,
 	ProviderUsage,
 } from "@mycli/core";
-import { isProviderRouteId } from "@mycli/core";
+import { isProviderRouteId, parseToolDiscoveries } from "@mycli/core";
 import { canonicalImages } from "../artifacts/canonical-images.ts";
 import { stableJson } from "../stable-json.ts";
 
@@ -68,7 +70,8 @@ export type TranscriptDisplayActivityType =
 	| "context_baseline"
 	| "capability"
 	| "command_result"
-	| "web_search";
+	| "web_search"
+	| "goal";
 
 export type TranscriptLifecyclePhase = "started" | "completed" | "failed" | "interrupted";
 
@@ -103,6 +106,7 @@ export interface TranscriptReadableProjection {
 }
 
 export interface UserInputTranscriptPayload {
+	readonly skillReferences?: readonly SkillReference[];
 	readonly text: string;
 	readonly clientUserMessageId: string;
 	readonly queueId?: string;
@@ -112,7 +116,8 @@ export interface UserInputTranscriptPayload {
 		| "queued"
 		| "agent_mailbox"
 		| "task_notification"
-		| "approval_resume";
+		| "approval_resume"
+		| "goal";
 	readonly images?: readonly CanonicalImage[];
 	readonly readableProjection?: TranscriptReadableProjection;
 }
@@ -176,6 +181,7 @@ export interface AppendCompactionActivityInput {
 }
 
 export interface TurnLifecycleTranscriptPayload {
+	readonly interruptionReason?: TurnInterruptionReason;
 	readonly phase: TranscriptLifecyclePhase;
 	readonly errorCode?: RuntimeErrorCode;
 	readonly message?: string;
@@ -376,6 +382,7 @@ const DISPLAY_ACTIVITY_TYPES = new Set<TranscriptDisplayActivityType>([
 	"capability",
 	"command_result",
 	"web_search",
+	"goal",
 ]);
 const LIFECYCLE_PHASES = new Set<TranscriptLifecyclePhase>([
 	"started",
@@ -417,12 +424,12 @@ function payloadFor(
 
 function userInput(value: unknown): UserInputTranscriptPayload {
 	const payload = record(value, "payload");
-	keys(payload, ["text", "clientUserMessageId", "queueId", "source", "images", "readableProjection"], [
+	keys(payload, ["text", "clientUserMessageId", "queueId", "source", "images", "readableProjection", "skillReferences"], [
 		"text", "clientUserMessageId", "source",
 	], "payload");
 	if (payload.source !== "submit" && payload.source !== "steer"
 		&& payload.source !== "queued" && payload.source !== "agent_mailbox"
-		&& payload.source !== "task_notification" && payload.source !== "approval_resume") {
+		&& payload.source !== "task_notification" && payload.source !== "approval_resume" && payload.source !== "goal") {
 		invalid("payload.source");
 	}
 	const images = payload.images === undefined ? undefined : canonicalImagePayload(payload.images);
@@ -430,6 +437,7 @@ function userInput(value: unknown): UserInputTranscriptPayload {
 	const readableProjection = optionalReadableProjection(payload.readableProjection);
 	return Object.freeze({
 		text: string(payload.text, "payload.text"),
+		...(payload.skillReferences === undefined ? {} : { skillReferences: parseSkillReferences(payload.skillReferences) }),
 		clientUserMessageId: identity(payload.clientUserMessageId, "payload.clientUserMessageId"),
 		...(queueId ? { queueId } : {}),
 		source: payload.source,
@@ -564,6 +572,10 @@ function displayActivity(value: unknown): DisplayActivityTranscriptPayload {
 	const toolName = optionalIdentity(payload.toolName, "payload.toolName");
 	const status = optionalIdentity(payload.status, "payload.status");
 	const metadata = optionalJsonRecord(payload.metadata, "payload.metadata");
+	if (payload.activityType === "goal") {
+		if (!metadata || !["create", "edit", "status", "clear", "usage", "round"].includes(String(metadata.goal_operation))) invalid("payload.metadata.goal_operation");
+		if (metadata.goal_snapshot !== null) parseSessionGoal(metadata.goal_snapshot);
+	}
 	return Object.freeze({
 		activityType: payload.activityType as TranscriptDisplayActivityType,
 		...(text === undefined ? {} : { text }),
@@ -576,8 +588,9 @@ function displayActivity(value: unknown): DisplayActivityTranscriptPayload {
 
 function turnLifecycle(value: unknown): TurnLifecycleTranscriptPayload {
 	const payload = record(value, "payload");
-	keys(payload, ["phase", "errorCode", "message", "additionalDetails", "errorContext", "usage", "diagnostics"], ["phase"], "payload");
+	keys(payload, ["phase", "interruptionReason", "errorCode", "message", "additionalDetails", "errorContext", "usage", "diagnostics"], ["phase"], "payload");
 	if (!LIFECYCLE_PHASES.has(payload.phase as TranscriptLifecyclePhase)) invalid("payload.phase");
+	if (payload.interruptionReason !== undefined && !isTurnInterruptionReason(payload.interruptionReason)) invalid("payload.interruptionReason");
 	const errorCode = optionalIdentity(payload.errorCode, "payload.errorCode");
 	if (errorCode !== undefined && !isRuntimeErrorCode(errorCode)) {
 		invalid("payload.errorCode");
@@ -599,6 +612,7 @@ function turnLifecycle(value: unknown): TurnLifecycleTranscriptPayload {
 	}
 	return Object.freeze({
 		phase: payload.phase as TranscriptLifecyclePhase,
+		...(isTurnInterruptionReason(payload.interruptionReason) ? { interruptionReason: payload.interruptionReason } : {}),
 		...(errorCode ? { errorCode } : {}),
 		...(message === undefined ? {} : { message }),
 		...(additionalDetails === undefined ? {} : { additionalDetails }),
@@ -718,7 +732,7 @@ function conversationItem(value: unknown, field: string): CanonicalConversationI
 		});
 	}
 	if (type === "tool_result") {
-		keys(item, ["type", "callId", "toolName", "output", "success", "images"], [
+		keys(item, ["type", "callId", "toolName", "output", "success", "images", "toolDiscoveries"], [
 			"type", "callId", "toolName", "output", "success",
 		], field);
 		return Object.freeze({
@@ -727,6 +741,9 @@ function conversationItem(value: unknown, field: string): CanonicalConversationI
 			toolName: identity(item.toolName, `${field}.toolName`),
 			output: string(item.output, `${field}.output`),
 			success: boolean(item.success, `${field}.success`),
+			...(item.toolDiscoveries === undefined ? {} : {
+				toolDiscoveries: parseToolDiscoveries({ version: 1, tools: item.toolDiscoveries }),
+			}),
 			...(item.images === undefined ? {} : { images: canonicalImagePayload(item.images) }),
 		});
 	}

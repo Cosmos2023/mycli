@@ -1,0 +1,62 @@
+name: windows-sandbox
+
+on:
+  workflow_call:
+    inputs:
+      windows-image:
+        type: string
+        default: windows-2022
+      artifact-name:
+        type: string
+        default: windows-sandbox-helper
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ${{ inputs.windows-image || 'windows-2022' }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.x"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Compile native helper and regression tests
+        shell: pwsh
+        run: |
+          cmake -S native/windows-sandbox-helper -B native/windows-sandbox-helper/build -A x64
+          if ($LASTEXITCODE -ne 0) { throw "Windows sandbox configure failed" }
+          cmake --build native/windows-sandbox-helper/build --config Release
+          if ($LASTEXITCODE -ne 0) { throw "Windows sandbox build failed" }
+          Copy-Item native/windows-sandbox-helper/build/Release/mycli-windows-sandbox.exe backend/packages/tools/native/windows/mycli-windows-sandbox.exe
+      - name: Verify native protocol and restricted-token boundaries
+        run: ctest --test-dir native/windows-sandbox-helper/build -C Release --output-on-failure
+      - name: Initialize restricted identities and verify readiness
+        shell: pwsh
+        run: |
+          $helper = "backend/packages/tools/native/windows/mycli-windows-sandbox.exe"
+          & $helper --ensure-setup
+          if ($LASTEXITCODE -ne 0) { throw "Windows sandbox setup failed" }
+          $handshake = & $helper --handshake | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $handshake.setup_complete -ne $true -or $handshake.sandbox_ready -ne $true) {
+            throw "Windows sandbox enforcement is not ready"
+          }
+      - run: npm ci
+      - name: Verify the real Shell and ConPTY integration
+        env:
+          MYCLI_WINDOWS_SANDBOX_SETUP_TESTS: "1"
+          MYCLI_WINDOWS_SANDBOX_MAINTENANCE_TESTS: "1"
+        run: >-
+          node --conditions=mycli-source --import tsx --test --test-reporter=spec
+          backend/packages/tools/test/sandbox/windows-sandbox.platform.test.ts
+      - name: Upload verified helper
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name || 'windows-sandbox-helper' }}
+          path: backend/packages/tools/native/windows/mycli-windows-sandbox.exe
+          if-no-files-found: error
+          retention-days: 1

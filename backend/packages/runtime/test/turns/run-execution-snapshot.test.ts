@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import type { ToolDefinition } from "@mycli/core";
 import {
@@ -263,3 +264,28 @@ function definition(
 		inputSchema,
 	};
 }
+
+test("run snapshots preserve denied-read boundaries across durable serialization", () => {
+	const workspace = resolve("workspace");
+	const secret = join(workspace, "secrets");
+	const snapshot = createRunExecutionSnapshot({
+		turnId: "deny-turn",
+		collaborationMode: "default",
+		policy: {
+			toolsEnabled: true,
+			profile: {
+				mode: "workspace-write",
+				filesystem: "workspace_write",
+				network: "enabled",
+				writableRoots: [workspace],
+				deniedReadRoots: [secret],
+				deniedReadGlobs: ["**/.env"],
+			},
+		},
+		toolCatalog: { catalogVersion: 1, directTools: [] },
+	});
+	const restored = parseRunExecutionSnapshot(JSON.parse(JSON.stringify(snapshot)), "deny-turn");
+	assert.deepEqual(restored.policy?.profile.deniedReadRoots, [secret]);
+	assert.deepEqual(restored.policy?.profile.deniedReadGlobs, ["**/.env"]);
+	assert.equal(Object.isFrozen(restored.policy?.profile.deniedReadGlobs), true);
+});

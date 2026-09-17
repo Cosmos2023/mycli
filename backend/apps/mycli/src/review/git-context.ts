@@ -112,3 +112,29 @@ async function emptyTree(cwd: string, signal: AbortSignal): Promise<string> {
 }
 
 function splitPaths(value: string): string[] { return value.split("\0").filter(Boolean); }
+
+export async function listGitReviewFiles(cwd: string, signal: AbortSignal): Promise<{ readonly workspaceRoot: string; readonly files: readonly string[]; readonly truncated: boolean }> {
+	const workspaceRoot = (await git(cwd, ["rev-parse", "--show-toplevel"], signal)).trim();
+	const files = splitPaths(await git(workspaceRoot, ["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--"], signal));
+	return { workspaceRoot, files: [...new Set(files)].slice(0, MAX_REVIEW_FILES), truncated: files.length > MAX_REVIEW_FILES };
+}
+
+/** Separate index/worktree diffs retain changes that cancel each other relative to HEAD. */
+export async function loadGitWorkspaceDiff(cwd: string, signal: AbortSignal): Promise<{ readonly text: string; readonly truncated: boolean }> {
+	const context = await loadGitReviewContext(cwd, { kind: "uncommitted" }, signal);
+	const args = ["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--find-renames"];
+	const [staged, unstaged] = await Promise.all([
+		git(context.workspaceRoot, [...args, "--cached", "--"], signal),
+		git(context.workspaceRoot, [...args, "--"], signal),
+	]);
+	const untracked = context.untracked.map((file) => {
+		const path = JSON.stringify(file.path);
+		if (file.binary) return `Untracked binary file: ${path}`;
+		if (file.symlink !== undefined) return `Untracked symlink: ${path} -> ${JSON.stringify(file.symlink)}`;
+		return [`Untracked: ${path}`, `--- /dev/null`, `+++ ${path}`, ...(file.content ?? "").split("\n").map((line) => `+${line}`)].join("\n");
+	}).join("\n\n");
+	const text = [staged && `Staged changes\n${staged}`, unstaged && `Unstaged changes\n${unstaged}`, untracked].filter(Boolean).join("\n\n") || "No local changes.";
+	const bytes = Buffer.from(text);
+	const truncated = bytes.length > MAX_REVIEW_CONTEXT_BYTES;
+	return { text: truncated ? bytes.subarray(0, MAX_REVIEW_CONTEXT_BYTES).toString("utf8") + "\n[Diff truncated]" : text, truncated };
+}

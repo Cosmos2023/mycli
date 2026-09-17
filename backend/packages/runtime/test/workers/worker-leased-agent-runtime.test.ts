@@ -41,6 +41,9 @@ test("leases runMailbox independently and preserves event delivery", async (t) =
 	const fixture = runtimeFixture(t);
 	const handle = await fixture.factory.create(createInput());
 	const events: AgentThreadRuntimeEvent[] = [];
+	handle.bindParentTurn?.("turn-mailbox-1", "parent-follow-up");
+	assert.deepEqual(fixture.delegate.parentTurns, [["turn-mailbox-1", "parent-follow-up"]]);
+	assert.equal(fixture.pool.snapshot().workerCount, 0);
 	fixture.delegate.mailbox = async (emit) => {
 		emit({ type: "progress", summary: "mail received" });
 		return completed("mailbox");
@@ -260,6 +263,7 @@ class DelegateHandle implements AgentThreadRuntimeHandle {
 	readonly recoverInterrupts: string[] = [];
 	readonly recoveredTurnIds: string[] = [];
 	readonly turnIds: string[] = [];
+	readonly parentTurns: [string, string][] = [];
 	readonly boundExecutors: Array<ProviderStepExecutor | undefined> = [];
 	onInterrupt: (() => void | Promise<void>) | undefined;
 	onForceInterrupt: (() => void | Promise<void>) | undefined;
@@ -327,6 +331,7 @@ function runtimeFixture(
 	const pool = new AgentWorkerPool({ maxWorkers: 4, maxQueue: 4, idleTimeoutMs: 5_000 });
 	const delegate = new DelegateHandle();
 	const wrappedDelegate: AgentThreadRuntimeHandle = {
+		bindParentTurn: (turnId, parentTurnId) => { delegate.parentTurns.push([turnId, parentTurnId]); },
 		run: async (...args) => {
 			delegate.runCalls += 1;
 			delegate.turnIds.push(args[3]);

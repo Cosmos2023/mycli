@@ -1,3 +1,7 @@
+import type { GatewayCompactionEvent } from "./node-gateway-compaction.ts";
+import type { SessionGoalService } from "@mycli/runtime";
+import type { ReviewSelection, SkillReference } from "@mycli/contracts";
+import type { HookBrowserService } from "@mycli/integrations";
 import type {
 	RuntimeTurnRecord,
 	ProviderAttemptRecord,
@@ -38,8 +42,11 @@ import type {
 	ShellSessionSnapshot,
 } from "@mycli/tools";
 import type { GatewayTransport } from "@mycli/gateway";
+import type { PluginCatalogService, SkillManagementService } from "@mycli/integrations";
 import type { AgentInteractiveRequestGateway } from "./agent-interactive-requests.ts";
 import type { SessionPreferences } from "./session-preferences.ts";
+import type { SessionTrainingExportSettings } from "./session-training-export-options.ts";
+import type { TrainingExportResult } from "./session-training-export.ts";
 import type {
 	ApplyResumeRepairInput,
 	ApplyResumeRepairResult,
@@ -74,6 +81,7 @@ export interface NodeGatewayCompactionResult {
 }
 
 export interface NodeGatewayRuntime {
+	readonly goal?: SessionGoalService;
 	readonly queueCoordinator?: QueueCoordinator;
 	sessionPreferences?(): SessionPreferences | undefined;
 	setSessionPreferences?(preferences: SessionPreferences): void;
@@ -91,6 +99,8 @@ export interface NodeGatewayRuntime {
 	removeCommandAllowance?(pattern: string): readonly (readonly string[])[];
 	clearCommandAllowances?(): number;
 	compact?(input: {
+		readonly operationId: string;
+		readonly emit: (event: GatewayCompactionEvent) => void;
 		readonly modelOverride?: string;
 		readonly signal: AbortSignal;
 	}): Promise<NodeGatewayCompactionResult>;
@@ -152,6 +162,8 @@ export interface NodeGatewayBackgroundTaskCommands {
 }
 
 export interface NodeGatewaySessionCommands {
+	exportTraining?(sessionId: string, settings: SessionTrainingExportSettings, signal: AbortSignal): Promise<TrainingExportResult>;
+	rename?(sessionId: string, title: string): SessionSummary;
 	list?(query: SessionQuery): readonly SessionSummary[];
 	inspect?(sessionId: string): SessionSummary | undefined;
 	previewResume?(sessionId: string): Promise<ResumeRepairPreview>;
@@ -231,6 +243,9 @@ export interface NodeGatewayIntegrationCommands {
 }
 
 export interface NodeGatewayIntegrations {
+	readonly hookManagement?: Pick<HookBrowserService, "list" | "write">;
+	readonly skills?: Pick<SkillManagementService, "list" | "setEnabled">;
+	refresh?(): Promise<void>;
 	readonly toolManifest?: JsonObject | (() => JsonObject | undefined);
 	readonly diagnostics?: readonly JsonObject[] | (() => readonly JsonObject[]);
 	toolNames?(): readonly string[];
@@ -242,7 +257,14 @@ export interface NodeGatewayIntegrations {
 	subscribeExtensions?(listener: (version: number) => void): () => void;
 }
 
+export type NodeGatewayReviewRuntimeFactory = (input: {
+	readonly sessionId: string; readonly review: ReviewSelection; readonly signal: AbortSignal;
+}) => Promise<{ readonly runtime: NodeGatewayRuntime; readonly close: () => Promise<void> }>;
+
 export interface CreateNodeGatewayOptions {
+	readonly createReviewRuntime?: NodeGatewayReviewRuntimeFactory;
+	readonly validateSelectedSkills?: (sessionId: string, references: readonly SkillReference[]) => void;
+	readonly pluginCatalog?: (workspaceRoot: string) => Promise<Pick<PluginCatalogService, "list" | "inspect" | "change">>;
 	readonly sessionId: string;
 	readonly workspaceRoot: string;
 	readonly provider: string;
@@ -276,6 +298,10 @@ export interface CreateNodeGatewayOptions {
 	readonly backgroundTaskCommands?: NodeGatewayBackgroundTaskCommands;
 	readonly sessionCommands?: NodeGatewaySessionCommands;
 	readonly traceCommands?: NodeGatewayTraceCommands;
+	readonly workspaceCommands?: {
+		diff(workspaceRoot: string, signal: AbortSignal): Promise<{ readonly text: string; readonly truncated: boolean }>;
+		init(workspaceRoot: string): Promise<string | undefined>;
+	};
 	readonly fileHistoryCommands?: NodeGatewayFileHistoryCommands;
 	readonly controlCommands?: NodeGatewayControlCommands;
 	readonly updateStatus?: CachedUpdateStatus;
@@ -299,6 +325,7 @@ export interface CreateNodeGatewayOptions {
 		): Promise<SessionPreferences | void>;
 	};
 	readonly agentInteractiveRequests?: AgentInteractiveRequestGateway;
+	readonly mcpElicitations?: McpElicitationBroker;
 	readonly integrations?: NodeGatewayIntegrations;
 	readonly close: () => void | Promise<void>;
 	readonly createTurnId?: () => string;
@@ -316,3 +343,4 @@ export interface NodeGateway {
 	kill(): void;
 	diagnostic(): string;
 }
+import type { McpElicitationBroker } from "./mcp-elicitation-broker.ts";

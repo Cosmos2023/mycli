@@ -28,3 +28,10 @@ test("submission fingerprint changes with behavior-affecting input", () => {
 		fingerprintSubmission({ message: "second" }),
 	);
 });
+
+test("selected skill identity affects deduplication without changing legacy fingerprints", () => {
+ const reference = { id: "a".repeat(64), name: "review", revision: "b".repeat(64) };
+ assert.equal(fingerprintSubmission({ message: "hello" }), fingerprintSubmission({ message: "hello", skillReferences: [] }));
+ assert.notEqual(fingerprintSubmission({ message: "$review" }), fingerprintSubmission({ message: "$review", skillReferences: [reference] }));
+ assert.notEqual(fingerprintSubmission({ message: "$review", skillReferences: [reference] }), fingerprintSubmission({ message: "$review", skillReferences: [{ ...reference, revision: "c".repeat(64) }] }));
+});

@@ -12,6 +12,7 @@ import type { ProviderAttemptUpdate } from "@mycli/contracts";
 import {
 	isProviderRouteId,
 	normalizeCanonicalImages,
+	parseToolDiscoveries,
 	parseProviderNativeTransportSnapshot,
 	providerNativeEndpointSha256,
 	providerNativeProtocol,
@@ -111,6 +112,7 @@ export type AgentWorkerProviderCommand =
 		readonly maxRetries: number;
 		readonly toolCallsAllowed: boolean;
 		readonly recordAttempts?: boolean;
+		readonly recordUsage?: boolean;
 		readonly attemptState?: ProviderAttemptUpdate;
 		readonly streamDiagnosticsVersion?: 1;
 		readonly errorContextVersion?: 1;
@@ -125,6 +127,7 @@ export type AgentWorkerProviderCommand =
 	});
 
 export type AgentWorkerProviderResponse = AgentWorkerProviderRpcIdentity & (
+	| { readonly type: "provider_step_usage"; readonly usage: ProviderUsage; readonly attempt: number }
 	| { readonly type: "provider_step_event"; readonly event: RuntimeEvent }
 	| { readonly type: "provider_step_attempt"; readonly update: ProviderAttemptUpdate }
 	| {
@@ -187,7 +190,7 @@ export function parseAgentWorkerProviderCommand(value: unknown): AgentWorkerProv
 		"leaseId", "jobId", "sessionId", "turnId", "timelineWindowId",
 		"timelineVersion", "requestId", "sequence", "config", "request",
 		"route", "requestMaxRetries", "maxRetries", "toolCallsAllowed",
-	], ["recordAttempts", "attemptState", "streamDiagnosticsVersion", "errorContextVersion"], "provider execution");
+	], ["recordUsage", "recordAttempts", "attemptState", "streamDiagnosticsVersion", "errorContextVersion"], "provider execution");
 	if (hasOwn(record, "errorContextVersion") && record.errorContextVersion !== 1) {
 		throw invalid("unsupported error context version");
 	}
@@ -228,6 +231,7 @@ export function parseAgentWorkerProviderCommand(value: unknown): AgentWorkerProv
 		),
 		maxRetries: boundedInteger(record.maxRetries, "provider retries", 0, 100),
 		toolCallsAllowed: booleanValue(record.toolCallsAllowed, "tool-call flag"),
+		...(hasOwn(record, "recordUsage") ? { recordUsage: booleanValue(record.recordUsage, "usage recording flag") } : {}),
 		...(hasOwn(record, "recordAttempts") ? { recordAttempts: booleanValue(record.recordAttempts, "attempt recording flag") } : {}),
 		...(attemptState ? { attemptState } : {}),
 		...(hasOwn(record, "streamDiagnosticsVersion") ? { streamDiagnosticsVersion: 1 as const } : {}),
@@ -281,6 +285,11 @@ export function projectAgentWorkerProviderDiagnostics(
 export function parseAgentWorkerProviderResponse(value: unknown): AgentWorkerProviderResponse {
 	const record = boundedRecord(value, "provider response");
 	const identity = parseIdentity(record);
+	if (record.type === "provider_step_usage") {
+		assertExactKeys(record, ["type", "protocolVersion", "coordinatorEpoch", "workerId", "workerGeneration",
+			"leaseId", "jobId", "sessionId", "turnId", "timelineWindowId", "timelineVersion", "requestId", "sequence", "attempt", "usage"], "provider usage");
+		return Object.freeze({ type: record.type, ...identity, usage: parseUsage(record.usage), attempt: boundedInteger(record.attempt, "usage attempt", 1, 1000) });
+	}
 	if (record.type === "provider_step_attempt") {
 		assertExactKeys(record, [
 			"type", "protocolVersion", "coordinatorEpoch", "workerId", "workerGeneration",
@@ -837,7 +846,7 @@ function parseConversationItem(value: unknown): CanonicalConversationItem {
 		case "tool_result":
 			assertObjectShape(item,
 				["type", "callId", "toolName", "output", "success"],
-				["images"],
+				["images", "toolDiscoveries"],
 				"provider tool result item");
 			return Object.freeze({
 				type: item.type,
@@ -845,6 +854,9 @@ function parseConversationItem(value: unknown): CanonicalConversationItem {
 				toolName: boundedString(item.toolName, "provider tool result name", IDENTITY_MAX_CHARS),
 				output: boundedText(item.output, "provider tool result output", TEXT_MAX_CHARS),
 				success: booleanValue(item.success, "provider tool result success"),
+				...(item.toolDiscoveries === undefined ? {} : {
+					toolDiscoveries: parseToolDiscoveries({ version: 1, tools: item.toolDiscoveries }),
+				}),
 				...(hasOwn(item, "images") ? {
 					images: normalizeCanonicalImages(boundedArray(item.images, "provider images", parseCanonicalImage)),
 				} : {}),

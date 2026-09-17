@@ -4,6 +4,7 @@ export const SCHEMA_V11_VERSION = 11;
 export const SCHEMA_V12_VERSION = 12;
 export const SCHEMA_V13_VERSION = 13;
 export const SCHEMA_V14_VERSION = 14;
+export const SCHEMA_V15_VERSION = 15;
 
 export const SCHEMA_V2_SQL = `
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -983,3 +984,14 @@ END;
 `;
 
 export const SCHEMA_V13_SQL = `${SCHEMA_V12_SQL}\n${SCHEMA_V13_PROVIDER_ATTEMPTS_SQL}`;
+
+/** Durable cumulative usage checkpoints for each goal/provider attempt. */
+export const SESSION_GOAL_USAGE_SQL = `
+CREATE TABLE IF NOT EXISTS session_goal_usage (
+  session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+  goal_id TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  token_count INTEGER,
+  PRIMARY KEY (session_id, goal_id, request_id)
+);
+`;

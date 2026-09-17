@@ -9,12 +9,16 @@ import {
 const WINDOWS_OPERATION_TIMEOUT_MS = 300_000;
 const WINDOWS_OPERATION_MAX_BYTES = 16_384;
 
-export type SandboxRecoveryAction = "setup" | "reset";
+export type SandboxRecoveryAction = "setup" | "reset" | "repair" | "uninstall";
 export type SandboxRecoveryPrivilege = "none" | "windows_uac" | "manual_install";
 export type SandboxRecoveryEffect =
 	| "initialize_windows_identity"
 	| "configure_windows_firewall"
 	| "clear_windows_setup_state"
+	| "stop_windows_sandbox_processes"
+	| "clean_windows_sandbox_acls"
+	| "remove_windows_sandbox_accounts"
+	| "remove_windows_sandbox_network_rules"
 	| "install_platform_dependency";
 export type SandboxRecoveryStatus =
 	| "confirmation_required"
@@ -29,6 +33,8 @@ export type SandboxRecoveryCode =
 	| "confirmation_required"
 	| "setup_completed"
 	| "reset_completed"
+	| "repair_completed"
+	| "uninstall_completed"
 	| "already_ready"
 	| "no_managed_state"
 	| "dependency_install_required"
@@ -98,18 +104,19 @@ export async function runSandboxRecovery(
 	if (outcome === "failed") {
 		return result("failed", "operation_failed", plan.preview, before, after);
 	}
-	if (action === "reset") {
+	if (action === "reset" || action === "uninstall") {
 		const resetVerified = after.state === "setup_required"
 			&& after.code === "setup_incomplete"
 			&& after.helperCompatible === true
 			&& after.setupComplete === false
-			&& after.sandboxReady === false;
+			&& after.sandboxReady === false
+			&& (action !== "uninstall" || after.managedStatePresent === false);
 		return resetVerified
-			? result("completed", "reset_completed", plan.preview, before, after)
+			? result("completed", action === "uninstall" ? "uninstall_completed" : "reset_completed", plan.preview, before, after)
 			: result("failed", "verification_failed", plan.preview, before, after);
 	}
 	if (after.state === "ready") {
-		return result("completed", "setup_completed", plan.preview, before, after);
+		return result("completed", action === "repair" ? "repair_completed" : "setup_completed", plan.preview, before, after);
 	}
 	if (after.setupComplete === true && after.code === "enforcement_unavailable") {
 		return result("partial", "enforcement_unavailable", plan.preview, before, after);
@@ -128,7 +135,7 @@ export function planSandboxRecovery(
 	}>;
 }> {
 	if (readiness.platform === "darwin" || readiness.platform === "linux") {
-		if (action === "reset") {
+		if (action === "reset" || action === "uninstall") {
 			return terminalPlan(action, "not_needed", "no_managed_state", "none", []);
 		}
 		return readiness.state === "ready"
@@ -153,6 +160,14 @@ export function planSandboxRecovery(
 	if (readiness.code === "handshake_failed") {
 		return terminalPlan(action, "failed", "handshake_failed", "none", []);
 	}
+	if (action === "repair" || action === "uninstall") {
+		return executablePlan(action, "windows_uac", [
+			"stop_windows_sandbox_processes",
+			"clean_windows_sandbox_acls",
+			...(action === "uninstall" ? ["remove_windows_sandbox_network_rules", "remove_windows_sandbox_accounts", "clear_windows_setup_state"] as const
+				: ["initialize_windows_identity", "configure_windows_firewall"] as const),
+		]);
+	}
 	if (action === "setup") {
 		if (readiness.state === "ready") {
 			return terminalPlan(action, "not_needed", "already_ready", "none", []);
@@ -171,7 +186,7 @@ export function planSandboxRecovery(
 			"configure_windows_firewall",
 		]);
 	}
-	return executablePlan(action, "none", ["clear_windows_setup_state"]);
+	return executablePlan(action, "none", ["clean_windows_sandbox_acls", "clear_windows_setup_state"]);
 }
 
 function executablePlan(
@@ -226,7 +241,7 @@ function runWindowsSandboxOperation(
 	input: WindowsSandboxOperationInput,
 ): Promise<WindowsSandboxOperationOutcome> {
 	return new Promise((resolve, reject) => {
-		execFile(input.helperPath, [input.action === "setup" ? "--ensure-setup" : "--reset"], {
+		execFile(input.helperPath, [input.action === "setup" ? "--ensure-setup" : `--${input.action}`], {
 			encoding: "utf8",
 			maxBuffer: WINDOWS_OPERATION_MAX_BYTES,
 			timeout: WINDOWS_OPERATION_TIMEOUT_MS,

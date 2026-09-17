@@ -1,5 +1,7 @@
 import { PROVIDER_IDS, type ProtocolId, type ProviderId } from "@mycli/core";
 
+export const DEFAULT_OPENAI_MODEL = "gpt-5.5";
+
 export interface ProviderProfile {
 	readonly provider: ProviderId;
 	readonly displayName: string;
@@ -14,14 +16,14 @@ const PROFILES: Readonly<Record<ProviderId, ProviderProfile>> = {
 		displayName: "OpenAI",
 		defaultProtocol: "responses",
 		defaultBaseUrl: "https://api.openai.com/v1",
-		defaultModel: "gpt-5",
+		defaultModel: DEFAULT_OPENAI_MODEL,
 	},
 	codex: {
 		provider: "codex",
 		displayName: "OpenAI Codex",
 		defaultProtocol: "responses",
 		defaultBaseUrl: "https://api.openai.com/v1",
-		defaultModel: "gpt-5",
+		defaultModel: DEFAULT_OPENAI_MODEL,
 	},
 	compatible: {
 		provider: "compatible",

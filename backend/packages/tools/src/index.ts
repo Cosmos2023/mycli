@@ -31,6 +31,7 @@ export { AskUserQuestionTool } from "./interaction/ask-user-question-tool.ts";
 export { UpdatePlanTool } from "./interaction/update-plan-tool.ts";
 export { ToolSearchTool } from "./registry/tool-search-tool.ts";
 export { createToolSearchDefinition } from "./registry/tool-search-definition.ts";
+export { createToolSchemaValidator } from "./registry/input-schema.ts";
 export {
 	isPublicIpAddress,
 	normalizePublicUrl,
@@ -307,6 +308,8 @@ export type { ReadToolOptions } from "./files/read-tool.ts";
 export { WriteTool } from "./files/write-tool.ts";
 export type { WriteToolOptions } from "./files/write-tool.ts";
 export { ToolRouter } from "./registry/router.ts";
+export { ExtensionToolCatalog } from "./registry/extension-catalog.ts";
+export type { ExtensionCatalogSnapshot, ExtensionCatalogTool } from "./registry/extension-catalog.ts";
 export {
 	ApprovalPolicy,
 	fileMutationApprovalPreview,
@@ -379,3 +382,9 @@ export {
 	LIST_MCP_RESOURCE_TEMPLATES_TOOL_DEFINITION,
 	READ_MCP_RESOURCE_TOOL_DEFINITION,
 } from "./registry/context-manifest.ts";
+export { startNetworkProxy, type NetworkProxyLease } from "./network/network-proxy.ts";
+
+export { GoalTool, type GoalToolService } from "./interaction/goal-tool.ts";
+export { CREATE_GOAL_TOOL_DEFINITION, GET_GOAL_TOOL_DEFINITION, UPDATE_GOAL_TOOL_DEFINITION } from "./registry/goal-manifest.ts";
+
+export { deniedReadPath, hasDeniedReads, resolveDeniedReadRoots, validateDeniedReadGlobs, type DeniedReadPolicy } from "./policy/denied-read-policy.ts";

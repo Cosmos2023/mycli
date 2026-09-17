@@ -15,6 +15,8 @@ import {
 } from "@mycli/runtime";
 import {
 	SnapshotStateError,
+	snapshotRequestSummary,
+	snapshotSessionMetadata,
 	sessionSubagentIndexEntry,
 	subagentRunId,
 	type AgentThreadRecord,
@@ -46,13 +48,14 @@ interface PrepareStoredSessionOptions {
 	readonly artifactQueue: SerializedSessionArtifactQueue;
 	readonly fallbackWorkspaceRoot: string;
 	readonly repairAgentCompletions?: (parentSessionId: string) => Promise<void>;
+	readonly liveRuntime?: NodeGatewayRuntime & { readonly workspaceRoot: string };
 	readonly createRuntime: (
 		sessionId: string,
 		workspaceRoot: string,
 		threadId: string,
 		initialQueue: QueueSnapshot,
 		initialContinuation?: unknown,
-	) => NodeGatewayRuntime;
+	) => NodeGatewayRuntime | Promise<NodeGatewayRuntime>;
 }
 
 export async function prepareStoredSession(
@@ -64,16 +67,19 @@ export async function prepareStoredSession(
 		transcriptSnapshots,
 		sessionArtifacts,
 		artifactQueue,
-		createRuntime,
 	} = options;
+	const createRuntime: PrepareStoredSessionOptions["createRuntime"] = options.liveRuntime
+		? () => options.liveRuntime!
+		: options.intent === "inspect" ? () => inspectionRuntime() : options.createRuntime;
 	let overview: SessionOverview | undefined;
 	try {
 		overview = store.loadSession(sessionId);
 	} catch (error) {
 		const degraded = await loadDegradedSnapshot(transcriptSnapshots, sessionId, error);
-		return preparedFromReadOnlySnapshot(degraded, createRuntime);
+		return preparedFromReadOnlySnapshot(degraded);
 	}
 	if (!overview) {
+		if (options.liveRuntime) return virtualSession(sessionId, options.liveRuntime.workspaceRoot, createRuntime);
 		try {
 			const degraded = await transcriptSnapshots.loadOrRebuild(sessionId, {
 				loadCanonical: () => undefined,
@@ -86,14 +92,14 @@ export async function prepareStoredSession(
 				),
 			});
 			if (degraded.readOnly) {
-				return preparedFromReadOnlySnapshot(degraded.snapshot, createRuntime);
+				return preparedFromReadOnlySnapshot(degraded.snapshot);
 			}
 			const importedOverview = store.loadSession(sessionId);
 			if (!importedOverview) {
 				throw new SessionTransitionError("session_state_invalid", "legacy session was not imported");
 			}
 			const initialQueue = emptyQueue(sessionId);
-			const binding = createRuntime(
+			const binding = await createRuntime(
 				sessionId,
 				importedOverview.workspaceRoot,
 				importedOverview.threadId,
@@ -130,15 +136,9 @@ export async function prepareStoredSession(
 	const queue = loadQueue(store, sessionId);
 	const compactionState = store.loadState(sessionId, "compact_checkpoint");
 	const responsesContinuation = loadResponsesContinuation(store, sessionId);
-	if (options.intent === "resume") store.interruptSessionForResume(sessionId);
+	if (options.intent === "resume" && !options.liveRuntime) store.interruptSessionForResume(sessionId);
 	overview = store.loadSession(sessionId) ?? overview;
-	const binding = createRuntime(
-		sessionId,
-		overview.workspaceRoot,
-		overview.threadId,
-		queue,
-		responsesContinuation,
-	);
+
 	const approvalState = loadApprovalState(store, sessionId);
 	const records = store.subagentTasks.list(sessionId, 1_000);
 	let transcript;
@@ -166,8 +166,15 @@ export async function prepareStoredSession(
 		throw error;
 	}
 	if (transcript.readOnly) {
-		return preparedFromReadOnlySnapshot(transcript.snapshot, createRuntime);
+		return preparedFromReadOnlySnapshot(transcript.snapshot);
 	}
+	const binding = await createRuntime(
+		sessionId,
+		overview.workspaceRoot,
+		overview.threadId,
+		queue,
+		responsesContinuation,
+	);
 	await repairSessionArtifacts(
 		sessionId,
 		store,
@@ -198,11 +205,11 @@ export async function prepareStoredSession(
 	};
 }
 
-export function virtualSession(
+export async function virtualSession(
 	sessionId: string,
 	workspaceRoot: string,
 	createRuntime: PrepareStoredSessionOptions["createRuntime"],
-): PreparedSession<NodeGatewayRuntime> {
+): Promise<PreparedSession<NodeGatewayRuntime>> {
 	return {
 		sessionId,
 		workspaceRoot,
@@ -211,7 +218,7 @@ export function virtualSession(
 		queue: emptyQueue(sessionId),
 		suspendedTurn: false,
 		readOnly: false,
-		binding: createRuntime(sessionId, workspaceRoot, sessionId, emptyQueue(sessionId)),
+		binding: await createRuntime(sessionId, workspaceRoot, sessionId, emptyQueue(sessionId)),
 	};
 }
 
@@ -222,7 +229,11 @@ export function canonicalSnapshot(
 	pendingClarification: boolean,
 	suspendedTurn: boolean,
 ): TranscriptSnapshotV2 {
-	const transcript = recentCanonicalTranscript(store, overview.sessionId);
+	const window = store.loadReadableTranscriptSnapshot(overview.sessionId);
+	const hasCanonicalHistory = window.coverage.included_events > 0 || window.coverage.has_older_events;
+	const transcript = hasCanonicalHistory ? window.items : legacyConversationTranscript(store, overview.sessionId);
+	const coverage = hasCanonicalHistory || transcript.length === 0 ? window.coverage : undefined;
+	const manifest = store.modelInputLedger.loadLatestProviderRequestManifest(overview.sessionId);
 	return {
 		schema_version: 2,
 		session_id: overview.sessionId,
@@ -235,6 +246,9 @@ export function canonicalSnapshot(
 		message_count: overview.messageCount,
 		created_at: overview.createdAt,
 		updated_at: overview.updatedAt,
+		session: snapshotSessionMetadata(overview),
+		...(manifest ? { last_request: snapshotRequestSummary(manifest) } : {}),
+		...(coverage ? { coverage } : {}),
 		transcript,
 		subagents: subagentIndex(store, overview.sessionId),
 		links: { events: "events.jsonl" },
@@ -679,7 +693,6 @@ async function loadDegradedSnapshot(
 
 function preparedFromReadOnlySnapshot(
 	snapshot: TranscriptSnapshotV2,
-	createRuntime: PrepareStoredSessionOptions["createRuntime"],
 ): PreparedSession<NodeGatewayRuntime> {
 	return {
 		sessionId: snapshot.session_id,
@@ -689,13 +702,17 @@ function preparedFromReadOnlySnapshot(
 		queue: emptyQueue(snapshot.session_id),
 		suspendedTurn: snapshot.state === "waiting_approval" || snapshot.state === "interrupted",
 		readOnly: true,
-		binding: createRuntime(
-			snapshot.session_id,
-			snapshot.cwd,
-			snapshot.session_id,
-			emptyQueue(snapshot.session_id),
-		),
+		binding: inspectionRuntime(),
 	};
+}
+
+/** Transcript inspection never starts tools, clients or a writable runtime. */
+function inspectionRuntime(): NodeGatewayRuntime {
+	const unavailable = (): never => {
+		throw new SessionTransitionError("session_state_invalid", "an inspected session cannot execute turns");
+	};
+	return Object.freeze({ reserve: unavailable, submit: unavailable, resolveApproval: unavailable,
+		resolveClarification: unavailable, forceInterrupt: unavailable });
 }
 
 export function loadQueue(store: RuntimeSessionStore, sessionId: string): QueueSnapshot {

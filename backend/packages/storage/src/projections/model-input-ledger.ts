@@ -68,6 +68,12 @@ export interface CommittedProviderStep {
 	readonly request: ProviderRequest;
 }
 
+export interface ProviderRequestReference {
+	readonly requestId: string;
+	readonly turnId: string;
+	readonly providerStep: number;
+}
+
 export interface UnconfirmedProviderStep extends CommittedProviderStep {
 	readonly latestEvent: ProviderStepLifecycleEvent;
 }
@@ -94,6 +100,7 @@ export interface ModelInputLedgerStore {
 	loadProviderInputTimelineEvents(sessionId: string): readonly ProviderInputTimelineEvent[];
 	loadProviderRequestManifest(requestId: string): ProviderRequestManifest | undefined;
 	loadLatestProviderRequestManifest(sessionId: string): ProviderRequestManifest | undefined;
+	listProviderRequestReferences(sessionId: string): readonly ProviderRequestReference[];
 	loadProviderStepEvents(requestId: string): readonly ProviderStepLifecycleEvent[];
 	loadUnconfirmedProviderSteps(sessionId: string): readonly UnconfirmedProviderStep[];
 	recoverUnconfirmedProviderSteps(
@@ -392,6 +399,25 @@ export class SQLiteModelInputLedger implements ModelInputLedgerStore {
 				LIMIT 1
 			`).get(sessionId) as ManifestRow | undefined;
 			return row ? this.#manifest(row) : undefined;
+		});
+	}
+
+	listProviderRequestReferences(sessionId: string): readonly ProviderRequestReference[] {
+		return this.#read(() => {
+			this.#requireIdentifier(sessionId, "session");
+			const rows = this.#database.prepare(`
+				SELECT request_id, turn_id, provider_step
+				FROM provider_request_manifests
+				WHERE session_id = ? ORDER BY rowid
+			`).all(sessionId) as readonly Pick<ManifestRow, "request_id" | "turn_id" | "provider_step">[];
+			return Object.freeze(rows.map((row): ProviderRequestReference => {
+				if (typeof row.request_id !== "string" || typeof row.turn_id !== "string"
+					|| typeof row.provider_step !== "number" || !Number.isSafeInteger(row.provider_step)
+					|| row.provider_step < 0) throw new StorageFailure("provider request reference is invalid");
+				this.#requireIdentifier(row.request_id, "provider request");
+				this.#requireIdentifier(row.turn_id, "turn");
+				return Object.freeze({ requestId: row.request_id, turnId: row.turn_id, providerStep: row.provider_step });
+			}));
 		});
 	}
 

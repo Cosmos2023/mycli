@@ -12,6 +12,10 @@
 #include <vector>
 
 #include "acl.hpp"
+#include "audit.hpp"
+#include "desktop.hpp"
+#include "path-guard.hpp"
+#include "state.hpp"
 #include "firewall.hpp"
 #include "identity.hpp"
 #include "process.hpp"
@@ -82,14 +86,24 @@ int RunTests(const std::filesystem::path& executable) {
         return 1;
     }
 
-    const auto owner_a = mycli::sandbox::OfflineUsernameForOwner(
-        L"S-1-5-21-1-2-3-1001");
-    const auto owner_b = mycli::sandbox::OfflineUsernameForOwner(
-        L"S-1-5-21-1-2-3-1002");
-    if (owner_a != mycli::sandbox::OfflineUsernameForOwner(
-                       L"S-1-5-21-1-2-3-1001") ||
+    const auto owner_a = mycli::sandbox::SandboxUsernameForOwner(
+        L"S-1-5-21-1-2-3-1001", mycli::sandbox::SandboxIdentityKind::kOffline);
+    const auto owner_b = mycli::sandbox::SandboxUsernameForOwner(
+        L"S-1-5-21-1-2-3-1002", mycli::sandbox::SandboxIdentityKind::kOffline);
+    if (owner_a != mycli::sandbox::SandboxUsernameForOwner(
+                       L"S-1-5-21-1-2-3-1001", mycli::sandbox::SandboxIdentityKind::kOffline) ||
         owner_a == owner_b || owner_a.size() != 20 || !owner_a.starts_with(L"mcli_")) {
         std::cerr << "offline account derivation failed\n";
+        return 1;
+    }
+
+    const auto online = mycli::sandbox::SandboxUsernameForOwner(
+        L"S-1-5-21-1-2-3-1001", mycli::sandbox::SandboxIdentityKind::kOnline);
+    const auto proxy = mycli::sandbox::SandboxUsernameForOwner(
+        L"S-1-5-21-1-2-3-1001", mycli::sandbox::SandboxIdentityKind::kProxy);
+    if (online == owner_a || !online.starts_with(L"mclo_") ||
+        proxy == owner_a || proxy == online || !proxy.starts_with(L"mclp_")) {
+        std::cerr << "sandbox network identities collided\n";
         return 1;
     }
 
@@ -116,23 +130,82 @@ int RunTests(const std::filesystem::path& executable) {
     std::filesystem::create_directories(denied);
     std::filesystem::create_directories(allowed / L".git");
 
+    stage("private-desktop");
+    {
+        const auto participant = mycli::sandbox::DeriveCapabilitySid(test_root, L"desktop-test");
+        const mycli::sandbox::PrivateDesktop desktop{participant.get()};
+        desktop.AllowLogon(GetCurrentProcess());
+        if (desktop.name() == mycli::sandbox::CurrentDesktopName() ||
+            desktop.name().find(L"MycliSandbox-") == std::wstring::npos) {
+            throw std::runtime_error("private desktop reused the interactive desktop");
+        }
+    }
+
+    stage("path-pinning");
+    {
+        const mycli::sandbox::PathGuard guard{allowed};
+        if (MoveFileW(allowed.c_str(), (test_root / L"renamed").c_str()) != 0) {
+            throw std::runtime_error("ACL path was renamed while pinned");
+        }
+    }
+    stage("journal-crash-recovery");
+    {
+        const auto journal_state = test_root / L"journal-state";
+        std::filesystem::create_directories(journal_state);
+        if (mycli::sandbox::RunHostProcessInJob(
+                {executable.wstring(), L"--crash-after-acl", journal_state.wstring(), allowed.wstring()}, test_root) != 7) {
+            throw std::runtime_error("journal crash fixture failed");
+        }
+        mycli::sandbox::AclJournal journal{journal_state};
+        if (journal.HasActiveHelpers()) throw std::runtime_error("terminated helper lease remained live");
+        journal.Cleanup();
+        journal.Cleanup();
+        const auto restored = mycli::sandbox::DeriveCapabilitySid(allowed, L"journal-test");
+        const auto restricted = mycli::sandbox::CreateRestrictedPrimaryToken({restored.get()});
+        if (mycli::sandbox::RunProcessInJob(restricted.get(),
+                {executable.wstring(), L"--write-file", (allowed / L"stale-grant.txt").wstring()}, allowed) == 0) {
+            throw std::runtime_error("journal cleanup left a stale write grant");
+        }
+    }
+    stage("active-policy-coordination");
+    {
+        const auto journal_state = test_root / L"active-state";
+        std::filesystem::create_directories(journal_state);
+        mycli::sandbox::AclJournal journal{journal_state};
+        journal.Begin({(allowed / L"secret").wstring()});
+        bool rejected = false;
+        try { journal.Begin({}); } catch (const std::exception&) { rejected = true; }
+        if (!rejected) throw std::runtime_error("active deny policy was weakened");
+        rejected = false;
+        try { journal.Cleanup(); } catch (const std::exception&) { rejected = true; }
+        if (!rejected) throw std::runtime_error("live sandbox ACLs were removed");
+    }
+
     stage("setup-state-reset");
     const auto setup_state = test_root / L"state";
     std::filesystem::create_directories(setup_state);
     {
         std::ofstream credential{setup_state / L"offline.credential"};
         std::ofstream temporary{setup_state / L"offline.credential.tmp"};
+        std::ofstream online_credential{setup_state / L"online.credential"};
+        std::ofstream online_temporary{setup_state / L"online.credential.tmp"};
+        std::ofstream proxy_credential{setup_state / L"proxy.credential"};
+        std::ofstream proxy_temporary{setup_state / L"proxy.credential.tmp"};
         std::ofstream firewall_marker{setup_state / L"firewall.v1"};
         credential << "credential";
         temporary << "temporary";
         firewall_marker << "marker";
     }
-    mycli::sandbox::ResetOfflineIdentityCredentials(setup_state);
+    mycli::sandbox::ResetSandboxIdentityCredentials(setup_state);
     mycli::sandbox::ResetOfflineFirewallState(setup_state);
-    mycli::sandbox::ResetOfflineIdentityCredentials(setup_state);
+    mycli::sandbox::ResetSandboxIdentityCredentials(setup_state);
     mycli::sandbox::ResetOfflineFirewallState(setup_state);
     if (std::filesystem::exists(setup_state / L"offline.credential") ||
         std::filesystem::exists(setup_state / L"offline.credential.tmp") ||
+        std::filesystem::exists(setup_state / L"online.credential") ||
+        std::filesystem::exists(setup_state / L"online.credential.tmp") ||
+        std::filesystem::exists(setup_state / L"proxy.credential") ||
+        std::filesystem::exists(setup_state / L"proxy.credential.tmp") ||
         std::filesystem::exists(setup_state / L"firewall.v1")) {
         std::cerr << "sandbox setup state reset failed\n";
         return 1;
@@ -235,8 +308,8 @@ int RunTests(const std::filesystem::path& executable) {
         .cwd = policy_allowed.wstring(),
         .workspace_roots = {policy_allowed.wstring()},
         .writable_roots = {policy_allowed.wstring()},
-        .denied_read_roots = {},
-        .denied_read_globs = {L"**/.env", L"**/.env.*"},
+        .denied_read_roots = {(policy_allowed / L".env").wstring()},
+        .denied_read_globs = {},
         .filesystem = mycli::sandbox::FilesystemPolicy::kWorkspaceWrite,
         .network = mycli::sandbox::NetworkPolicy::kDisabled,
         .mode = mycli::sandbox::SandboxMode::kWorkspaceWrite,
@@ -257,6 +330,13 @@ int RunTests(const std::filesystem::path& executable) {
 
 int wmain(int argc, wchar_t* argv[]) {
     try {
+        if (argc == 4 && std::wstring_view{argv[1]} == L"--crash-after-acl") {
+            mycli::sandbox::AclJournal journal{argv[2]};
+            journal.Begin({});
+            const auto capability = mycli::sandbox::DeriveCapabilitySid(argv[3], L"journal-test");
+            mycli::sandbox::GrantWritableRoot(argv[3], capability.get());
+            ExitProcess(7);
+        }
         if (argc == 3 && std::wstring_view{argv[1]} == L"--spawn-delayed-write") {
             auto command_line = mycli::sandbox::BuildWindowsCommandLine(
                 {argv[0], L"--delayed-write", argv[2]});

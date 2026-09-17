@@ -1,6 +1,6 @@
 {
   "name": "@mycli/integrations",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "types": "./dist/index.d.ts",
@@ -22,11 +22,11 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
-    "@mycli/config": "0.1.0",
-    "@mycli/contracts": "0.1.0",
-    "@mycli/core": "0.1.0",
-    "@mycli/storage": "0.1.0",
-    "@mycli/tools": "0.1.0",
+    "@mycli/config": "0.1.1",
+    "@mycli/contracts": "0.1.1",
+    "@mycli/core": "0.1.1",
+    "@mycli/storage": "0.1.1",
+    "@mycli/tools": "0.1.1",
     "smol-toml": "^1.7.1",
     "yaml": "^2.9.0"
   },

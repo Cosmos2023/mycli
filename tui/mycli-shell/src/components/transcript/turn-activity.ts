@@ -27,7 +27,7 @@ export class TurnActivityComponent implements Component {
 
 	constructor(
 		private readonly ui: TUI,
-		private readonly startedAtMs: number,
+		private startedAtMs: number,
 		private readonly now: () => number,
 		private status: TurnActivityStatus,
 		private readonly animated: boolean,
@@ -57,9 +57,10 @@ export class TurnActivityComponent implements Component {
 		this.cachedLines = [];
 	}
 
-	updateStatus(status: TurnActivityStatus): void {
+	updateStatus(status: TurnActivityStatus, startedAtMs = this.startedAtMs): void {
 		if (
-			this.status.text === status.text
+			this.startedAtMs === startedAtMs
+			&& this.status.text === status.text
 			&& this.status.kind === status.kind
 			&& this.status.detail === status.detail
 			&& this.status.retryAt === status.retryAt
@@ -67,6 +68,7 @@ export class TurnActivityComponent implements Component {
 			return;
 		}
 		this.status = status;
+		this.startedAtMs = startedAtMs;
 		this.invalidate();
 	}
 
@@ -82,9 +84,11 @@ export class TurnActivityComponent implements Component {
 		}
 		const glyphs = uiGlyphs();
 		const contentWidth = Math.max(1, width - TRANSCRIPT_HEADER_INDENT * 2);
+		const title = theme.fg("text", this.headerText());
+		const hint = theme.fg("muted", `(${formatElapsedCompact(elapsedSeconds)} ${glyphs.bullet} ${keyForAction("app.interrupt")} to interrupt)`);
 		const header = new Text(
 			truncateToWidth(
-				`${theme.fg("accent", frame)} ${theme.fg("muted", `${this.headerText()} (${formatElapsedCompact(elapsedSeconds)} ${glyphs.bullet} ${keyForAction("app.interrupt")} to interrupt)`)}`,
+				`${theme.fg("accent", frame)} ${title} ${hint}`,
 				contentWidth,
 				glyphs.ellipsis,
 			),

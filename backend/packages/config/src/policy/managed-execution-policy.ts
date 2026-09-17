@@ -1,11 +1,13 @@
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { normalizeNetworkDomains } from "@mycli/core";
 import { parse } from "smol-toml";
 
 const EXECUTION_POLICY_FIELDS = new Set([
 	"network",
 	"readable_roots",
+	"denied_read_roots",
+	"denied_read_globs",
 	"writable_roots",
 	"allowed_network_domains",
 ]);
@@ -15,6 +17,8 @@ export interface ManagedExecutionPolicyConstraints {
 	readonly network?: "enabled" | "disabled";
 	readonly networkDomains?: readonly string[];
 	readonly readableRoots?: readonly string[];
+	readonly deniedReadRoots?: readonly string[];
+	readonly deniedReadGlobs?: readonly string[];
 	readonly writableRoots?: readonly string[];
 }
 
@@ -48,6 +52,12 @@ export async function loadManagedExecutionPolicy(
 		if (!EXECUTION_POLICY_FIELDS.has(field)) throw invalidManagedPolicy(field);
 	}
 	const network = optionalNetworkPolicy(policy.network);
+	const deniedReadRoots = optionalStringArray(policy.denied_read_roots, "denied_read_roots", 256, 4_096);
+	const deniedReadGlobs = optionalStringArray(policy.denied_read_globs, "denied_read_globs", 256, 4_096);
+	if (deniedReadRoots?.some((root) => !isAbsolute(root))) throw invalidManagedPolicy("denied_read_roots");
+	if (deniedReadGlobs?.some((glob) => isAbsolute(glob) || glob.includes("\\") || glob.split("/").includes(".."))) {
+		throw invalidManagedPolicy("denied_read_globs");
+	}
 	const readableRoots = optionalStringArray(policy.readable_roots, "readable_roots", 256, 4_096);
 	const writableRoots = optionalStringArray(policy.writable_roots, "writable_roots", 256, 4_096);
 	const configuredNetworkDomains = optionalStringArray(
@@ -65,6 +75,8 @@ export async function loadManagedExecutionPolicy(
 		throw invalidManagedPolicy("allowed_network_domains");
 	}
 	if (network === undefined
+		&& deniedReadRoots === undefined
+		&& deniedReadGlobs === undefined
 		&& readableRoots === undefined
 		&& writableRoots === undefined
 		&& networkDomains === undefined) {
@@ -72,6 +84,8 @@ export async function loadManagedExecutionPolicy(
 	}
 	return Object.freeze({
 		source: "managed" as const,
+		...(deniedReadRoots === undefined ? {} : { deniedReadRoots }),
+		...(deniedReadGlobs === undefined ? {} : { deniedReadGlobs }),
 		...(network === undefined ? {} : { network }),
 		...(readableRoots === undefined ? {} : { readableRoots }),
 		...(writableRoots === undefined ? {} : { writableRoots }),

@@ -5,6 +5,7 @@ import type { BuiltInToolManifest } from "../types.ts";
 
 export interface ToolExposureCapabilities {
 	readonly shell: boolean;
+	readonly goals?: boolean;
 	readonly requestPermissionsTool?: boolean;
 	readonly collaborationMode?: string;
 }
@@ -15,6 +16,7 @@ export function planToolExposure(
 ): readonly ToolDefinition[] {
 	return Object.freeze(manifest.tools
 		.filter((tool) => tool.model_visible
+			&& (tool.toolset !== "goals" || capabilities.goals === true)
 			&& (!tool.effects.process || capabilities.shell)
 			&& (tool.name !== ASK_USER_QUESTION_TOOL_DEFINITION.name
 				|| capabilities.collaborationMode === "plan")

@@ -1,10 +1,12 @@
 {
   "name": "@mycli/runtime",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "types": "./dist/index.d.ts",
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "exports": {
     ".": {
       "mycli-source": "./src/index.ts",
@@ -18,12 +20,12 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@mycli/config": "0.1.0",
-    "@mycli/contracts": "0.1.0",
-    "@mycli/core": "0.1.0",
-    "@mycli/providers": "0.1.0",
-    "@mycli/storage": "0.1.0",
-    "@mycli/tools": "0.1.0",
+    "@mycli/config": "0.1.1",
+    "@mycli/contracts": "0.1.1",
+    "@mycli/core": "0.1.1",
+    "@mycli/providers": "0.1.1",
+    "@mycli/storage": "0.1.1",
+    "@mycli/tools": "0.1.1",
     "js-tiktoken": "^1.0.21"
   },
   "devDependencies": {

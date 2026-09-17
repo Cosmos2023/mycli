@@ -21,6 +21,16 @@ import type { ManagementCommand } from "../src/management/types.ts";
 import type { NodeBackend } from "../src/node-runtime/node-backend.ts";
 import { MYCLI_VERSION, parseAppVersion } from "../src/version.ts";
 
+test("MCP add help documents options without starting management or the runtime", async () => {
+	let output = "";
+	assert.equal(await runCli({ argv: ["mcp", "add", "--help"], env: {},
+		stdout: { write: (value) => { output += value; } },
+		management: { execute: async () => assert.fail("help must not start management") },
+		startNodeBackend: () => assert.fail("help must not start runtime") }), 0);
+	assert.match(output, /Usage: mycli mcp add <server-id>/u);
+	for (const option of ["--url", "--env", "--approval-mode", "--tool-timeout-sec", "--required"]) assert.ok(output.includes(option));
+});
+
 type Deferred<T> = {
 	promise: Promise<T>;
 	resolve: (value: T) => void;

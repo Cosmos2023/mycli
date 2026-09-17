@@ -21,15 +21,23 @@ export class CompactionModelJournal {
 			: event.type === "attempt" ? event.update.failure : undefined;
 		const metadata: Record<string, TranscriptJsonValue> = {
 			purpose: "compaction", operation_id: input.operationId, request_fingerprint: input.fingerprint,
-			event_kind: "compaction_model", readable: event.type === "failure"
+			event_kind: "compaction_model", readable: event.type === "failure" || event.type === "recovery"
 				|| (event.type === "attempt" && event.update.state === "scheduled"),
 			...(failure ? { code: failure.code, message: failure.message,
+				...(failure.errorContext ? { error_context: failure.errorContext } : {}),
 				...(failure.additionalDetails ? { additional_details: failure.additionalDetails } : {}),
 				...(failure.diagnostics ? { diagnostics: { ...failure.diagnostics } } : {}) } : {}),
 		};
+		if (event.type !== "failure" && event.request) {
+			metadata.generation_request = { generation: event.request.generation,
+				fingerprint: event.request.fingerprint,
+				...(event.request.maxOutputTokens === undefined ? {} : { max_output_tokens: event.request.maxOutputTokens }),
+				reasoning_effort: event.request.reasoningEffort };
+		}
 		let text: string;
 		if (event.type === "attempt") {
 			const update = event.update;
+			metadata.operation_attempt = event.operationAttempt ?? update.attempt;
 			metadata.provider = event.provider;
 			metadata.model = event.model;
 			const { failure: attemptFailure, ...fields } = update;
@@ -46,6 +54,10 @@ export class CompactionModelJournal {
 			metadata.attempt = event.attempt;
 			metadata.usage = { ...event.usage };
 			text = "Context compression usage recorded.";
+		} else if (event.type === "recovery") {
+			metadata.provider = event.provider;
+			metadata.model = event.model;
+			text = `Context compression: ${event.message}`;
 		} else {
 			metadata.usage = { ...event.usage };
 			text = `Context compression failed: ${sanitizeRuntimeErrorDetail(failure?.message) ?? "Provider request failed."}`;

@@ -41,6 +41,12 @@ test("config show reports bounded defaults without creating user files", async (
 	assert.deepEqual(response.credentials, { apiKey: "missing" });
 	assert.equal(setting(response, "model.provider").source, "default");
 	assert.equal(setting(response, "model.provider").value, "openai");
+	assert.deepEqual(setting(response, "model.name"), {
+		key: "model.name",
+		value: "gpt-5.5",
+		source: "default",
+		overridden: [],
+	});
 	assert.deepEqual(setting(response, "tui.theme"), {
 		key: "tui.theme",
 		value: "dark",

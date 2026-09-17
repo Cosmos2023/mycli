@@ -1,6 +1,6 @@
 {
   "name": "@cosmos2023/mycli",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": false,
   "publishConfig": {
     "access": "public"
@@ -24,7 +24,9 @@
     "./package.json": "./package.json",
     "./dist/*": "./dist/*"
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "prebuild": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "tsc -p tsconfig.build.json && node scripts/copy-system-prompt.mjs",
@@ -43,17 +45,18 @@
     "@modelcontextprotocol/sdk": "^1.30.0",
     "adm-zip": "^0.6.0",
     "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
     "better-sqlite3": "^13.0.2",
     "cli-highlight": "2.1.11",
     "csv-parse": "^6.1.0",
     "diff": "^9.0.0",
     "eventsource-parser": "3.1.0",
     "get-east-asian-width": "1.6.0",
-		"js-tiktoken": "^1.0.21",
-		"linebreak": "1.1.0",
-		"marked": "15.0.12",
-		"node-pty": "1.2.0-beta.15",
-		"parse-diff": "0.12.0",
+    "js-tiktoken": "^1.0.21",
+    "linebreak": "1.1.0",
+    "marked": "15.0.12",
+    "node-pty": "1.2.0-beta.15",
+    "parse-diff": "0.12.0",
     "parse5": "^7.3.0",
     "sharp": "^0.35.4",
     "shell-quote": "1.10.0",
@@ -62,12 +65,12 @@
     "yaml": "^2.9.0"
   },
   "optionalDependencies": {
-    "@cosmos2023/ripgrep-darwin-arm64": "0.1.0",
-    "@cosmos2023/ripgrep-darwin-x64": "0.1.0",
-    "@cosmos2023/ripgrep-linux-arm64": "0.1.0",
-    "@cosmos2023/ripgrep-linux-x64": "0.1.0",
-    "@cosmos2023/ripgrep-win32-arm64": "0.1.0",
-    "@cosmos2023/ripgrep-win32-x64": "0.1.0"
+    "@cosmos2023/ripgrep-darwin-arm64": "0.1.1",
+    "@cosmos2023/ripgrep-darwin-x64": "0.1.1",
+    "@cosmos2023/ripgrep-linux-arm64": "0.1.1",
+    "@cosmos2023/ripgrep-linux-x64": "0.1.1",
+    "@cosmos2023/ripgrep-win32-arm64": "0.1.1",
+    "@cosmos2023/ripgrep-win32-x64": "0.1.1"
   },
   "devDependencies": {
     "@types/node": "^24.13.2",

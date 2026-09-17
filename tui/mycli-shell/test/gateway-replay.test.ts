@@ -36,11 +36,11 @@ test("recorded shell lifecycle recovers Running output and terminal Ran state", 
 
 	assert.equal(runningShell.footer.backgroundShellCount, 1);
 	assert.match(runningOutput, /• Running uv run dev/);
-	assert.match(runningOutput, /1 background terminal running/);
+	assert.match(runningOutput, /1 shell.*\/ps/);
 	assert.match(outputOutput, /ready/);
 	assert.equal(completedShell.footer.backgroundShellCount, 0);
 	assert.match(completedOutput, /• Ran uv run dev/);
-	assert.doesNotMatch(completedOutput, /background terminal running/);
+	assert.doesNotMatch(completedOutput, /shell.*\/ps/);
 });
 
 test("historical Shell transcript uses the compact completed output summary", () => {

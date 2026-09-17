@@ -1,16 +1,26 @@
 {
   "name": "@cosmos2023/ripgrep-linux-x64",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": false,
   "description": "ripgrep binary for mycli on Linux x64",
   "license": "MIT OR Unlicense",
-  "os": ["linux"],
-  "cpu": ["x64"],
-  "files": ["vendor"],
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "vendor"
+  ],
   "scripts": {
     "prepack": "npm --prefix ../../.. run build --workspace @mycli/tools && node ../../../scripts/stage_ripgrep_platform_package.mjs stage linux-x86_64",
     "postpack": "node ../../../scripts/stage_ripgrep_platform_package.mjs clean linux-x86_64"
   },
-  "publishConfig": { "access": "public" },
-  "engines": { "node": ">=22.19.0" }
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
 }

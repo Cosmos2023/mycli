@@ -1,4 +1,5 @@
 import type { CanonicalConversationItem } from "@mycli/core";
+import { parseToolDiscoveries } from "@mycli/core";
 import { repairTerminalToolProtocol } from "./legacy-provider-projection.ts";
 import { StorageFailure } from "../sessions/session-store.ts";
 import type { TranscriptEventEnvelope } from "../transcript/transcript-events.ts";
@@ -42,12 +43,16 @@ export function projectTranscriptEventsToProviderItems(
 					...(event.payload.providerState ? { providerState: event.payload.providerState } : {}),
 				}));
 				break;
-			case "tool_result":
+			case "tool_result": {
+				const discoveries = event.payload.result.success && event.payload.result.toolName === "tool_search"
+					? parseToolDiscoveries(event.payload.metadata?.tool_discovery) : [];
 				projected.push(Object.freeze({
 					type: "tool_result",
 					...event.payload.result,
+					...(discoveries.length ? { toolDiscoveries: discoveries } : {}),
 				}));
 				break;
+			}
 			case "context":
 				projected.push(Object.freeze({
 					type: "context",

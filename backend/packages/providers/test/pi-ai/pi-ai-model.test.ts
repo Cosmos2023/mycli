@@ -139,8 +139,9 @@ test("clones curated pi-ai defaults and applies explicit mycli overrides", async
 		assert.equal(snapshot.model.id, model);
 		assert.equal(snapshot.model.baseUrl, "https://custom.example/v1");
 		assert.equal(snapshot.model.contextWindow, 200_000);
-		assert.equal(snapshot.model.maxTokens, 32_000);
 		assert.deepEqual(snapshot.model.input, ["text"]);
+		const catalog = await createPiAiSnapshot({ ...config({ provider, protocol: "chat_completions", model }), maxOutputTokens: undefined });
+		assert.equal(snapshot.model.maxTokens, Math.min(32_000, catalog.model.maxTokens));
 		assert.equal(compat(snapshot).thinkingFormat ?? "openai", thinkingFormat);
 		assert.equal(snapshot.models.getProvider(provider)?.id, provider);
 	}

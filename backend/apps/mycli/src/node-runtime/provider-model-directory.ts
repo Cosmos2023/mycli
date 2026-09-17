@@ -23,18 +23,13 @@ import {
 	type ProviderModelDirectoryEntry,
 	type ProviderRouteDescriptor,
 } from "@mycli/providers";
+import { DEFAULT_ACTIVE_CATALOG_PROVIDERS } from "./provider-activation.ts";
 
 type ProviderModelOrigin =
 	| "current_custom"
 	| "pi_ai_catalog"
 	| "stable_fallback"
 	| "user";
-
-const DEFAULT_ACTIVE_CATALOG_PROVIDERS: ReadonlySet<string> = new Set([
-	"qwen-token-plan",
-	"qwen-token-plan-cn",
-	"qwen-token-plan-individual",
-]);
 
 interface ProviderScopedModelEntry extends ModelCatalogEntry {
 	readonly origin: ProviderModelOrigin;

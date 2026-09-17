@@ -1,3 +1,4 @@
+import { GOAL_MANIFEST_ENTRIES } from "./goal-manifest.ts";
 import type { ToolDefinition } from "@mycli/core";
 import type {
 	BuiltInToolManifest,
@@ -526,6 +527,8 @@ export const TOOL_SEARCH_TOOL_DEFINITION: ToolDefinition = deepFreeze({
 	description: [
 		"Search deferred MCP and plugin tools by name, description, source, and origin.",
 		"Matching tool schemas become available on the next model call in this turn.",
+		"Small extension catalogs are available directly. Discovered schemas may be retained across turns while their definitions and access remain valid.",
+		"Search when a needed tool schema is not available, including after a catalog change or when the retained schema budget is exceeded.",
 		"Use this tool to find capabilities relevant to the task, even when the user has not named the MCP server or plugin.",
 		"For MCP and plugin tool discovery, use tool_search instead of list_mcp_resources or list_mcp_resource_templates.",
 	].join("\n"),
@@ -684,6 +687,7 @@ const BUILTIN_MANIFEST: BuiltInToolManifest = deepFreeze({
 		{ id: "interaction", tool_count: 1 },
 		{ id: "permissions", tool_count: 1 },
 		{ id: "planning", tool_count: 1 },
+		{ id: "goals", tool_count: GOAL_MANIFEST_ENTRIES.length },
 		{ id: "web", tool_count: 1 },
 		{ id: "discovery", tool_count: 4 },
 		{ id: "terminal", tool_count: SHELL_MANIFEST_ENTRIES.length },
@@ -698,6 +702,7 @@ const BUILTIN_MANIFEST: BuiltInToolManifest = deepFreeze({
 		UPDATE_PLAN_MANIFEST_ENTRY,
 		WEB_FETCH_MANIFEST_ENTRY,
 		TOOL_SEARCH_MANIFEST_ENTRY,
+		...GOAL_MANIFEST_ENTRIES,
 		...CONTEXT_MANIFEST_ENTRIES,
 		...SHELL_MANIFEST_ENTRIES,
 	],

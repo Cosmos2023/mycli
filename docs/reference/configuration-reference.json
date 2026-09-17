@@ -15,7 +15,7 @@
     },
     {
       "key": "context.compaction_l4_carry_cost_per_1k",
-      "description": "Estimates the cost per thousand tokens retained after compaction for savings decisions.",
+      "description": "Legacy compatibility setting; unused by local context compaction.",
       "valueKind": "number",
       "writable": true,
       "canonicalPath": "context.compaction_l4_carry_cost_per_1k",
@@ -27,7 +27,7 @@
     },
     {
       "key": "context.compaction_l4_carry_turns",
-      "description": "Keeps this many recent conversation turns in addition to the generated compaction summary.",
+      "description": "Legacy compatibility setting; unused by local context compaction.",
       "valueKind": "integer",
       "writable": true,
       "canonicalPath": "context.compaction_l4_carry_turns",
@@ -39,7 +39,7 @@
     },
     {
       "key": "context.compaction_l4_expected_summary_tokens",
-      "description": "Estimates the summary size used by the compaction savings calculation.",
+      "description": "Legacy compatibility setting; unused by local context compaction.",
       "valueKind": "integer",
       "writable": true,
       "canonicalPath": "context.compaction_l4_expected_summary_tokens",
@@ -51,7 +51,7 @@
     },
     {
       "key": "context.compaction_l4_input_cost_per_1k",
-      "description": "Estimates the input cost per thousand tokens used by compaction economics.",
+      "description": "Legacy compatibility setting; unused by local context compaction.",
       "valueKind": "number",
       "writable": true,
       "canonicalPath": "context.compaction_l4_input_cost_per_1k",
@@ -63,7 +63,7 @@
     },
     {
       "key": "context.compaction_l4_min_savings_ratio",
-      "description": "Requires this minimum estimated savings ratio before optional compaction is accepted.",
+      "description": "Legacy compatibility setting; unused by local context compaction.",
       "valueKind": "number",
       "writable": true,
       "canonicalPath": "context.compaction_l4_min_savings_ratio",
@@ -75,7 +75,7 @@
     },
     {
       "key": "context.compaction_l4_output_cost_per_1k",
-      "description": "Estimates the output cost per thousand summary tokens used by compaction economics.",
+      "description": "Legacy compatibility setting; unused by local context compaction.",
       "valueKind": "number",
       "writable": true,
       "canonicalPath": "context.compaction_l4_output_cost_per_1k",
@@ -121,7 +121,7 @@
     },
     {
       "key": "context.compaction_rehydration_file_max_item_tokens",
-      "description": "Limits tokens restored from any single recently used file after compaction.",
+      "description": "Legacy compatibility setting; unused by local context compaction.",
       "valueKind": "integer",
       "writable": true,
       "canonicalPath": "context.compaction_rehydration_file_max_item_tokens",
@@ -133,7 +133,7 @@
     },
     {
       "key": "context.compaction_rehydration_file_max_total_tokens",
-      "description": "Limits total file-context tokens restored after compaction.",
+      "description": "Legacy compatibility setting; unused by local context compaction.",
       "valueKind": "integer",
       "writable": true,
       "canonicalPath": "context.compaction_rehydration_file_max_total_tokens",
@@ -145,7 +145,7 @@
     },
     {
       "key": "context.compaction_rehydration_max_files",
-      "description": "Limits how many recently used files are restored after compaction.",
+      "description": "Legacy compatibility setting; unused by local context compaction.",
       "valueKind": "integer",
       "writable": true,
       "canonicalPath": "context.compaction_rehydration_max_files",
@@ -169,19 +169,19 @@
     },
     {
       "key": "context.compaction_tail_max_tokens",
-      "description": "Caps the token budget for recent turns retained verbatim after compaction.",
+      "description": "Caps retained user-message text after compaction (default 20000 tokens); the boundary message is truncated with a marker.",
       "valueKind": "integer",
       "writable": true,
       "canonicalPath": "context.compaction_tail_max_tokens",
       "legacyPaths": [
         "compaction_tail_max_tokens"
       ],
-      "defaultValue": 8000,
+      "defaultValue": 20000,
       "restartRequired": false
     },
     {
       "key": "context.compaction_tail_turns",
-      "description": "Keeps this many recent turns verbatim after compaction.",
+      "description": "Legacy compatibility setting; unused by local context compaction.",
       "valueKind": "integer",
       "writable": true,
       "canonicalPath": "context.compaction_tail_turns",
@@ -272,7 +272,7 @@
       "legacyPaths": [
         "model"
       ],
-      "defaultValue": "gpt-5",
+      "defaultValue": "gpt-5.5",
       "restartRequired": false
     },
     {
@@ -607,6 +607,23 @@
         "compact",
         "normal",
         "detailed"
+      ],
+      "restartRequired": false
+    },
+    {
+      "key": "tui.terminal_notifications",
+      "description": "Notifies when unfocused and a turn finishes or needs your attention",
+      "valueKind": "boolean",
+      "writable": true,
+      "canonicalPath": "tui_terminal_notifications",
+      "legacyPaths": [
+        "terminalNotifications",
+        "terminal_notifications"
+      ],
+      "defaultValue": true,
+      "allowedValues": [
+        true,
+        false
       ],
       "restartRequired": false
     },

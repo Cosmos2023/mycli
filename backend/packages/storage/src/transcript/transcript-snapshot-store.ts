@@ -16,6 +16,14 @@ import {
 	sanitizeTranscriptItem,
 	type TranscriptItem,
 } from "../projections/transcript-projector.ts";
+import {
+	parseSnapshotCoverage,
+	parseSnapshotRequestSummary,
+	parseSnapshotSessionMetadata,
+	type TranscriptSnapshotCoverage,
+	type TranscriptSnapshotRequestSummary,
+	type TranscriptSnapshotSessionMetadata,
+} from "./transcript-snapshot-metadata.ts";
 
 export type TranscriptSessionState =
 	| "idle"
@@ -32,6 +40,9 @@ export interface TranscriptSnapshotV2 {
 	readonly message_count: number;
 	readonly created_at: string;
 	readonly updated_at: string;
+	readonly session?: TranscriptSnapshotSessionMetadata;
+	readonly last_request?: TranscriptSnapshotRequestSummary;
+	readonly coverage?: TranscriptSnapshotCoverage;
 	readonly transcript: readonly TranscriptItem[];
 	readonly subagents?: readonly TranscriptSubagentIndexEntry[];
 	readonly links?: Readonly<{ readonly events: "events.jsonl" }>;
@@ -262,6 +273,12 @@ function parseSnapshotV2(value: unknown, sessionId: string): TranscriptSnapshotV
 	if (value.subagents !== undefined && !subagents) return undefined;
 	const links = value.links === undefined ? undefined : parseLinks(value.links);
 	if (value.links !== undefined && !links) return undefined;
+	const session = value.session === undefined ? undefined : parseSnapshotSessionMetadata(value.session);
+	if (value.session !== undefined && !session) return undefined;
+	const lastRequest = value.last_request === undefined ? undefined : parseSnapshotRequestSummary(value.last_request);
+	if (value.last_request !== undefined && !lastRequest) return undefined;
+	const coverage = value.coverage === undefined ? undefined : parseSnapshotCoverage(value.coverage, transcript);
+	if (value.coverage !== undefined && !coverage) return undefined;
 	return Object.freeze({
 		schema_version: 2,
 		session_id: sessionId,
@@ -270,6 +287,9 @@ function parseSnapshotV2(value: unknown, sessionId: string): TranscriptSnapshotV
 		message_count: value.message_count as number,
 		created_at: value.created_at,
 		updated_at: value.updated_at,
+		...(session ? { session } : {}),
+		...(lastRequest ? { last_request: lastRequest } : {}),
+		...(coverage ? { coverage } : {}),
 		transcript: Object.freeze(transcript),
 		...(subagents ? { subagents } : {}),
 		...(links ? { links } : {}),

@@ -68,6 +68,8 @@ export interface AgentThreadRuntimeResult {
 }
 
 export interface AgentThreadRuntimeHandle {
+	/** Capture ownership before asynchronous Worker admission can outlive the parent turn. */
+	bindParentTurn?(turnId: string, parentTurnId: string): void;
 	run(
 		prompt: string,
 		signal: AbortSignal,
@@ -529,6 +531,7 @@ export class AgentSupervisor {
 		}
 		try {
 			const turnId = this.#options.createTurnId();
+			resident.handle.bindParentTurn?.(turnId, resident.parentTurnId);
 			const runtimeResult = mailboxTriggered && resident.handle.runMailbox
 				? await resident.handle.runMailbox(
 					resident.abortController.signal,

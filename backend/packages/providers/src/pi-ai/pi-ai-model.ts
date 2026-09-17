@@ -8,7 +8,7 @@ import {
 	type Provider,
 	type ProviderStreams,
 	type SimpleStreamOptions,
-	type ThinkingLevel,
+	type ModelThinkingLevel,
 } from "@earendil-works/pi-ai";
 import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
@@ -61,7 +61,7 @@ export interface PiAiSnapshot {
 
 export interface PiAiRequestModel {
 	readonly model: Model<PiAiApi>;
-	readonly reasoning: ThinkingLevel | undefined;
+	readonly reasoning: ModelThinkingLevel | undefined;
 }
 
 const DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000;
@@ -182,7 +182,7 @@ function cloneCataloguedModel(
 			config.modelContextWindowTokens,
 			model.contextWindow,
 		),
-		maxTokens: positiveInteger(config.maxOutputTokens, model.maxTokens),
+		maxTokens: Math.min(positiveInteger(config.maxOutputTokens, model.maxTokens), model.maxTokens),
 	});
 }
 
@@ -243,13 +243,17 @@ export function piAiRequestModel(
 	}
 	const effort = request.reasoningEffort;
 	const mapped = piAiReasoningForRequest(request, snapshot);
-	const enabled = mapped !== undefined;
+	const enabled = mapped !== undefined && mapped !== "off";
 	const model = Object.freeze<Model<PiAiApi>>({
 		...snapshot.model,
 		id: request.model,
 		name: request.model,
-		reasoning: enabled,
-		...(enabled ? {
+		// SDK thinking helpers may add a reasoning allowance. Keep that inside the
+		// caller's total generation cap as well as the catalog/configuration ceiling.
+		maxTokens: Math.min(request.maxOutputTokens ?? snapshot.model.maxTokens, snapshot.model.maxTokens),
+		// Capability controls whether pi-ai emits explicit off parameters as well as on parameters.
+		reasoning: snapshot.model.reasoning || (!snapshot.catalogued && effort !== undefined),
+		...(enabled || (!snapshot.catalogued && effort === "none") ? {
 			thinkingLevelMap: request.reasoningEffort === "ultra"
 				? Object.freeze({ ...snapshot.model.thinkingLevelMap, max: "ultra" })
 				: snapshot.catalogued
@@ -279,13 +283,15 @@ export function piAiStreamOptions(
 		signal,
 		maxRetries: 0,
 		temperature: 0,
-		...(requestModel.reasoning === undefined ? {} : { reasoning: requestModel.reasoning }),
-		...(request.protocol === "anthropic_messages" && requestModel.reasoning !== undefined
+		// streamSimple represents off by an absent option; the retained model capability
+		// and off mapping tell the SDK to serialize the provider's explicit disable field.
+		...(requestModel.reasoning === undefined || requestModel.reasoning === "off" ? {} : { reasoning: requestModel.reasoning }),
+		...(request.protocol === "anthropic_messages" && requestModel.reasoning !== undefined && requestModel.reasoning !== "off"
 			? { thinkingBudgets: anthropicThinkingBudgets(request.reasoningEffort) }
 			: {}),
 		...(request.maxOutputTokens === undefined
 			? {}
-			: { maxTokens: request.maxOutputTokens }),
+			: { maxTokens: Math.min(request.maxOutputTokens, requestModel.model.maxTokens) }),
 		...(request.sessionId === undefined ? {} : { sessionId: request.sessionId }),
 		...(request.cacheRetention === undefined ? {} : { cacheRetention: request.cacheRetention }),
 	};
@@ -327,31 +333,36 @@ function requestApiKeyAuth(provider: string): ApiKeyAuth {
 	};
 }
 
-function piAiReasoning(effort: ReasoningEffort | undefined): ThinkingLevel | undefined {
-	if (effort === undefined || effort === "none") return undefined;
+function piAiReasoning(effort: ReasoningEffort | undefined): ModelThinkingLevel | undefined {
+	if (effort === undefined) return undefined;
+	if (effort === "none") return "off";
 	return effort === "ultra" ? "max" : effort;
 }
 
 function piAiReasoningForRequest(
 	request: ProviderRequest,
 	snapshot: PiAiSnapshot,
-): ThinkingLevel | undefined {
+): ModelThinkingLevel | undefined {
 	const reasoning = piAiReasoning(request.reasoningEffort);
 	if (reasoning === undefined) return undefined;
 	if (snapshot.catalogued
-		&& (!snapshot.model.reasoning
+		&& ((reasoning !== "off" && !snapshot.model.reasoning)
 			|| !supportsReasoningLevel(snapshot, reasoning))) {
 		throw unsupportedReasoning(request.reasoningEffort);
 	}
 	if (request.protocol !== "anthropic_messages") return reasoning;
 	const budget = anthropicThinkingBudget(request.reasoningEffort);
-	const maxOutputTokens = request.maxOutputTokens ?? snapshot.model.maxTokens;
-	return budget !== undefined && maxOutputTokens <= budget ? undefined : reasoning;
+	const maxOutputTokens = Math.min(request.maxOutputTokens ?? snapshot.model.maxTokens, snapshot.model.maxTokens);
+	if (budget !== undefined && maxOutputTokens <= budget) {
+		if (!supportsReasoningLevel(snapshot, "off")) throw unsupportedReasoning("none");
+		return "off";
+	}
+	return reasoning;
 }
 
 function supportsReasoningLevel(
 	snapshot: PiAiSnapshot,
-	level: ThinkingLevel,
+	level: ModelThinkingLevel,
 ): boolean {
 	return getSupportedThinkingLevels(snapshot.model).includes(level);
 }
@@ -412,7 +423,7 @@ function anthropicThinkingBudgets(effort: ReasoningEffort | undefined): Readonly
 
 function thinkingLevelMap(effort: ReasoningEffort | undefined): Readonly<Record<string, string | null>> {
 	return Object.freeze({
-		off: null,
+		off: effort === "none" ? "none" : null,
 		minimal: "minimal",
 		low: "low",
 		medium: "medium",

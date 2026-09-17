@@ -182,6 +182,7 @@ export interface DeferredToolCandidate {
 }
 
 export interface ToolTurnCatalog {
+	readonly directTools?: readonly ToolDefinition[];
 	readonly deferredTools: readonly ToolDefinition[];
 }
 

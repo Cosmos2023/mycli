@@ -545,11 +545,31 @@ test("independent release compatibility workflow covers three installed-artifact
 	assert.doesNotMatch(workflow, /continue-on-error/u);
 });
 
+test("Windows release artifacts require native, Shell, and maintenance verification", async () => {
+	const release = parseYaml(await readFile(new URL("../../.github/workflows/release.yml", import.meta.url), "utf8"));
+	assert.equal(release.jobs.publish.needs, "windows-sandbox-helper");
+	const workflow = parseYaml(await readFile(new URL("../../.github/workflows/windows-sandbox.yml", import.meta.url), "utf8"));
+	const job = workflow.jobs.verify;
+	assert.notEqual(job["continue-on-error"], true);
+	const steps = job.steps;
+	const native = steps.findIndex((step) => step.run?.includes("ctest --test-dir"));
+	const integration = steps.findIndex((step) => step.run?.includes("windows-sandbox.platform.test.ts"));
+	const artifact = steps.findIndex((step) => step.uses?.startsWith("actions/upload-artifact@"));
+	assert.ok(native >= 0 && integration > native && artifact > integration);
+	assert.equal(steps[integration].env.MYCLI_WINDOWS_SANDBOX_SETUP_TESTS, "1");
+	assert.equal(steps[integration].env.MYCLI_WINDOWS_SANDBOX_MAINTENANCE_TESTS, "1");
+	for (const index of [native, integration, artifact]) {
+		assert.notEqual(steps[index]["continue-on-error"], true);
+		assert.equal(steps[index].if ?? "success()", "success()");
+	}
+});
+
 test("release workflows remain valid YAML", async () => {
 	for (const relativePath of [
 		"../../.github/workflows/release.yml",
 		"../../.github/workflows/release-compatibility.yml",
 		"../../.github/workflows/cross-platform.yml",
+		"../../.github/workflows/windows-sandbox.yml",
 		"../../.github/dependabot.yml",
 	]) {
 		const workflow = await readFile(new URL(relativePath, import.meta.url), "utf8");
@@ -600,10 +620,10 @@ test("cross-platform long-history gate seeds the current session schema", async 
 	);
 	assert.match(
 		workflow,
-		/benchmark:long-history -- --profile compact_stress --storage-schema v14/u,
+		/benchmark:long-history -- --profile compact_stress --storage-schema v15/u,
 	);
 
-	const root = await mkdtemp(join(tmpdir(), "mycli-long-history-v14-"));
+	const root = await mkdtemp(join(tmpdir(), "mycli-long-history-v15-"));
 	try {
 		await mkdir(join(root, "home"), { recursive: true });
 		await mkdir(join(root, "workspace"), { recursive: true });
@@ -617,7 +637,7 @@ test("cross-platform long-history gate seeds the current session schema", async 
 			"--profile",
 			"blob_smoke",
 			"--storage-schema",
-			"v14",
+			"v15",
 			"--seed-only",
 			"--fixture-root",
 			root,
@@ -629,7 +649,7 @@ test("cross-platform long-history gate seeds the current session schema", async 
 			readonly: true,
 		});
 		try {
-			assert.equal(database.prepare("SELECT version FROM schema_version").pluck().get(), 14);
+			assert.equal(database.prepare("SELECT version FROM schema_version").pluck().get(), 15);
 			assert.equal(database.prepare(`
 				SELECT COUNT(*) FROM transcript_events WHERE session_id = 'target'
 			`).pluck().get(), 195);

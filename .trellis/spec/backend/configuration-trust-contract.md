@@ -264,6 +264,13 @@ Layers are passed to the pure resolver in descending precedence:
 `resolveConfig` remains the compatibility facade. New diagnostics and settings surfaces use
 `resolveConfigWithMetadata` instead of reconstructing precedence.
 
+OpenAI and Codex profiles pin the same current default model (`gpt-5.5`). The config resolver and
+setup use the profile default; explicit model choices from any enabled layer remain authoritative.
+Codex setup resolves built-in reasoning metadata through the OpenAI model catalog while retaining
+the Codex provider and credential reference. It must not disable reasoning merely because the
+catalog stores that model under OpenAI. TUI fallback provider metadata is shared within the TUI
+and yields to gateway-supplied rows. Default changes do not materialize user configuration files.
+
 ### Launch profile and system defaults
 
 `mycli -p <name>` and `mycli --profile <name>` are runtime selectors, not configuration keys or

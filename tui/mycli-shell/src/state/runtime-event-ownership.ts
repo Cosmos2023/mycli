@@ -11,6 +11,8 @@ export type RuntimeEventOwnerState = Readonly<{
 const TURN_SCOPED_METHODS = new Set<RuntimeEventMethod>([
 	"compaction.completed",
 	"compaction.started",
+	"hook.started",
+	"hook.completed",
 	"item.completed",
 	"item.started",
 	"message.complete",
