@@ -3,6 +3,7 @@ import { appendFile, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { createErrorContext } from "@mycli/contracts";
 import { openRuntimeSessionStore } from "@mycli/storage";
 import {
 	appendNodeTrace,
@@ -41,6 +42,25 @@ test("provider trace writer and reader retain safe retry evidence without raw er
 	assert.equal(payload.additional_details, "upstream request failed token=[REDACTED]");
 	assert.doesNotMatch(raw + JSON.stringify(rows), /private|raw_body|authorization|internal\.ts/u);
 	assert.deepEqual(store.loadHistoryItems("session"), []);
+});
+
+test("compaction traces retain typed terminal reasons and failed-attempt usage", async (t) => {
+	const home = await mkdtemp(join(tmpdir(), "mycli-compaction-trace-"));
+	t.after(async () => { await rm(home, { recursive: true, force: true }); });
+	const store = openRuntimeSessionStore({ dbPath: join(home, "sessions.db") });
+	t.after(() => store.close());
+	const errorContext = createErrorContext({ reason: "provider.output_limit", source: "provider", scope: { kind: "provider_attempt", id: "compaction" },
+		outcome: { state: "failed", effects: "none" }, details: { finish_reason: "length", max_output_tokens: 8192 } });
+	appendNodeTrace(home, "session", runtimeDiagnosticTraceEvent({ kind: "compaction", turnId: "summary", source: "user_requested",
+		status: "failed", beforeTokens: 40_000, afterTokens: 40_000, maxTokens: 50_000, durationMs: 1000,
+		failure: { code: "provider_error", message: "private exception", errorContext, retryable: false,
+			additionalDetails: "limit reached token=private-key" }, usage: { input_tokens: 1000, output_tokens: 8192, reasoning_tokens: 8192 } }));
+	const payload = nodeTraceRows(store, home, "session")[0]!.payload as Record<string, unknown>;
+	assert.deepEqual(payload.error_context, errorContext);
+	assert.equal(payload.output_tokens, 8192);
+	assert.equal(payload.reasoning_tokens, 8192);
+	assert.equal(payload.failure_kind, "provider_error");
+	assert.doesNotMatch(await readFile(join(home, ".mycli", "traces", "session-trace.jsonl"), "utf8"), /private/u);
 });
 
 test("completion timing survives trace serialization while invalid and private fields are dropped", async (t) => {

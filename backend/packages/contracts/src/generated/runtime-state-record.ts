@@ -358,7 +358,29 @@ export interface CompactCheckpointPayload {
   /**
    * @maxItems 4096
    */
-  replacement_messages?: Message[];
+  replacement_messages?: CompactionMessage[];
+  [k: string]: any;
+}
+export interface CompactionMessage {
+  role: "system" | "developer" | "user" | "assistant" | "tool";
+  content: string;
+  tool_call_id?: NullableIdentifier;
+  response_id?: NullableIdentifier;
+  metadata?: {
+    [k: string]: any;
+  };
+  /**
+   * @maxItems 512
+   */
+  blocks?: {
+    [k: string]: any;
+  }[];
+  /**
+   * @maxItems 128
+   */
+  tool_calls?: {
+    [k: string]: any;
+  }[];
   [k: string]: any;
 }
 export interface ResponsesContinuation {

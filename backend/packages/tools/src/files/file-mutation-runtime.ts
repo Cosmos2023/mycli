@@ -1,3 +1,4 @@
+import type { DeniedReadPolicy } from "../policy/denied-read-policy.ts";
 import { createHash, randomUUID } from "node:crypto";
 import {
 	mkdir,
@@ -141,6 +142,7 @@ interface PreparedFileMutation extends PreparedMutationPreview {
 	readonly baseline?: CapturedFile;
 	readonly allowOutsideWorkspace?: boolean;
 	readonly allowedWritableRoots?: readonly string[];
+	readonly deniedReadPolicy?: DeniedReadPolicy;
 }
 
 interface PreparedPatchFileChange {
@@ -158,6 +160,7 @@ interface PreparedPatchMutation {
 	readonly outcomes: readonly MutationOutcome[];
 	readonly allowOutsideWorkspace?: boolean;
 	readonly allowedWritableRoots?: readonly string[];
+	readonly deniedReadPolicy?: DeniedReadPolicy;
 }
 
 interface VirtualPatchFile {
@@ -187,6 +190,7 @@ export class FileMutationRuntime {
 		readonly content: string;
 		readonly allowOutsideWorkspace?: boolean;
 		readonly allowedWritableRoots?: readonly string[];
+		readonly deniedReadPolicy?: DeniedReadPolicy;
 		readonly signal: AbortSignal;
 	}): Promise<MutationOutcome> {
 		return (await this.prepareWrite(input)).outcome;
@@ -197,6 +201,7 @@ export class FileMutationRuntime {
 		readonly content: string;
 		readonly allowOutsideWorkspace?: boolean;
 		readonly allowedWritableRoots?: readonly string[];
+		readonly deniedReadPolicy?: DeniedReadPolicy;
 		readonly signal: AbortSignal;
 	}): Promise<PreparedMutationPreview> {
 		const prepared = await this.#buildWrite(input);
@@ -210,6 +215,7 @@ export class FileMutationRuntime {
 		readonly replaceAll: boolean;
 		readonly allowOutsideWorkspace?: boolean;
 		readonly allowedWritableRoots?: readonly string[];
+		readonly deniedReadPolicy?: DeniedReadPolicy;
 		readonly signal: AbortSignal;
 	}): Promise<MutationOutcome> {
 		return (await this.prepareReplace(input)).outcome;
@@ -222,6 +228,7 @@ export class FileMutationRuntime {
 		readonly replaceAll: boolean;
 		readonly allowOutsideWorkspace?: boolean;
 		readonly allowedWritableRoots?: readonly string[];
+		readonly deniedReadPolicy?: DeniedReadPolicy;
 		readonly signal: AbortSignal;
 	}): Promise<PreparedMutationPreview> {
 		const prepared = await this.#buildReplace(input);
@@ -233,6 +240,7 @@ export class FileMutationRuntime {
 		readonly content: string;
 		readonly allowOutsideWorkspace?: boolean;
 		readonly allowedWritableRoots?: readonly string[];
+		readonly deniedReadPolicy?: DeniedReadPolicy;
 		readonly history?: FileMutationHistoryContext;
 		readonly signal: AbortSignal;
 	}): Promise<MutationOutcome> {
@@ -247,6 +255,7 @@ export class FileMutationRuntime {
 		readonly replaceAll: boolean;
 		readonly allowOutsideWorkspace?: boolean;
 		readonly allowedWritableRoots?: readonly string[];
+		readonly deniedReadPolicy?: DeniedReadPolicy;
 		readonly history?: FileMutationHistoryContext;
 		readonly signal: AbortSignal;
 	}): Promise<MutationOutcome> {
@@ -258,6 +267,7 @@ export class FileMutationRuntime {
 		readonly operations: readonly PatchOperation[];
 		readonly allowOutsideWorkspace?: boolean;
 		readonly allowedWritableRoots?: readonly string[];
+		readonly deniedReadPolicy?: DeniedReadPolicy;
 		readonly signal: AbortSignal;
 	}): Promise<PreparedPatchPreview> {
 		const prepared = await this.#buildPatch(input);
@@ -271,6 +281,7 @@ export class FileMutationRuntime {
 		readonly operations: readonly PatchOperation[];
 		readonly allowOutsideWorkspace?: boolean;
 		readonly allowedWritableRoots?: readonly string[];
+		readonly deniedReadPolicy?: DeniedReadPolicy;
 		readonly history?: FileMutationHistoryContext;
 		readonly signal: AbortSignal;
 	}): Promise<readonly MutationOutcome[]> {
@@ -282,6 +293,7 @@ export class FileMutationRuntime {
 		readonly operations: readonly PatchOperation[];
 		readonly allowOutsideWorkspace?: boolean;
 		readonly allowedWritableRoots?: readonly string[];
+		readonly deniedReadPolicy?: DeniedReadPolicy;
 		readonly signal: AbortSignal;
 	}): Promise<PreparedPatchMutation> {
 		assertNotAborted(input.signal);
@@ -295,6 +307,7 @@ export class FileMutationRuntime {
 				rawPath,
 				input.allowOutsideWorkspace,
 				input.allowedWritableRoots,
+				input.deniedReadPolicy,
 			);
 			const cached = files.get(resolved.target);
 			if (cached) return cached;
@@ -432,6 +445,7 @@ export class FileMutationRuntime {
 			...(input.allowOutsideWorkspace === undefined
 				? {}
 				: { allowOutsideWorkspace: input.allowOutsideWorkspace }),
+				deniedReadPolicy: input.deniedReadPolicy,
 			...(input.allowedWritableRoots === undefined
 				? {}
 				: { allowedWritableRoots: Object.freeze([...input.allowedWritableRoots]) }),
@@ -463,6 +477,7 @@ export class FileMutationRuntime {
 						change,
 						prepared.allowOutsideWorkspace,
 						prepared.allowedWritableRoots,
+						prepared.deniedReadPolicy,
 						signal,
 					);
 				} else {
@@ -474,6 +489,7 @@ export class FileMutationRuntime {
 						failureKind: "patch_failed",
 						allowOutsideWorkspace: prepared.allowOutsideWorkspace,
 						allowedWritableRoots: prepared.allowedWritableRoots,
+						deniedReadPolicy: prepared.deniedReadPolicy,
 						mode: change.mode,
 						signal,
 					});
@@ -494,6 +510,7 @@ export class FileMutationRuntime {
 		change: PreparedPatchFileChange,
 		allowOutsideWorkspace: boolean | undefined,
 		allowedWritableRoots: readonly string[] | undefined,
+		deniedReadPolicy: DeniedReadPolicy | undefined,
 		signal: AbortSignal,
 	): Promise<void> {
 		const tombstone = join(
@@ -506,7 +523,7 @@ export class FileMutationRuntime {
 				this.#workspaceRoot,
 				change.rawPath,
 				change.resolved.target,
-				{ allowOutsideWorkspace, allowedRoots: allowedWritableRoots },
+				{ allowOutsideWorkspace, allowedRoots: allowedWritableRoots, deniedReadPolicy },
 			);
 			assertNotAborted(signal);
 			await rename(change.resolved.target, tombstone);
@@ -525,6 +542,7 @@ export class FileMutationRuntime {
 		readonly content: string;
 		readonly allowOutsideWorkspace?: boolean;
 		readonly allowedWritableRoots?: readonly string[];
+		readonly deniedReadPolicy?: DeniedReadPolicy;
 		readonly signal: AbortSignal;
 	}): Promise<PreparedFileMutation> {
 		assertNotAborted(input.signal);
@@ -532,6 +550,7 @@ export class FileMutationRuntime {
 			input.path,
 			input.allowOutsideWorkspace,
 			input.allowedWritableRoots,
+			input.deniedReadPolicy,
 		);
 		const existing = resolved.existed
 			? await captureTextFile(resolved.target, resolved.relativePath)
@@ -555,6 +574,7 @@ export class FileMutationRuntime {
 			...(input.allowOutsideWorkspace === undefined
 				? {}
 				: { allowOutsideWorkspace: input.allowOutsideWorkspace }),
+				deniedReadPolicy: input.deniedReadPolicy,
 			...(input.allowedWritableRoots === undefined
 				? {}
 				: { allowedWritableRoots: Object.freeze([...input.allowedWritableRoots]) }),
@@ -570,6 +590,7 @@ export class FileMutationRuntime {
 		readonly replaceAll: boolean;
 		readonly allowOutsideWorkspace?: boolean;
 		readonly allowedWritableRoots?: readonly string[];
+		readonly deniedReadPolicy?: DeniedReadPolicy;
 		readonly signal: AbortSignal;
 	}): Promise<PreparedFileMutation> {
 		assertNotAborted(input.signal);
@@ -577,6 +598,7 @@ export class FileMutationRuntime {
 			input.path,
 			input.allowOutsideWorkspace,
 			input.allowedWritableRoots,
+			input.deniedReadPolicy,
 		);
 		if (!resolved.existed) throw new FileMutationError("not_found");
 		const existing = await captureTextFile(
@@ -609,6 +631,7 @@ export class FileMutationRuntime {
 			...(input.allowOutsideWorkspace === undefined
 				? {}
 				: { allowOutsideWorkspace: input.allowOutsideWorkspace }),
+				deniedReadPolicy: input.deniedReadPolicy,
 			...(input.allowedWritableRoots === undefined
 				? {}
 				: { allowedWritableRoots: Object.freeze([...input.allowedWritableRoots]) }),
@@ -636,6 +659,7 @@ export class FileMutationRuntime {
 				failureKind: prepared.operation === "replace" ? "edit_failed" : "write_failed",
 				allowOutsideWorkspace: prepared.allowOutsideWorkspace,
 				allowedWritableRoots: prepared.allowedWritableRoots,
+				deniedReadPolicy: prepared.deniedReadPolicy,
 				signal,
 			});
 		} catch (error) {
@@ -650,11 +674,13 @@ export class FileMutationRuntime {
 		rawPath: string,
 		allowOutsideWorkspace: boolean | undefined,
 		allowedWritableRoots: readonly string[] | undefined,
+		deniedReadPolicy: DeniedReadPolicy | undefined,
 	): Promise<WritableWorkspaceFile> {
 		try {
 			return await resolveWritableWorkspaceFile(this.#workspaceRoot, rawPath, {
 				allowOutsideWorkspace,
 				allowedRoots: allowedWritableRoots,
+				deniedReadPolicy,
 			});
 		} catch (error) {
 			throw mutationErrorFrom(error, "invalid_path");
@@ -696,6 +722,7 @@ export class FileMutationRuntime {
 		readonly failureKind: "write_failed" | "edit_failed" | "patch_failed";
 		readonly allowOutsideWorkspace?: boolean;
 		readonly allowedWritableRoots?: readonly string[];
+		readonly deniedReadPolicy?: DeniedReadPolicy;
 		readonly mode?: number;
 		readonly signal: AbortSignal;
 	}): Promise<void> {
@@ -713,6 +740,7 @@ export class FileMutationRuntime {
 				{
 					allowOutsideWorkspace: input.allowOutsideWorkspace,
 					allowedRoots: input.allowedWritableRoots,
+					deniedReadPolicy: input.deniedReadPolicy,
 				},
 			);
 			await mkdir(dirname(input.resolved.target), { recursive: true });
@@ -734,6 +762,7 @@ export class FileMutationRuntime {
 				{
 					allowOutsideWorkspace: input.allowOutsideWorkspace,
 					allowedRoots: input.allowedWritableRoots,
+					deniedReadPolicy: input.deniedReadPolicy,
 				},
 			);
 			assertNotAborted(input.signal);

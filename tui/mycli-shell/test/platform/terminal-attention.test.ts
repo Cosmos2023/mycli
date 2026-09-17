@@ -1,0 +1,31 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { TerminalAttention } from "../../src/platform/terminal-attention.ts";
+
+test("terminal attention coalesces events and respects focus, settings, and disposal", (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const output: string[] = [];
+	const attention = new TerminalAttention((sequence) => output.push(sequence));
+	attention.notify("Turn completed", 0);
+	t.mock.timers.tick(200);
+	assert.deepEqual(output, []);
+	assert.equal(attention.handleInput("\x1b[O"), true);
+	attention.notify("Turn completed", 0);
+	attention.notify("Approval required", 2);
+	attention.notify("Turn completed", 0);
+	t.mock.timers.tick(200);
+	assert.deepEqual(output, ["\x1b]9;mycli: Approval required\x07"]);
+	attention.notify("Answer required", 2);
+	attention.handleInput("\x1b[I");
+	t.mock.timers.tick(200);
+	attention.handleInput("\x1b[O");
+	attention.configure(false);
+	attention.notify("Answer required", 2);
+	t.mock.timers.tick(200);
+	attention.configure(true);
+	attention.notify("Plan ready", 1);
+	attention.clear();
+	t.mock.timers.tick(200);
+	assert.equal(output.length, 1);
+	assert.equal(attention.handleInput("typed"), false);
+});

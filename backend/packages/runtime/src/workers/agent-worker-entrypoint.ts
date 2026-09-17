@@ -1,3 +1,4 @@
+import type { ProviderUsage } from "@mycli/core";
 import { parentPort, workerData } from "node:worker_threads";
 import { UserTurnCancellation } from "../abort.ts";
 import { ProviderRegistry } from "@mycli/providers";
@@ -213,6 +214,9 @@ async function handleProviderCommand(value: unknown): Promise<void> {
 			maxRetries: command.maxRetries,
 			signal: request.controller.signal,
 			toolCallsAllowed: command.toolCallsAllowed,
+			...(command.recordUsage ? { recordUsage: async (usage: ProviderUsage, attempt: number) => {
+				postProviderResponse(command, request, { type: "provider_step_usage", usage, attempt });
+			} } : {}),
 			...(command.attemptState ? { attemptState: command.attemptState } : {}),
 			...(command.recordAttempts ? {
 				recordAttempt: (update: ProviderAttemptUpdate) => recordAttempt(command, request, update),

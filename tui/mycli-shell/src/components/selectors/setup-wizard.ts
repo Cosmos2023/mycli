@@ -8,6 +8,7 @@ import {
 	type TUI,
 } from "../../tui-core/index.ts";
 import { getKeybindings } from "../../tui-core/keybindings.ts";
+import { FALLBACK_OPENAI_MODEL } from "../../interaction/provider-defaults.ts";
 import { uiGlyphs } from "../../theme/terminal-style.ts";
 import { theme } from "../../theme/theme.ts";
 import { DynamicBorder } from "../shared/dynamic-border.ts";
@@ -321,7 +322,7 @@ export class SetupWizardComponent extends Container implements Focusable {
 
 function defaultProviders(): SetupProvider[] {
 	return [
-		{ id: "openai", name: "OpenAI", default_model: "gpt-5", default_base_url: "https://api.openai.com/v1" },
-		{ id: "codex", name: "Codex Responses", default_model: "gpt-5", default_base_url: "https://api.openai.com/v1" },
+		{ id: "openai", name: "OpenAI", default_model: FALLBACK_OPENAI_MODEL, default_base_url: "https://api.openai.com/v1" },
+		{ id: "codex", name: "Codex Responses", default_model: FALLBACK_OPENAI_MODEL, default_base_url: "https://api.openai.com/v1" },
 	];
 }

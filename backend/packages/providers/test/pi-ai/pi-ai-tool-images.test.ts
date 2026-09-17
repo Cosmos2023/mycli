@@ -13,7 +13,7 @@ test("effective pi-ai catalog capability bounds optimistic configuration without
 		provider: "deepseek", model: "deepseek-v4-flash", protocol: "chat_completions",
 		apiBaseUrl: "https://offline.invalid/v1", apiKey: "fixture", supportsImages: true,
 	}, fetch: async () => { requests += 1; throw new Error("must not contact provider"); } });
-	assert.deepEqual(await provider.resolveCapabilities(), { supportsImages: false });
+	assert.equal((await provider.resolveCapabilities()).supportsImages, false);
 	assert.equal(requests, 0);
 });
 

@@ -46,3 +46,13 @@ test("MCP readable-root bounds cannot silently become unrestricted host executio
 	t.after(() => client.close());
 	await assert.rejects(client.listTools(new AbortController().signal), /sandbox_unavailable/u);
 });
+
+test("managed denied reads force stdio MCP into the same restricted launch policy", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-mcp-denied-read-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const config = parseMcpServerConfig("browser", { command: process.execPath }, {});
+	const profile = mcpSandboxProfile(root, config, { source: "managed", deniedReadRoots: [join(root, "secret")] });
+	assert.equal(profile.mode, "workspace-write");
+	assert.deepEqual(profile.deniedReadRoots, [join(root, "secret")]);
+	assert.throws(() => prepareSandboxedProcess([process.execPath], profile, { platform: "darwin" }), /Denied-read rules/u);
+});

@@ -5,7 +5,7 @@ without a separate network grant. Filesystem writes remain confined to the works
 commands still require approval. Read Only starts offline; Full Access enables networking as well.
 Restart mycli after updating to apply these defaults to new turns.
 
-On macOS, mycli can route domain-constrained Shell HTTP/HTTPS traffic through a
+On macOS and Windows, mycli can route domain-constrained Shell HTTP/HTTPS traffic through a
 local proxy. The operating-system sandbox blocks direct network connections.
 Networking must still be authorized by the active permission profile or an
 approved permission request.
@@ -39,7 +39,8 @@ start the compiled CLI. No separate proxy service or proxy configuration is need
 | Environment | Domain-constrained Shell behavior |
 | --- | --- |
 | macOS with Seatbelt | HTTP on port 80 and HTTPS through CONNECT on port 443 |
-| Linux / Windows | `network_proxy_unavailable` before process start when networking is enabled and the list is non-empty |
+| Windows restricted-token sandbox | HTTP on port 80 and HTTPS through CONNECT on port 443, limited to each logon’s proxy port |
+| Linux | `network_proxy_unavailable` before process start when networking is enabled and the list is non-empty |
 | Network disabled / empty domain list | Commands run with networking disabled |
 
 Proxy-aware clients such as curl and Git over HTTPS use the runtime-provided
@@ -67,6 +68,13 @@ selection; it is not content filtering. Seatbelt allows a loopback TCP port, not
 a particular listening process identity; this boundary assumes the unsandboxed
 host and runtime are trusted.
 
+Windows uses a dedicated proxy account with a persistent WFP network deny. Each command receives
+an exception scoped to its unique logon SID and one IPv4 loopback TCP port; another command's proxy
+port is not authorized. The host installs the exception before resuming the suspended runner and
+revokes it on exit. This does not override other Windows firewall restrictions. Windows currently
+requires a read-only or workspace-write filesystem policy when networking is constrained; combining
+unrestricted filesystem access with network constraints fails closed.
+
 ## MCP Networking
 
 MCP processes have a separate startup policy: ordinary host subprocesses with filesystem access and
@@ -77,10 +85,11 @@ permission selector do not reconfigure a running MCP process. In `mcp_servers.to
 use the platform sandbox and fail closed if they cannot be enforced. Tool approvals remain independent
 of process isolation.
 
-Domain-constrained stdio MCP uses this same macOS proxy and traffic restrictions, with one proxy per
+Domain-constrained stdio MCP uses this same macOS/Windows proxy and traffic restrictions, with one proxy per
 process generation. Cancellation/timeout retires that generation and closes its proxy; a later
-explicit call starts a fresh generation. Linux/Windows fail before starting a process when they
-cannot enforce the requested enabled domain restriction.
+explicit call starts a fresh generation. Linux fails before starting a process when they
+cannot enforce the requested enabled domain restriction. On Windows, explicitly select a
+restricted filesystem mode for a stdio MCP server when applying domain or offline restrictions.
 
 Remote HTTP MCP checks allowed hostnames and the enabled/disabled policy before every request.
 It rejects redirects instead of forwarding endpoint credentials or tool arguments. Unlike the

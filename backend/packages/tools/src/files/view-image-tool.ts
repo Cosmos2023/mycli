@@ -44,6 +44,7 @@ export class ViewImageTool implements ToolAdapter {
 				rawPath.startsWith("~/") || rawPath.startsWith("~\\")
 					? join(this.#options.homeDir, rawPath.slice(2)) : rawPath, {
 					allowOutsideWorkspace: hasUnrestrictedFilesystem(policy),
+					deniedReadPolicy: policy,
 					...(policy ? { allowedRoots: [...(policy.readableRoots ?? []), ...policy.writableRoots] } : {}),
 				});
 			options.signal.throwIfAborted();

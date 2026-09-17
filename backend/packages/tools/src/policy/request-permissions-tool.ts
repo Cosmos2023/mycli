@@ -31,7 +31,7 @@ export class RequestPermissionsTool implements ToolAdapter {
 		if (!parsed.ok) return failure(parsed.errorKind);
 		const grant = options.permissionGrant;
 		if (!grant) {
-			if (!permissionRequestSatisfied(parsed.permissions, options.executionPolicy)) {
+			if (!permissionRequestSatisfied(parsed.permissions, options.executionPolicy, this.#workspaceRoot)) {
 				return failure("permission_grant_not_approved");
 			}
 			return success(parsed.permissions, "turn", false, true);

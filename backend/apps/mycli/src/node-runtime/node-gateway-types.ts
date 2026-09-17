@@ -1,3 +1,5 @@
+import type { GatewayCompactionEvent } from "./node-gateway-compaction.ts";
+import type { SessionGoalService } from "@mycli/runtime";
 import type { ReviewSelection, SkillReference } from "@mycli/contracts";
 import type { HookBrowserService } from "@mycli/integrations";
 import type {
@@ -43,6 +45,8 @@ import type { GatewayTransport } from "@mycli/gateway";
 import type { PluginCatalogService, SkillManagementService } from "@mycli/integrations";
 import type { AgentInteractiveRequestGateway } from "./agent-interactive-requests.ts";
 import type { SessionPreferences } from "./session-preferences.ts";
+import type { SessionTrainingExportSettings } from "./session-training-export-options.ts";
+import type { TrainingExportResult } from "./session-training-export.ts";
 import type {
 	ApplyResumeRepairInput,
 	ApplyResumeRepairResult,
@@ -77,6 +81,7 @@ export interface NodeGatewayCompactionResult {
 }
 
 export interface NodeGatewayRuntime {
+	readonly goal?: SessionGoalService;
 	readonly queueCoordinator?: QueueCoordinator;
 	sessionPreferences?(): SessionPreferences | undefined;
 	setSessionPreferences?(preferences: SessionPreferences): void;
@@ -94,6 +99,8 @@ export interface NodeGatewayRuntime {
 	removeCommandAllowance?(pattern: string): readonly (readonly string[])[];
 	clearCommandAllowances?(): number;
 	compact?(input: {
+		readonly operationId: string;
+		readonly emit: (event: GatewayCompactionEvent) => void;
 		readonly modelOverride?: string;
 		readonly signal: AbortSignal;
 	}): Promise<NodeGatewayCompactionResult>;
@@ -155,6 +162,7 @@ export interface NodeGatewayBackgroundTaskCommands {
 }
 
 export interface NodeGatewaySessionCommands {
+	exportTraining?(sessionId: string, settings: SessionTrainingExportSettings, signal: AbortSignal): Promise<TrainingExportResult>;
 	rename?(sessionId: string, title: string): SessionSummary;
 	list?(query: SessionQuery): readonly SessionSummary[];
 	inspect?(sessionId: string): SessionSummary | undefined;

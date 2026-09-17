@@ -1,3 +1,5 @@
+import { TerminalAttention } from "../platform/terminal-attention.ts";
+import { modelSelectionNotice } from "@mycli/contracts";
 import { ReviewSelectorComponent } from "../components/selectors/review-selector.ts";
 import { TextEntrySelectorComponent } from "../components/selectors/text-entry-selector.ts";
 import { TextViewerSelectorComponent } from "../components/selectors/text-viewer-selector.ts";
@@ -7,6 +9,8 @@ import { SkillsSelectorComponent } from "../components/selectors/skills-selector
 import type { ModelSelectionScope } from "@mycli/contracts";
 import { CustomEditor } from "../components/composer/custom-editor.ts";
 import { FooterComponent } from "../components/composer/footer.ts";
+import { WorkStatusComponent } from "../components/composer/work-status.ts";
+import { StatusMessageComponent } from "../components/composer/status-line.ts";
 import { PendingInputPreviewComponent } from "../components/composer/pending-input-preview.ts";
 import { ApprovalSelectorComponent } from "../components/selectors/approval-selector.ts";
 import { ClarificationSelectorComponent } from "../components/selectors/clarification-selector.ts";
@@ -16,6 +20,7 @@ import { CommandResultOverlayComponent } from "../components/selectors/command-r
 import type { DecisionPanelOptions } from "../components/selectors/decision-panel.ts";
 import { HelpOverlayComponent } from "../components/selectors/help-overlay.ts";
 import { LoginFlowComponent } from "../components/selectors/login-flow.ts";
+import { defaultAuthProviders } from "../interaction/provider-defaults.ts";
 import { ModelSelectorComponent } from "../components/selectors/model-selector.ts";
 import { PermissionSelectorComponent } from "../components/selectors/permission-selector.ts";
 import { PlanImplementationSelectorComponent } from "../components/selectors/plan-implementation-selector.ts";
@@ -48,6 +53,7 @@ import {
 } from "../components/transcript/transcript-block.ts";
 import { TranscriptViewerComponent } from "../components/transcript/transcript-viewer.ts";
 import { TranscriptViewportComponent } from "../components/transcript/transcript-viewport.ts";
+import { TranscriptAreaComponent } from "../components/transcript/transcript-area.ts";
 import { TurnActivityComponent } from "../components/transcript/turn-activity.ts";
 import { applyMycliKeymap, installMycliKeybindings } from "../interaction/keybindings.ts";
 import {
@@ -105,6 +111,8 @@ import {
 	type TUIScreenSnapshot,
 } from "../tui-core/tui.ts";
 import { nextImagePlaceholder } from "./local-image-attachments.ts";
+import { expandEditorDraft, type EditorDraft } from "../tui-core/components/editor.ts";
+import { prependDraftInputs, type ComposerDraft } from "./composer-draft.ts";
 import type {
 	MycliShellLocalImageAttachment,
 	MycliShellQueuedInput,
@@ -123,7 +131,7 @@ import {
 import { StartupOnboardingCoordinator, type StartupOnboardingStage } from "./startup-onboarding.ts";
 
 type ComposerSessionSnapshot = {
-	draft: string;
+	draft: EditorDraft;
 	pendingLocalImages: MycliShellLocalImageAttachment[];
 	skillReferences: readonly SkillReference[];
 	lastSubmittedInput: MycliShellQueuedInput | null;
@@ -155,8 +163,10 @@ export class MycliShellRuntime {
 	readonly chatContainer = new Container();
 	readonly transcriptContainer = new Container();
 	readonly transcriptViewport: TranscriptViewportComponent;
+	readonly transcriptArea: TranscriptAreaComponent;
 	readonly pendingMessagesContainer = new FrameCachedContainer(() => this.ui.activeRenderFrameId);
 	readonly statusContainer = new FrameCachedContainer(() => this.ui.activeRenderFrameId);
+	readonly workStatusContainer = new FrameCachedContainer(() => this.ui.activeRenderFrameId, true);
 	readonly editorContainer = new FrameCachedContainer(() => this.ui.activeRenderFrameId);
 	readonly subagentTaskContainer = new FrameCachedContainer(() => this.ui.activeRenderFrameId, true);
 	readonly footerContainer = new FrameCachedContainer(() => this.ui.activeRenderFrameId, true);
@@ -174,6 +184,10 @@ export class MycliShellRuntime {
 	private transcriptProjection: TranscriptProjectionState | null = null;
 	private turnActivity: TurnActivityComponent | null = null;
 	private turnStartedAtMs: number | null = null;
+	private operationStartedAtMs: number | null = null;
+	private exitHintTimer: NodeJS.Timeout | null = null;
+	private exitHintVisible = false;
+	private readonly attention = new TerminalAttention((sequence) => { if (this.started) this.ui.terminal.write(sequence); });
 	private selectorActive = false;
 	private selectorStack: SelectorEntry[] = [];
 	private sessionTransitionDepth = 0;
@@ -231,6 +245,11 @@ export class MycliShellRuntime {
 				: configuredReplayMaxRows ?? resolveTranscriptReplayMaxRows(),
 			() => this.transcriptRenderRevision,
 		);
+		this.transcriptArea = new TranscriptAreaComponent(
+			this.transcriptViewport,
+			this.statusContainer,
+			(width) => this.transcriptHeight(width) + this.statusContainer.render(width).length,
+		);
 		this.keybindings = installMycliKeybindings(this.state.keymap?.bindings);
 		this.editor = new CustomEditor(this.ui, getEditorTheme(), this.keybindings, {
 			paddingX: 1,
@@ -241,13 +260,15 @@ export class MycliShellRuntime {
 		});
 		this.refreshAutocompleteProvider();
 		this.editor.onChange = (text) => {
+			this.clearExitHint();
 			if (this.promotePlainImagePathInput(text)) {
 				return;
 			}
 			this.retainPendingImagesInText(text);
 		};
-		this.editor.onSubmit = (text) => {
-			this.runAsyncAction(() => this.handleSubmit(text), "Message submission failed");
+		this.editor.onSubmit = (text, draft) => {
+			const submittedDraft = this.composerDraft(draft ?? { text, pastes: [], cursor: { line: 0, col: 0 } });
+			this.runAsyncAction(() => this.handleSubmit(text, submittedDraft), "Message submission failed");
 		};
 		this.editor.shouldHandleAction = (action) => {
 			if (action === "app.message.followUp") {
@@ -274,7 +295,7 @@ export class MycliShellRuntime {
 			this.showPermissionSelector();
 		});
 		this.editor.onAction("app.message.followUp", () => {
-			this.runAsyncAction(() => this.submitFollowUp(), "Follow-up submission failed");
+			this.runAsyncAction(() => this.submitFollowUp(this.composerDraft()), "Follow-up submission failed");
 		});
 		this.editor.onAction("app.message.dequeue", () => {
 			this.runAsyncAction(() => this.restoreQueuedInput(), "Queued message restore failed");
@@ -339,6 +360,15 @@ export class MycliShellRuntime {
 			}
 		}
 		this.maybeShowPlanImplementation(options.eventType);
+		this.attention.configure(effectiveState.settings?.terminalNotifications ?? true);
+		if (sessionChanged) this.attention.clear();
+		else if (options.eventType) {
+			if (effectiveState.pendingApproval?.decisionId && effectiveState.pendingApproval.decisionId !== previousState.pendingApproval?.decisionId) this.attention.notify("Approval required", 2);
+			else if (effectiveState.pendingClarification?.requestId && effectiveState.pendingClarification.requestId !== previousState.pendingClarification?.requestId) this.attention.notify("Answer required", 2);
+			else if (options.eventType === "plan.proposed") this.attention.notify("Plan ready", 1);
+			else if (options.eventType === "turn.completed" && this.isCompletedLiveState(effectiveState)
+				&& !this.isCompletedLiveState(previousState)) this.attention.notify("Turn completed", 0);
+		}
 		this.maybeResetTranscriptScroll(previousState, effectiveState);
 		this.queueNativeTranscriptDelta(transcriptAppended);
 		this.ui.requestRender();
@@ -411,6 +441,13 @@ export class MycliShellRuntime {
 	}
 
 	async shutdown(): Promise<void> {
+		this.stop();
+		await this.dispatchAction({ type: "exit", reason: "normal" });
+	}
+
+	stop(): void {
+		this.attention.clear();
+		this.clearExitHint();
 		for (const entry of this.selectorStack) entry.dispose?.();
 		this.selectorStack = [];
 		this.stopTurnActivity();
@@ -424,7 +461,6 @@ export class MycliShellRuntime {
 			this.started = false;
 		}
 		this.ui.setRenderingPaused(false);
-		await this.dispatchAction({ type: "exit", reason: "normal" });
 	}
 
 	refreshTurnStatus(): void {
@@ -433,6 +469,8 @@ export class MycliShellRuntime {
 	}
 
 	private handleGlobalInput(data: string): { consume?: boolean } | undefined {
+		if (this.attention.handleInput(data)) return { consume: true };
+		if (!matchesKey(data, "ctrl+c")) this.clearExitHint();
 		if (this.ui.hasOverlay() || this.selectorActive) {
 			return undefined;
 		}
@@ -505,6 +543,7 @@ export class MycliShellRuntime {
 		}
 		const chromeHeight =
 			this.pendingMessagesContainer.render(width).length +
+			this.workStatusContainer.render(width).length +
 			this.statusContainer.render(width).length +
 			this.editorContainer.render(width).length +
 			this.subagentTaskContainer.render(width).length +
@@ -524,6 +563,7 @@ export class MycliShellRuntime {
 				const hasPending = pending && (pending.pendingSteers.length || pending.rejectedSteers.length || pending.followUps.length);
 				// Pending previews already measure the editor; reserve their minimum without recursing into them.
 				return Math.max(1, this.ui.terminal.rows
+					- this.workStatusContainer.render(width).length
 					- this.statusContainer.render(width).length
 					- this.subagentTaskContainer.render(width).length
 					- this.footerContainer.render(width).length
@@ -1260,11 +1300,11 @@ export class MycliShellRuntime {
 		}
 		this.replaceSelectorHostWithMain();
 		this.mainMounted = true;
-		this.ui.addChild(this.transcriptViewport);
+		this.ui.addChild(this.transcriptArea);
+		this.ui.addChild(this.workStatusContainer);
 		this.ui.addChild(this.pendingMessagesContainer);
-		this.ui.addChild(this.statusContainer);
-		this.ui.addChild(this.editorContainer);
 		this.ui.addChild(this.subagentTaskContainer);
+		this.ui.addChild(this.editorContainer);
 		this.ui.addChild(this.footerContainer);
 		this.rebuildAll();
 		this.queueNativeTranscriptHistory();
@@ -1296,7 +1336,7 @@ export class MycliShellRuntime {
 	}
 
 	private handleTerminalResize(): boolean {
-		const transcriptMounted = this.ui.children.includes(this.transcriptViewport);
+		const transcriptMounted = this.ui.children.includes(this.transcriptArea);
 		if (!this.ui.terminal.nativeScrollback || !transcriptMounted) {
 			return false;
 		}
@@ -1411,6 +1451,7 @@ export class MycliShellRuntime {
 		this.rebuildChat();
 		this.rebuildStatus();
 		this.rebuildSubagentTasks();
+		this.rebuildWorkStatus();
 		this.rebuildFooter();
 		this.rebuildPending();
 		this.syncPendingSurface(null, this.state);
@@ -1488,6 +1529,9 @@ export class MycliShellRuntime {
 		if (this.subagentTasksChanged(previousState, nextState, transcriptUpdate)) {
 			this.rebuildSubagentTasks();
 		}
+		if (this.workStatusSignature(previousState) !== this.workStatusSignature(nextState)) {
+			this.rebuildWorkStatus();
+		}
 		if (this.footerSignature(previousState) !== this.footerSignature(nextState)) {
 			this.rebuildFooter();
 		}
@@ -1528,12 +1572,33 @@ export class MycliShellRuntime {
 			liveState: state.footer.liveState,
 			liveStateKind: state.footer.liveStateKind,
 			liveStateDetail: state.footer.liveStateDetail,
+			liveRetryAt: state.footer.liveRetryAt,
 			turnStartedAtMs: this.turnStartedAtMs,
 		});
 	}
 
 	private footerSignature(state: MycliShellState): string {
-		return JSON.stringify(state.footer);
+		const footer = state.footer;
+		return JSON.stringify({
+			cwd: footer.cwd,
+			gitBranch: footer.gitBranch,
+			sessionName: footer.sessionName,
+			model: footer.model,
+			reasoningLevel: footer.reasoningLevel,
+			contextPercent: footer.contextPercent,
+			contextSource: footer.contextSource,
+			trust: footer.trust,
+			collaborationMode: footer.collaborationMode,
+		});
+	}
+
+	private workStatusSignature(state: MycliShellState): string {
+		return JSON.stringify({
+			activityVisible: this.isTurnActivityVisible(state),
+			goal: state.footer.goal,
+			backgroundShellCount: state.footer.backgroundShellCount,
+			extensionStatuses: state.footer.extensionStatuses,
+		});
 	}
 
 	private pendingSurfaceSignature(state: MycliShellState): string {
@@ -1854,8 +1919,8 @@ export class MycliShellRuntime {
 	}
 
 	private createTurnActivityComponent(): TurnActivityComponent {
-		const startedAtMs = this.turnStartedAtMs ?? this.now();
-		this.turnStartedAtMs = startedAtMs;
+		if (this.turnStartedAtMs === null && !this.state.footer.operationRunning) this.turnStartedAtMs = this.now();
+		const startedAtMs = this.operationStartedAtMs ?? this.turnStartedAtMs ?? this.now();
 		this.turnActivity = new TurnActivityComponent(
 			this.ui,
 			startedAtMs,
@@ -1884,7 +1949,7 @@ export class MycliShellRuntime {
 			kind: this.state.footer.liveStateKind,
 			detail: this.state.footer.liveStateDetail,
 			retryAt: this.state.footer.liveRetryAt,
-		});
+		}, this.operationStartedAtMs ?? this.turnStartedAtMs ?? this.now());
 		return activity;
 	}
 
@@ -1915,6 +1980,7 @@ export class MycliShellRuntime {
 			? 1 + new Text(theme.fg("warning", this.state.pendingNotice), 1, 0).render(width).length
 			: 0;
 		const fixedChromeHeight =
+			this.workStatusContainer.render(width).length +
 			this.statusContainer.render(width).length +
 			this.editorContainer.render(width).length +
 			this.subagentTaskContainer.render(width).length +
@@ -1939,7 +2005,7 @@ export class MycliShellRuntime {
 			return;
 		}
 		if (this.state.footer.liveState && this.state.footer.liveState !== "Idle") {
-			this.statusContainer.addChild(new Text(theme.fg("muted", this.state.footer.liveState), 1, 0));
+			this.statusContainer.addChild(new StatusMessageComponent(this.state.footer.liveState));
 		}
 	}
 
@@ -1977,6 +2043,11 @@ export class MycliShellRuntime {
 	}
 
 	private updateStatusTiming(previousState: MycliShellState, nextState: MycliShellState): void {
+		const operationKey = (state: MycliShellState): string | undefined => state.footer.liveOperationId
+			?? (state.footer.liveStateKind === "compaction" ? "compaction" : undefined);
+		if (operationKey(previousState) !== operationKey(nextState) || previousState.sessionId !== nextState.sessionId) {
+			this.operationStartedAtMs = operationKey(nextState) ? this.now() : null;
+		}
 		const wasRunning = this.isTurnActivityRunning(previousState);
 		const isRunning = this.isTurnActivityRunning(nextState);
 		if (!wasRunning && isRunning) {
@@ -2001,10 +2072,10 @@ export class MycliShellRuntime {
 	}
 
 	private isTurnActivityRunning(state: MycliShellState): boolean {
-		return state.footer.turnRunning ?? this.isRunningLiveState(
+		return state.footer.operationRunning || (state.footer.turnRunning ?? this.isRunningLiveState(
 			state.footer.liveState,
 			state.footer.liveStateKind,
-		);
+		));
 	}
 
 	private isTurnActivityVisible(state: MycliShellState): boolean {
@@ -2056,25 +2127,26 @@ export class MycliShellRuntime {
 	private rebuildFooter(): void {
 		this.footerContainer.clear();
 		const statusbarMode = this.state.settings?.statusbarMode ?? "full";
-		if (statusbarMode === "off") return;
-		this.footerContainer.addChild(new Spacer(1));
-		const activityVisible = this.isTurnActivityVisible(this.state);
-		const transcriptStatusVisible = activityVisible || this.isCompletedLiveState(this.state);
-		const footer = transcriptStatusVisible
-			? { ...this.state.footer, liveState: undefined, liveStateDetail: undefined }
-			: this.state.footer;
-		this.footerContainer.addChild(new FooterComponent(footer, {
-			turnRunning: this.isTurnRunning(),
-			hasQueuedInput: this.hasQueuedInput(),
-			showInterruptHint: !activityVisible,
-			statusbarMode,
+		if (statusbarMode === "off" && !this.exitHintVisible) return;
+		this.footerContainer.addChild(new FooterComponent({ ...this.state.footer, transientHint: this.exitHintVisible ? "Press Ctrl+C again to exit." : undefined }, { statusbarMode }));
+	}
+
+	private rebuildWorkStatus(): void {
+		this.workStatusContainer.clear();
+		this.workStatusContainer.addChild(new WorkStatusComponent(this.state.footer, {
+			leadingSpace: !this.isTurnActivityVisible(this.state),
 		}));
 	}
 
-	private async handleSubmit(text: string): Promise<void> {
+	private async handleSubmit(text: string, draft: ComposerDraft): Promise<void> {
+		const sessionId = this.state.sessionId;
 		const input = text.trim();
 		const planTask = /^\/plan\s+([\s\S]+)$/u.exec(input)?.[1];
-		if (planTask && this.isTurnRunning()) { this.addSystemNotice("Wait for the current turn before switching to Plan mode."); return; }
+		if (planTask && this.isTurnRunning()) {
+			if (!this.editor.getText()) this.editor.restoreDraft(draft.editor, draft.localImages);
+			this.addSystemNotice("Wait for the current turn before switching to Plan mode.");
+			return;
+		}
 		if (!input) {
 			return;
 		}
@@ -2089,12 +2161,15 @@ export class MycliShellRuntime {
 			try {
 				await this.submitCommand(input);
 			} catch (error) {
-				this.restoreQueuedTextToEditor(input);
+				this.restoreSubmittedDraft(sessionId, draft);
 				throw error;
 			}
 			return;
 		}
-		if (!this.validateDraftSkills(planTask ?? input)) return;
+		if (!this.validateDraftSkills(planTask ?? input)) {
+			if (!this.editor.getText()) this.editor.restoreDraft(draft.editor, draft.localImages);
+			return;
+		}
 		const submitted = this.extractLocalImageAttachments(planTask ?? input);
 		this.editor.addToHistory(input, submitted.localImages);
 		this.editor.setText("");
@@ -2120,12 +2195,15 @@ export class MycliShellRuntime {
 				...(submitted.skillReferences.length ? { skillReferences: submitted.skillReferences } : {}),
 			});
 		} catch (error) {
-			if (startsNewTurn) this.userTurnPendingStart = false;
-			this.restoreQueuedInputToEditor({
-				text: input,
-				...(submitted.localImages.length ? { localImages: submitted.localImages } : {}),
-				...(submitted.skillReferences.length ? { skillReferences: submitted.skillReferences } : {}),
-			});
+			if (startsNewTurn) {
+				if (sessionId === this.state.sessionId) this.userTurnPendingStart = false;
+				else if (sessionId) {
+					const snapshot = this.composerSnapshots.get(sessionId);
+					if (snapshot) snapshot.userTurnPendingStart = false;
+				}
+			}
+			this.restoreSubmittedDraft(sessionId, draft);
+			if (sessionId !== this.state.sessionId) throw error;
 			const authRecovery = authRecoveryFromError(error);
 			if (authRecovery) {
 				this.editor.removeLastFromHistory?.(input);
@@ -2209,8 +2287,9 @@ export class MycliShellRuntime {
 		return true;
 	}
 
-	private async submitFollowUp(): Promise<void> {
-		const input = this.editor.getText().trim();
+	private async submitFollowUp(draft: ComposerDraft): Promise<void> {
+		const sessionId = this.state.sessionId;
+		const input = this.editor.getExpandedText().trim();
 		if (!input) {
 			return;
 		}
@@ -2227,11 +2306,7 @@ export class MycliShellRuntime {
 				...(submitted.skillReferences.length ? { skillReferences: submitted.skillReferences } : {}),
 			});
 		} catch (error) {
-			this.restoreQueuedInputToEditor({
-				text: input,
-				...(submitted.localImages.length ? { localImages: submitted.localImages } : {}),
-				...(submitted.skillReferences.length ? { skillReferences: submitted.skillReferences } : {}),
-			});
+			this.restoreSubmittedDraft(sessionId, draft);
 			throw error;
 		}
 	}
@@ -2282,6 +2357,10 @@ export class MycliShellRuntime {
 	}
 
 	private async handleCtrlC(): Promise<void> {
+		if (!this.isTurnRunning() && this.state.footer.goal?.status === "active") {
+			await this.dispatchAction({ type: "command", command: "/goal pause" });
+			return;
+		}
 		if (this.isTurnRunning()) {
 			const now = this.now();
 			const interrupting = this.state.footer.liveStateKind?.trim().toLowerCase() === "interrupting"
@@ -2311,27 +2390,60 @@ export class MycliShellRuntime {
 			return;
 		}
 		this.lastCtrlCAtMs = now;
-		this.addSystemNotice("Press Ctrl+C again to exit.");
+		this.exitHintVisible = true;
+		if (this.exitHintTimer) clearTimeout(this.exitHintTimer);
+		this.exitHintTimer = setTimeout(() => this.clearExitHint(), 2000);
+		this.exitHintTimer.unref();
+		this.rebuildFooter();
+		this.rebuildStatus();
+		this.ui.requestRender();
 	}
 
-	private restoreQueuedTextToEditor(queued: string): void {
-		this.prependQueuedInputs([queued]);
+	private clearExitHint(): void {
+		if (!this.exitHintVisible) return;
+		if (this.exitHintTimer) clearTimeout(this.exitHintTimer);
+		this.exitHintTimer = null;
+		this.exitHintVisible = false;
+		this.lastCtrlCAtMs = null;
+		this.rebuildFooter();
+		this.rebuildStatus();
+		this.ui.requestRender();
 	}
 
 	private restoreQueuedInputToEditor(input: MycliShellQueuedInput | string): void {
 		this.prependQueuedInputs([input]);
 	}
 
+	private restoreSubmittedDraft(sessionId: string | undefined, draft: ComposerDraft): void {
+		const snapshot = sessionId ? this.composerSnapshots.get(sessionId) : undefined;
+		const active = sessionId === this.state.sessionId;
+		if (!active && !snapshot) return;
+		const current = active ? this.composerDraft() : {
+			editor: snapshot!.draft, localImages: snapshot!.pendingLocalImages, skillReferences: snapshot!.skillReferences,
+		};
+		const restored = current.editor.text ? prependDraftInputs(current, [{
+			text: expandEditorDraft(draft.editor), localImages: [...draft.localImages], skillReferences: draft.skillReferences,
+		}]) : draft;
+		if (active) {
+			this.skillReferences = restored.skillReferences;
+			this.editor.restoreDraft(restored.editor, restored.localImages);
+		} else if (snapshot) {
+			snapshot.draft = restored.editor;
+			snapshot.pendingLocalImages = [...restored.localImages];
+			snapshot.skillReferences = restored.skillReferences;
+		}
+	}
+
 	private captureComposerSession(sessionId: string | undefined): void {
 		if (!sessionId) return;
-		const draft = this.editor.getText();
+		const draft = this.editor.getDraft();
 		const pendingLocalImages = this.pendingLocalImages
-			.filter((image) => draft.includes(image.placeholder))
+			.filter((image) => draft.text.includes(image.placeholder))
 			.map((image) => ({ ...image }));
 		this.composerSnapshots.set(sessionId, {
 			draft,
 			pendingLocalImages,
-			skillReferences: skillReferencesInText(this.skillReferences, draft),
+			skillReferences: skillReferencesInText(this.skillReferences, this.editor.getExpandedText()),
 			lastSubmittedInput: cloneQueuedInput(this.lastSubmittedInput),
 			lastSubmittedInputEligible: this.lastSubmittedInputEligible,
 			lastSubmittedActivitySignature: this.lastSubmittedActivitySignature,
@@ -2347,47 +2459,24 @@ export class MycliShellRuntime {
 		this.lastSubmittedActivitySignature = snapshot?.lastSubmittedActivitySignature ?? "";
 		this.userTurnPendingStart = snapshot?.userTurnPendingStart ?? false;
 		this.lastCtrlCAtMs = null;
-		this.editor.setText(snapshot?.draft ?? "", snapshot?.pendingLocalImages ?? []);
-		this.editor.clearUndoHistory();
+		this.editor.restoreDraft(
+			snapshot?.draft ?? { text: "", pastes: [], cursor: { line: 0, col: 0 } },
+			snapshot?.pendingLocalImages ?? [],
+		);
+	}
+
+	private composerDraft(editor: EditorDraft = this.editor.getDraft()): ComposerDraft {
+		return {
+			editor,
+			localImages: this.pendingLocalImages.filter((image) => editor.text.includes(image.placeholder)).map((image) => ({ ...image })),
+			skillReferences: this.skillReferences,
+		};
 	}
 
 	private prependQueuedInputs(inputs: Array<MycliShellQueuedInput | string>): void {
-		const currentText = this.editor.getText().trim();
-		const parts: MycliShellQueuedInput[] = inputs.map((input) =>
-			typeof input === "string" ? { text: input } : input);
-		if (currentText) {
-			parts.push({
-				text: currentText,
-				skillReferences: skillReferencesInText(this.skillReferences, currentText),
-				...(this.pendingLocalImages.length > 0
-					? { localImages: this.pendingLocalImages.map((image) => ({ ...image })) }
-					: {}),
-			});
-		}
-
-		let imageNumber = 1;
-		const mergedImages: MycliShellLocalImageAttachment[] = [];
-		const mergedText = parts.flatMap((part, partIndex) => {
-			if (!part.text.trim()) return [];
-			let text = part.text.trim();
-			const replacements: Array<{ token: string; placeholder: string }> = [];
-			for (const [imageIndex, image] of (part.localImages ?? []).entries()) {
-				if (!text.includes(image.placeholder)) continue;
-				const token = `\u0000mycli-image-${partIndex}-${imageIndex}\u0000`;
-				const placeholder = `[image #${imageNumber}]`;
-				imageNumber += 1;
-				text = text.replaceAll(image.placeholder, token);
-				replacements.push({ token, placeholder });
-				mergedImages.push({ path: image.path, placeholder });
-			}
-			for (const replacement of replacements) {
-				text = text.replaceAll(replacement.token, replacement.placeholder);
-			}
-			return [text];
-		}).join("\n\n");
-		this.skillReferences = [...new Map(parts.flatMap((part) => skillReferencesInText(part.skillReferences ?? [], part.text))
-			.map((skill) => [JSON.stringify([skill.id, skill.name, skill.revision]), skill])).values()];
-		this.editor.setText(mergedText, mergedImages);
+		const draft = prependDraftInputs(this.composerDraft(), inputs);
+		this.skillReferences = draft.skillReferences;
+		this.editor.setText(draft.editor.text, draft.localImages);
 	}
 
 	private isTurnRunning(): boolean {
@@ -2539,9 +2628,9 @@ export class MycliShellRuntime {
 		this.addSystemNotice(copied ? "Copied last assistant message." : "Clipboard unavailable. Last assistant message is still visible above.");
 	}
 
-	private addSystemNotice(text: string): void {
+	private addSystemNotice(text: string, role: "system" | "warning" | "error" = "system"): void {
 		const id = `notice_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-		const message: MycliShellMessage = { id, role: "system", text };
+		const message: MycliShellMessage = { id, role, text };
 		const transcript = this.state.transcript ?? this.legacyTranscriptBlocks();
 		this.setState({
 			...this.state,
@@ -2554,7 +2643,7 @@ export class MycliShellRuntime {
 	private runAsyncAction(action: () => Promise<void>, fallback: string): void {
 		void action().catch((error: unknown) => {
 			const detail = safeErrorMessage(error, fallback);
-			this.addSystemNotice(detail === fallback ? fallback : `${fallback}: ${detail}`);
+			this.addSystemNotice(detail === fallback ? fallback : `${fallback}: ${detail}`, "error");
 		});
 	}
 
@@ -2724,13 +2813,7 @@ export class MycliShellRuntime {
 			}
 			return [...providers.values()];
 		}
-		return [
-			{ id: "openai", name: "OpenAI", defaultModel: "gpt-5" },
-			{ id: "deepseek", name: "DeepSeek", defaultModel: "deepseek-v4-flash" },
-			{ id: "qwen", name: "Qwen", defaultModel: "qwen-plus" },
-			{ id: "anthropic", name: "Anthropic", defaultModel: "claude-sonnet-4-5" },
-			{ id: "compatible", name: "Compatible" },
-		];
+		return defaultAuthProviders();
 	}
 
 	private startupAuthenticationRequired(): boolean {
@@ -2789,7 +2872,9 @@ export class MycliShellRuntime {
 	}
 
 	private async selectModel(model: MycliShellModel, scope: ModelSelectionScope): Promise<void> {
+		const sessionRevision = this.sessionRevision;
 		const selected = await this.options.onModelSelect?.(model, scope);
+		if (sessionRevision !== this.sessionRevision) return;
 		const applied = selected ?? model;
 		this.setState({
 			...this.state,
@@ -2801,6 +2886,7 @@ export class MycliShellRuntime {
 				reasoningLevel: applied.thinkingLevel ?? this.state.footer.reasoningLevel,
 			},
 		});
+		this.addSystemNotice(modelSelectionNotice(applied.provider, applied.model, applied.thinkingLevel, scope));
 	}
 
 	private async submitModelSelection(

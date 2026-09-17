@@ -343,3 +343,16 @@ waiters receive events before caching. Register long-lived subscriptions through
 
 Remote transport, multiple simultaneously active sessions, subscription filters,
 and durable event cursors remain separate work.
+
+## Session goals
+
+`goal.get` returns `{ session_id, generation, goal }`, where `goal` is null or the
+canonical `SessionGoal` snapshot. `goal.update` accepts `action` (`create`, `edit`,
+`pause`, `resume`, `clear`), optional `objective` / `token_budget` (null removes the
+budget), and the usual session id / generation. An editor can supply
+`expected_goal_id` and `expected_revision` to reject stale actions.
+
+`status.changed` and bootstrap `status` carry the same `goal` snapshot.
+`turn.started.source = "goal"` distinguishes automatic work; transcript replay
+represents it as a system notice. Goal state changes are durable before notification.
+These operations are unavailable in review and headless one-turn execution.

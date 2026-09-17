@@ -97,6 +97,50 @@ test("node-pty marks a successful Windows transport as ConPTY", async () => {
 	await transport.close();
 });
 
+test("ConPTY waits for an asynchronous pid and preserves early output and exit", async () => {
+	for (const earlyOutput of ["", "fast-command\r\n"]) {
+		const fake = new FakePtyProcess();
+		fake.pid = 0;
+		const transport = await startNodePtyTransport(request("win32"), {
+			loadNodePty: async () => ({ spawn: () => {
+				setImmediate(() => {
+					fake.pid = 4321;
+					if (earlyOutput) fake.emitData(earlyOutput);
+					fake.emitExit({ exitCode: 7 });
+				});
+				return fake;
+			} }),
+			processController: { isProcessTreeAlive: () => false },
+		});
+		const output: ShellOutputChunk[] = [];
+		const exits: ShellExit[] = [];
+		transport.onOutput((chunk) => output.push(chunk));
+		transport.onExit((exit) => exits.push(exit));
+		await Promise.resolve();
+		assert.equal(transport.pid, 4321);
+		assert.deepEqual(output.map((chunk) => chunk.data), earlyOutput ? [earlyOutput] : []);
+		assert.deepEqual(exits, [{ exitCode: 7, signal: null }]);
+		await transport.close();
+	}
+});
+
+test("ConPTY cleans up failed and timed out asynchronous starts", async () => {
+	for (const exitEarly of [false, true]) {
+		const fake = new FakePtyProcess();
+		fake.pid = 0;
+		await assert.rejects(startNodePtyTransport(request("win32"), {
+			startupTimeoutMs: 30,
+			loadNodePty: async () => ({ spawn: () => {
+				if (exitEarly) setImmediate(() => fake.emitExit({ exitCode: 1 }));
+				return fake;
+			} }),
+		}), (error: unknown) => unavailable(error, "conpty_unavailable"));
+		assert.equal(fake.kills, 1);
+		assert.equal(fake.disposedDataListeners, 1);
+		assert.equal(fake.disposedExitListeners, 1);
+	}
+});
+
 test("node-pty maps write and resize failures to stable transport errors", async () => {
 	const fake = new FakePtyProcess();
 	fake.writeError = true;
@@ -170,7 +214,8 @@ function transportError(error: unknown, kind: string): boolean {
 }
 
 class FakePtyProcess {
-	readonly pid = 4321;
+	pid = 4321;
+	kills = 0;
 	readonly writes: string[] = [];
 	readonly resizes: Array<readonly [number, number]> = [];
 	writeError = false;
@@ -206,7 +251,7 @@ class FakePtyProcess {
 		this.resizes.push([columns, rows]);
 	}
 
-	kill(): void {}
+	kill(): void { this.kills += 1; }
 
 	emitData(data: string): void {
 		for (const listener of this.#dataListeners) listener(data);

@@ -6,22 +6,19 @@
 #include <rpc.h>
 
 #include <array>
+#include <cstring>
 #include <stdexcept>
 #include <string>
 
 #include "sid.hpp"
+#include "token.hpp"
+#include "wfp-access.hpp"
 
 namespace mycli::sandbox {
 namespace {
 
 constexpr GUID kProviderKey{
     0x9a91d8d2, 0x9d9b, 0x415b, {0xb3, 0x04, 0x29, 0x78, 0xd0, 0xe4, 0xd6, 0x0c}};
-constexpr GUID kSublayerKey{
-    0x5c1e50a5, 0x9ccf, 0x41dd, {0xaf, 0x3b, 0xe0, 0x62, 0xa9, 0x04, 0x99, 0x2d}};
-constexpr GUID kFilterV4Key{
-    0xdc3dfb87, 0xb89c, 0x4f5f, {0x9b, 0x09, 0x7d, 0x1f, 0xb3, 0xde, 0x14, 0x9d}};
-constexpr GUID kFilterV6Key{
-    0x05be27a4, 0xfd6e, 0x44e0, {0x9c, 0xf3, 0x95, 0xdc, 0x0d, 0xa8, 0xdc, 0xfb}};
 constexpr GUID kAleAuthConnectV4{
     0xc38d57d1, 0x05a7, 0x4c33, {0x90, 0x4f, 0x7f, 0xbc, 0xee, 0xe6, 0x0e, 0x82}};
 constexpr GUID kAleAuthConnectV6{
@@ -31,17 +28,34 @@ constexpr GUID kAleUserId{
 constexpr UINT32 kPersistentFlag = 0x00000001;
 
 struct FilterSpec {
-    const GUID* key;
+    GUID key;
     const GUID* layer;
     const wchar_t* name;
 };
 
-const std::array<FilterSpec, 2> kFilterSpecs{{
-    {&kFilterV4Key, &kAleAuthConnectV4,
-     L"mycli Sandbox Offline - Block Connect IPv4"},
-    {&kFilterV6Key, &kAleAuthConnectV6,
-     L"mycli Sandbox Offline - Block Connect IPv6"},
-}};
+GUID SublayerKey(const std::wstring& account_sid) {
+    const auto digest = HashSandboxKey(L"mycli/windows/network/sublayer/" + account_sid);
+    GUID key{};
+    std::memcpy(&key, digest.data(), sizeof(key));
+    return key;
+}
+
+// Stable keys include the account SID: provisioning another Windows user must
+// never replace filters protecting an already-running sandbox.
+std::array<FilterSpec, 4> FilterSpecs(const std::wstring& account_sid) {
+    const auto make = [&](const GUID* layer, const wchar_t* scope) {
+        const auto digest = HashSandboxKey(L"mycli/windows/network/" + account_sid + L"/" + scope);
+        GUID key{};
+        std::memcpy(&key, digest.data(), sizeof(key));
+        return FilterSpec{key, layer, scope};
+    };
+    return {{
+        make(&kAleAuthConnectV4, L"Block Connect IPv4"),
+        make(&kAleAuthConnectV6, L"Block Connect IPv6"),
+        make(&FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4, L"Block Accept IPv4"),
+        make(&FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V6, L"Block Accept IPv6"),
+    }};
+}
 
 void RequireWfpSuccess(DWORD result, const char* operation) {
     if (result != ERROR_SUCCESS) {
@@ -56,10 +70,11 @@ bool IsWfpResult(DWORD result, HRESULT expected) {
 
 class Engine {
   public:
-    Engine() {
+    explicit Engine(bool dynamic = false) {
         std::wstring name = L"mycli Windows Sandbox WFP";
         FWPM_SESSION0 session{};
         session.displayData.name = name.data();
+        session.flags = dynamic ? FWPM_SESSION_FLAG_DYNAMIC : 0;
         session.txnWaitTimeoutInMSec = INFINITE;
         RequireWfpSuccess(
             FwpmEngineOpen0(
@@ -80,6 +95,12 @@ class Engine {
 
     [[nodiscard]] HANDLE get() const noexcept {
         return handle_;
+    }
+
+    HANDLE release() noexcept {
+        const auto handle = handle_;
+        handle_ = nullptr;
+        return handle;
     }
 
   private:
@@ -165,12 +186,12 @@ void EnsureProvider(HANDLE engine) {
     }
 }
 
-void EnsureSublayer(HANDLE engine) {
+void EnsureSublayer(HANDLE engine, const GUID& key) {
     std::wstring name = L"mycli Windows Sandbox WFP";
     std::wstring description = L"Persistent sublayer for mycli Windows sandbox filters";
     GUID provider_key = kProviderKey;
     FWPM_SUBLAYER0 sublayer{};
-    sublayer.subLayerKey = kSublayerKey;
+    sublayer.subLayerKey = key;
     sublayer.displayData.name = name.data();
     sublayer.displayData.description = description.data();
     sublayer.flags = static_cast<UINT16>(kPersistentFlag);
@@ -191,7 +212,7 @@ void DeleteFilterIfPresent(HANDLE engine, const GUID& key) {
     }
 }
 
-void AddFilter(HANDLE engine, const FilterSpec& spec, UserCondition& user) {
+void AddFilter(HANDLE engine, const FilterSpec& spec, UserCondition& user, const GUID& sublayer) {
     FWPM_FILTER_CONDITION0 condition{};
     condition.fieldKey = kAleUserId;
     condition.matchType = FWP_MATCH_EQUAL;
@@ -202,14 +223,16 @@ void AddFilter(HANDLE engine, const FilterSpec& spec, UserCondition& user) {
     std::wstring description = L"Block all outbound connections for the mycli offline account";
     GUID provider_key = kProviderKey;
     FWPM_FILTER0 filter{};
-    filter.filterKey = *spec.key;
+    filter.filterKey = spec.key;
     filter.displayData.name = name.data();
     filter.displayData.description = description.data();
     filter.flags = kPersistentFlag;
     filter.providerKey = &provider_key;
     filter.layerKey = *spec.layer;
-    filter.subLayerKey = kSublayerKey;
-    filter.weight.type = FWP_EMPTY;
+    filter.subLayerKey = sublayer;
+    UINT64 weight = 1;
+    filter.weight.type = FWP_UINT64;
+    filter.weight.uint64 = &weight;
     filter.numFilterConditions = 1;
     filter.filterCondition = &condition;
     filter.action.type = FWP_ACTION_BLOCK;
@@ -221,11 +244,13 @@ void AddFilter(HANDLE engine, const FilterSpec& spec, UserCondition& user) {
 bool DescriptorMatchesSid(const FWP_BYTE_BLOB* blob, PSID expected_sid) {
     if (blob == nullptr || blob->data == nullptr || blob->size == 0) return false;
     const auto descriptor = static_cast<PSECURITY_DESCRIPTOR>(blob->data);
+    if (IsValidSecurityDescriptor(descriptor) == 0 ||
+        GetSecurityDescriptorLength(descriptor) > blob->size) return false;
     BOOL present = FALSE;
     BOOL defaulted = FALSE;
     PACL dacl = nullptr;
     if (GetSecurityDescriptorDacl(descriptor, &present, &dacl, &defaulted) == 0 ||
-        present == FALSE || dacl == nullptr) {
+        present == FALSE || dacl == nullptr || dacl->AceCount != 1) {
         return false;
     }
     for (DWORD index = 0; index < dacl->AceCount; ++index) {
@@ -243,18 +268,20 @@ bool DescriptorMatchesSid(const FWP_BYTE_BLOB* blob, PSID expected_sid) {
     return false;
 }
 
-bool FilterReady(HANDLE engine, const FilterSpec& spec, PSID expected_sid) {
+bool FilterReady(HANDLE engine, const FilterSpec& spec, PSID expected_sid, const GUID& sublayer) {
     FWPM_FILTER0* filter = nullptr;
-    if (FwpmFilterGetByKey0(engine, spec.key, &filter) != ERROR_SUCCESS ||
+    if (FwpmFilterGetByKey0(engine, &spec.key, &filter) != ERROR_SUCCESS ||
         filter == nullptr) {
         return false;
     }
     bool ready = filter->providerKey != nullptr &&
         IsEqualGUID(*filter->providerKey, kProviderKey) != 0 &&
         IsEqualGUID(filter->layerKey, *spec.layer) != 0 &&
-        IsEqualGUID(filter->subLayerKey, kSublayerKey) != 0 &&
+        IsEqualGUID(filter->subLayerKey, sublayer) != 0 &&
         (filter->flags & kPersistentFlag) != 0 &&
         filter->action.type == FWP_ACTION_BLOCK &&
+        filter->weight.type == FWP_UINT64 && filter->weight.uint64 != nullptr &&
+        *filter->weight.uint64 == 1 &&
         filter->numFilterConditions == 1 &&
         filter->filterCondition != nullptr;
     if (ready) {
@@ -268,18 +295,71 @@ bool FilterReady(HANDLE engine, const FilterSpec& spec, PSID expected_sid) {
     return ready;
 }
 
+void PermitProxy(HANDLE engine, const GUID& sublayer, PSID logon_sid, unsigned short port) {
+    UserCondition user{logon_sid};
+    std::array<FWPM_FILTER_CONDITION0, 4> conditions{};
+    conditions[0].fieldKey = kAleUserId;
+    conditions[0].conditionValue.type = FWP_SECURITY_DESCRIPTOR_TYPE;
+    conditions[0].conditionValue.sd = user.blob();
+    conditions[1].fieldKey = FWPM_CONDITION_IP_REMOTE_ADDRESS;
+    conditions[1].conditionValue.type = FWP_UINT32;
+    conditions[1].conditionValue.uint32 = 0x7f000001;
+    conditions[2].fieldKey = FWPM_CONDITION_IP_REMOTE_PORT;
+    conditions[2].conditionValue.type = FWP_UINT16;
+    conditions[2].conditionValue.uint16 = port;
+    conditions[3].fieldKey = FWPM_CONDITION_IP_PROTOCOL;
+    conditions[3].conditionValue.type = FWP_UINT8;
+    conditions[3].conditionValue.uint8 = 6; // TCP only.
+    for (auto& condition : conditions) condition.matchType = FWP_MATCH_EQUAL;
+    std::wstring name = L"mycli Sandbox - Process-owned proxy";
+    GUID provider = kProviderKey;
+    UINT64 weight = 100;
+    FWPM_FILTER0 filter{};
+    filter.displayData.name = name.data();
+    filter.providerKey = &provider;
+    filter.layerKey = kAleAuthConnectV4;
+    filter.subLayerKey = sublayer;
+    filter.weight.type = FWP_UINT64;
+    filter.weight.uint64 = &weight;
+    filter.numFilterConditions = static_cast<UINT32>(conditions.size());
+    filter.filterCondition = conditions.data();
+    // A normal permit overrides this sublayer's default block only. Other
+    // Windows firewall policy can still deny the connection.
+    filter.action.type = FWP_ACTION_PERMIT;
+    UINT64 id = 0;
+    RequireWfpSuccess(FwpmFilterAdd0(engine, &filter, nullptr, &id), "FwpmFilterAdd0(proxy)");
+}
+
 }  // namespace
+
+void RemoveSandboxWfp(const std::wstring& account_sid) {
+    Engine engine;
+    Transaction transaction{engine.get()};
+    for (const auto& spec : FilterSpecs(account_sid)) DeleteFilterIfPresent(engine.get(), spec.key);
+    const auto key = SublayerKey(account_sid);
+    const DWORD result = FwpmSubLayerDeleteByKey0(engine.get(), &key);
+    if (result != ERROR_SUCCESS && !IsWfpResult(result, FWP_E_SUBLAYER_NOT_FOUND)) {
+        RequireWfpSuccess(result, "remove sandbox WFP sublayer");
+    }
+    // This provider is shared by multiple owners; remove it only once unused.
+    const DWORD provider = FwpmProviderDeleteByKey0(engine.get(), &kProviderKey);
+    if (provider != ERROR_SUCCESS && !IsWfpResult(provider, FWP_E_PROVIDER_NOT_FOUND) && !IsWfpResult(provider, FWP_E_IN_USE)) {
+        RequireWfpSuccess(provider, "remove unused sandbox WFP provider");
+    }
+    transaction.Commit();
+}
 
 void SetupOfflineWfp(const std::wstring& offline_sid) {
     auto sid = SidFromString(offline_sid);
     Engine engine;
     Transaction transaction{engine.get()};
     EnsureProvider(engine.get());
-    EnsureSublayer(engine.get());
+    const auto sublayer = SublayerKey(offline_sid);
+    EnsureSublayer(engine.get(), sublayer);
     UserCondition user{sid.get()};
-    for (const auto& spec : kFilterSpecs) {
-        DeleteFilterIfPresent(engine.get(), *spec.key);
-        AddFilter(engine.get(), spec, user);
+    for (const auto& spec : FilterSpecs(offline_sid)) {
+        DeleteFilterIfPresent(engine.get(), spec.key);
+        AddFilter(engine.get(), spec, user, sublayer);
     }
     transaction.Commit();
 }
@@ -287,10 +367,48 @@ void SetupOfflineWfp(const std::wstring& offline_sid) {
 bool OfflineWfpReady(const std::wstring& offline_sid) {
     auto sid = SidFromString(offline_sid);
     Engine engine;
-    for (const auto& spec : kFilterSpecs) {
-        if (!FilterReady(engine.get(), spec, sid.get())) return false;
+    for (const auto& spec : FilterSpecs(offline_sid)) {
+        if (!FilterReady(engine.get(), spec, sid.get(), SublayerKey(offline_sid))) return false;
     }
     return true;
+}
+
+void SetupProxyWfp(const std::wstring& account_sid, const std::wstring& owner_sid, const std::filesystem::path& state_directory) {
+    SetupOfflineWfp(account_sid);
+    const auto owner = SidFromString(owner_sid);
+    Engine engine;
+    GrantWfpProxyAccess(engine.get(), kProviderKey, SublayerKey(account_sid), owner.get(), state_directory);
+}
+
+void RestoreSandboxWfpAccess(const std::wstring& owner_sid, const std::filesystem::path& directory) {
+    const auto owner = SidFromString(owner_sid);
+    Engine engine;
+    RestoreWfpProxyAccess(engine.get(), kProviderKey, owner.get(), directory);
+}
+
+bool ProxyWfpReady(const std::wstring& account_sid, const std::wstring& owner_sid) {
+    if (!OfflineWfpReady(account_sid)) return false;
+    const auto owner = SidFromString(owner_sid);
+    Engine engine;
+    return HasWfpProxyAccess(engine.get(), kProviderKey, SublayerKey(account_sid), owner.get());
+}
+
+NetworkProxySession::NetworkProxySession(
+    HANDLE process, const std::wstring& account_sid, unsigned short port) {
+    if (port == 0) throw std::invalid_argument("network proxy port must not be zero");
+    HANDLE raw_token = nullptr;
+    if (OpenProcessToken(process, TOKEN_QUERY, &raw_token) == 0) {
+        throw Win32Error("OpenProcessToken(proxy logon)");
+    }
+    const UniqueHandle token{raw_token};
+    auto logon_sid = CopyTokenLogonSid(token.get());
+    Engine engine{true};
+    PermitProxy(engine.get(), SublayerKey(account_sid), logon_sid.data(), port);
+    engine_ = engine.release();
+}
+
+NetworkProxySession::~NetworkProxySession() {
+    if (engine_ != nullptr) FwpmEngineClose0(engine_);
 }
 
 }  // namespace mycli::sandbox

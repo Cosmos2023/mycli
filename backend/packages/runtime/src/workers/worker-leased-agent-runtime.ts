@@ -74,6 +74,10 @@ export class WorkerLeasedAgentThreadRuntimeHandle implements AgentThreadRuntimeH
 		this.#options = options;
 	}
 
+	bindParentTurn(turnId: string, parentTurnId: string): void {
+		this.#options.handle.bindParentTurn?.(turnId, parentTurnId);
+	}
+
 	async run(
 		prompt: string,
 		signal: AbortSignal,

@@ -106,6 +106,10 @@ void EnableChangeNotifyPrivilege(HANDLE token) {
 
 }  // namespace
 
+std::vector<unsigned char> CopyTokenLogonSid(HANDLE token) {
+    return CopyLogonSid(token);
+}
+
 UniqueHandle CreateRestrictedPrimaryToken(const std::vector<PSID>& restricting_sids) {
     HANDLE raw_process_token = nullptr;
     constexpr DWORD kTokenAccess =

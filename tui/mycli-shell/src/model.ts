@@ -1,3 +1,4 @@
+import type { SessionGoal } from "@mycli/contracts";
 import type { SkillReference } from "@mycli/contracts";
 import type {
 	DiagnosticCategory,
@@ -319,6 +320,8 @@ export type MycliShellTranscriptBlock =
 	| { id: string; kind: "command_result"; commandResult: MycliShellCommandResult };
 
 export type MycliShellFooterData = {
+	transientHint?: string;
+	goal?: SessionGoal | null;
 	cwd: string;
 	gitBranch?: string;
 	sessionName?: string;
@@ -344,6 +347,8 @@ export type MycliShellFooterData = {
 	queueActivity?: string;
 	trust?: string;
 	collaborationMode?: "default" | "plan";
+	operationRunning?: boolean;
+	liveOperationId?: string;
 	liveState?: string;
 	liveStateKind?: string;
 	liveStateDetail?: string;
@@ -455,6 +460,7 @@ export type MycliShellVisualSettings = {
 	hardwareCursor?: boolean;
 	clearOnShrink?: boolean;
 	terminalProgress?: boolean;
+	terminalNotifications?: boolean;
 	subagentDensity?: "compact" | "normal" | "detailed";
 	colorMode?: "auto" | "truecolor" | "256" | "16" | "none";
 	reducedMotion?: boolean;

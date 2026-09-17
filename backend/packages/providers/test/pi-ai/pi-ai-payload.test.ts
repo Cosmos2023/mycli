@@ -222,7 +222,7 @@ test("lets pi-ai serialize Anthropic authority, cache, reasoning, images, tools,
 		is_error: false,
 		cache_control: { type: "ephemeral", ttl: "1h" },
 	});
-	assert.equal(body.max_tokens, 15_072);
+	assert.equal(body.max_tokens, 12_000);
 	assert.deepEqual(body.thinking, {
 		type: "enabled",
 		budget_tokens: 3_072,
@@ -289,10 +289,10 @@ test("maps every reasoning effort to its protocol-specific wire value", async ()
 	})));
 
 	for (const [index, effort] of PARITY_REASONING_EFFORTS.entries()) {
-		assert.equal(reasoningEffort(responses[index]), effort === "none" ? undefined : effort);
-		assert.equal(chat[index]?.reasoning_effort, effort === "none" ? undefined : effort);
+		assert.equal(reasoningEffort(responses[index]), effort);
+		assert.equal(chat[index]?.reasoning_effort, effort);
 		assert.deepEqual(deepSeek[index]?.thinking, effort === "none"
-			? undefined
+			? { type: "disabled" }
 			: { type: "enabled" });
 		assert.equal(
 			deepSeek[index]?.reasoning_effort,
@@ -312,7 +312,7 @@ test("disables Anthropic thinking when the output cap cannot contain its budget"
 		maxOutputTokens: 3_072,
 	});
 	assert.equal(body.max_tokens, 3_072);
-	assert.equal(body.thinking, undefined);
+	assert.deepEqual(body.thinking, { type: "disabled" });
 });
 
 const CURATED_PAYLOAD_CASES = [
@@ -385,7 +385,7 @@ test("uses pi-ai detection for an uncatalogued curated model", async () => {
 	assert.equal(body.max_completion_tokens, 321);
 	assert.equal(body.store, false);
 	assert.equal(body.prompt_cache_key, undefined);
-	assert.equal(body.reasoning, undefined);
+	assert.deepEqual(body.reasoning, { effort: "none" });
 	assert.deepEqual(records(body.messages).slice(0, 2), [
 		{
 			role: "system",

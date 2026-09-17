@@ -5,6 +5,8 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
+    "goal.get",
+    "goal.update",
     "plugin.inspect",
     "initialize",
     "status.get",
@@ -67,6 +69,8 @@
     "session.preview"
   ],
   "properties": {
+    "goal.get": {"type": "object", "required": ["params", "result"], "properties": {"params": {"type": "object", "properties": {}}, "result": {"type": "object", "required": ["session_id", "goal"], "properties": {"session_id": {"type": "string"}, "generation": {"type": "integer"}, "goal": {"anyOf": [{"$ref": "session-goal.schema.json"}, {"type": "null"}]}}}}},
+    "goal.update": {"type": "object", "required": ["params", "result"], "properties": {"params": {"type": "object", "required": ["action"], "additionalProperties": false, "properties": {"action": {"type": "string", "enum": ["create", "edit", "pause", "resume", "clear"]}, "session_id": {"type": "string"}, "generation": {"type": "integer", "minimum": 1}, "expected_goal_id": {"type": "string"}, "expected_revision": {"type": "integer", "minimum": 1}, "objective": {"type": "string", "minLength": 1, "maxLength": 16384}, "token_budget": {"type": ["integer", "null"], "minimum": 1, "maximum": 9007199254740991}}}, "result": {"type": "object", "required": ["session_id", "goal"], "properties": {"session_id": {"type": "string"}, "generation": {"type": "integer"}, "goal": {"anyOf": [{"$ref": "session-goal.schema.json"}, {"type": "null"}]}}}}},
     "plugin.inspect": {
       "type": "object",
       "required": [
@@ -1026,6 +1030,7 @@
             "command"
           ],
           "properties": {
+            "operation_id": { "type": "string", "minLength": 1, "maxLength": 256 },
             "command": {
               "type": "string",
               "minLength": 1
@@ -1853,6 +1858,7 @@
     "Status": {
       "type": "object",
       "properties": {
+        "goal": {"anyOf": [{"$ref": "session-goal.schema.json"}, {"type": "null"}]},
         "session_id": {
           "type": "string"
         },
@@ -2275,6 +2281,7 @@
         {
           "type": "object",
           "properties": {
+        "operation_id": { "type": "string", "minLength": 1, "maxLength": 256 },
             "turn_id": {
               "type": "string"
             },
@@ -2629,6 +2636,7 @@
     "CommandResult": {
       "type": "object",
       "properties": {
+        "goal": {"anyOf": [{"$ref": "session-goal.schema.json"}, {"type": "null"}]},
         "execution": {
           "type": "string"
         },

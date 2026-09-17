@@ -53,9 +53,11 @@ for offline support with `mycli doctor --support-bundle`; mycli does not upload 
   and offline firewall policy. Canceling or failing setup keeps the command blocked; retrying the
   restricted command starts setup again.
 - To recover explicitly, run `mycli sandbox setup`, review the privilege/effects preview, then rerun
-  with `--confirm`. If Windows state is corrupt, preview and confirm `mycli sandbox reset`, then set up
-  again. Reset retains the restricted account and network restrictions; it clears only mycli setup
-  markers and encrypted credential state.
+  with `--confirm`. If Windows state is corrupt, preview `mycli sandbox repair`, then rerun with
+  `--confirm` to stop sandbox processes, clean recorded ACLs, and rebuild setup. Reset requires no
+  active helpers and retains accounts and network restrictions while cleaning recorded ACLs,
+  setup markers, and credentials. To remove the owned accounts and network rules too, preview
+  `mycli sandbox uninstall`; see [Windows maintenance](windows.md).
 - Use `mycli doctor --verbose` with the stable readiness/recovery code. The CLI intentionally omits
   native stderr, executable paths, stacks, and setup credentials from both human and JSON output.
 - Missing isolation fails closed. Select `danger-full-access` only as an explicit user decision;

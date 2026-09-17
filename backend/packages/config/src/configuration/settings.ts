@@ -37,6 +37,7 @@ import {
 	type ValidatedConfigDocument,
 } from "./config-schema.ts";
 import {
+	DEFAULT_OPENAI_MODEL,
 	inferProviderFromBaseUrl,
 	parseProtocol,
 	resolveProviderProfile,
@@ -106,7 +107,7 @@ export const NODE_RUNTIME_CONTEXT_DEFAULTS = Object.freeze({
 	compactionTokenLimit: 9_600,
 	compactionReservedOutputTokens: 13_000,
 	compactionTailTurns: 2,
-	compactionTailMaxTokens: 8_000,
+	compactionTailMaxTokens: 20_000,
 	compactionTriggerRatio: 0.9,
 	compactionBufferTokens: 13_000,
 	compactionInputCostPer1k: 0,
@@ -338,7 +339,7 @@ async function resolveConfigFromSources(
 			"Set model.name for the configured provider route.",
 		);
 	}
-	const model = configuredModel ?? profile?.defaultModel ?? (nativeAzure ? "gpt-5.5" : "gpt-5");
+	const model = configuredModel ?? profile?.defaultModel ?? DEFAULT_OPENAI_MODEL;
 	const configuredApiBaseUrl = stringValue(configuredBaseUrl) ?? (nativeAzure ? azureEnvironmentBaseUrl(options.env) : undefined);
 	if (!stableProvider && configuredApiBaseUrl === undefined) {
 		throw invalidConfigValue(

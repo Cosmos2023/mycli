@@ -186,6 +186,7 @@ export class ProcessTerminal implements Terminal {
 
 		// Enable bracketed paste mode - terminal will wrap pastes in \x1b[200~ ... \x1b[201~
 		this.write("\x1b[?2004h");
+		this.write("\x1b[?1004h");
 
 		// Set up resize handler immediately
 		process.stdout.on("resize", this.resizeHandler);
@@ -451,6 +452,7 @@ export class ProcessTerminal implements Terminal {
 
 		// Disable bracketed paste mode
 		this.write("\x1b[?2004l");
+		this.write("\x1b[?1004l");
 
 		const shouldDisableKittyProtocol = this.keyboardProtocolPushed || this._kittyProtocolActive;
 		this.clearKeyboardProtocolNegotiationBuffer();

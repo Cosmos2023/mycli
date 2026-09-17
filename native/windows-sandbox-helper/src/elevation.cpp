@@ -12,7 +12,8 @@
 
 namespace mycli::sandbox {
 
-int RunElevatedSetup(
+int RunElevatedMaintenance(
+    ElevatedMaintenance action,
     const std::filesystem::path& state_directory,
     const std::wstring& owner_sid) {
     std::vector<wchar_t> executable(32768);
@@ -27,8 +28,10 @@ int RunElevatedSetup(
     launch.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
     launch.lpVerb = L"runas";
     launch.lpFile = executable.data();
+    const std::wstring verb = action == ElevatedMaintenance::kSetup ? L"--setup-for-user"
+        : action == ElevatedMaintenance::kQuiesce ? L"--quiesce-for-user" : L"--uninstall-for-user";
     const std::wstring parameters =
-        L"--setup-for-user " + QuoteWindowsArgument(state_directory.wstring()) +
+        verb + L" " + QuoteWindowsArgument(state_directory.wstring()) +
         L" " + QuoteWindowsArgument(owner_sid);
     launch.lpParameters = parameters.c_str();
     launch.nShow = SW_HIDE;
@@ -49,6 +52,10 @@ int RunElevatedSetup(
         throw Win32Error("GetExitCodeProcess(elevated setup)");
     }
     return static_cast<int>(exit_code);
+}
+
+int RunElevatedSetup(const std::filesystem::path& directory, const std::wstring& owner_sid) {
+    return RunElevatedMaintenance(ElevatedMaintenance::kSetup, directory, owner_sid);
 }
 
 }  // namespace mycli::sandbox

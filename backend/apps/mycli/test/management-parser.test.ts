@@ -2,6 +2,20 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { parseCliMode } from "../src/management/parser.ts";
 
+test("session training export writes one conversation and rejects duplicate or retired options", () => {
+	assert.deepEqual(parseCliMode(["session", "export", "session-1", "--json"]), {
+		kind: "management", command: { kind: "session", action: "export", sessionId: "session-1", json: true },
+	});
+	assert.deepEqual(parseCliMode(["session", "export", "session-1", "--training", "--output", "my data.jsonl", "--json"]), {
+		kind: "management", command: { kind: "session", action: "export", sessionId: "session-1", json: true, training: { outputPath: "my data.jsonl" } },
+	});
+	for (const flags of [
+		["--training"], ["--output", "data.jsonl"], ["--training", "--output"], ["--training", "--output", "--json"],
+		["--training", "--training", "--output", "data.jsonl"], ["--training", "--output", "x", "--output", "y"],
+		...["--samples-only", "--include-tool-errors", "--max-sample-bytes"].map((flag) => ["--training", "--output", "x", flag]),
+	]) assert.throws(() => parseCliMode(["session", "export", "session-1", ...flags]), /invalid_arguments/u);
+});
+
 test("MCP management parses HTTP and stdio definitions while preserving subprocess arguments", () => {
 	assert.deepEqual(parseCliMode(["mcp", "add", "docs", "--json", "--env", "A=two=parts", "--required", "--", "node", "server.mjs", "--json"]), {
 		kind: "management", command: { kind: "mcp", action: "add", serverId: "docs", json: true,
@@ -438,5 +452,12 @@ test("parser rejects API key argv values without repeating the submitted secret"
 				&& /--api-key is not supported/u.test(error.message)
 				&& !error.message.includes("private-argv-sentinel"),
 		);
+	}
+});
+
+test("sandbox maintenance actions have explicit preview and confirmation forms", () => {
+	for (const action of ["repair", "uninstall"]) {
+		assert.deepEqual(parseCliMode(["sandbox", action]), { kind: "management", command: { kind: "sandbox", action, confirmed: false, json: false } });
+		assert.deepEqual(parseCliMode(["sandbox", action, "--confirm", "--json"]), { kind: "management", command: { kind: "sandbox", action, confirmed: true, json: true } });
 	}
 });

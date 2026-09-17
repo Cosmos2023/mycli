@@ -279,7 +279,7 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
 	},
 	{
 		name: "sandbox",
-		usage: "sandbox status|setup|reset [--confirm] [--json]",
+		usage: "sandbox status|setup|reset|repair|uninstall [--confirm] [--json]",
 		description: "Inspect or recover platform sandbox readiness",
 		execution: "management",
 		subcommands: [
@@ -300,6 +300,11 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
 					JSON_OPTION,
 				],
 			},
+			...(["repair", "uninstall"] as const).map((name) => ({
+				name,
+				description: name === "repair" ? "Stop sandbox processes, clean stale ACLs, and repair setup" : "Stop sandbox processes and remove managed Windows sandbox state",
+				options: [{ flags: ["--confirm"], description: "Perform the previewed maintenance" }, JSON_OPTION],
+			})),
 		],
 	},
 	{
@@ -460,7 +465,17 @@ export const CLI_COMMAND_CATALOG: readonly CliCommandDescriptor[] = Object.freez
 				arguments: [SESSION_ID_ARGUMENT, { name: "title", description: "New title" }],
 				options: [JSON_OPTION],
 			},
-			...sessionIdSubcommands(["archive", "unarchive", "export"]),
+			...sessionIdSubcommands(["archive", "unarchive"]),
+			{
+				name: "export",
+				description: "Export readable session text or training JSONL",
+				arguments: [SESSION_ID_ARGUMENT],
+				options: [
+					{ flags: ["--training"], description: "Export one complete conversation with reasoning and tools as JSONL" },
+					valueOption("--output", "path", "New JSONL file; required with --training; never overwritten"),
+					JSON_OPTION,
+				],
+			},
 			{
 				name: "delete",
 				description: "Delete a session",

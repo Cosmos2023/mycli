@@ -35,6 +35,8 @@ export interface SendAgentMailboxInput {
 	readonly triggerMode: AgentMailboxTriggerMode;
 	readonly logicalId: string;
 	readonly sourceCallId?: string;
+	/** Live trigger ownership; the supervisor persists it when admitting the follow-up. */
+	readonly sourceTurnId?: string;
 	readonly payload: AgentMailboxPayload;
 }
 
@@ -60,6 +62,7 @@ export interface AgentMailboxOptions {
 	readonly triggerReceiver?: (
 		receiver: AgentMailboxEndpoint,
 		item: AgentMailboxRecord,
+		sourceTurnId?: string,
 	) => void | Promise<void>;
 	readonly onActivity?: (input: Readonly<{
 		kind: "mailbox" | "completion";
@@ -134,7 +137,7 @@ export class AgentMailbox {
 		}
 		const projected = this.#project(result.item, receiver);
 		if (input.triggerMode === "follow_up" && result.disposition === "enqueued") {
-			await this.#options.triggerReceiver?.(receiver, result.item);
+			await this.#options.triggerReceiver?.(receiver, result.item, input.sourceTurnId);
 		}
 		return Object.freeze({
 			disposition: result.disposition,

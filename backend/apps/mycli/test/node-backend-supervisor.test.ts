@@ -264,3 +264,13 @@ async function waitFor<T>(read: () => T | undefined, timeoutMs = 2_000): Promise
 		await new Promise<void>((resolve) => setTimeout(resolve, 5));
 	}
 }
+
+test("supervisor preserves the headless goal capability gate across the Worker boundary", async (t) => {
+	const backend = await startSupervisedNodeBackend({ cwd: process.cwd(), env: {}, args: [], enableGoals: false,
+		workerUrl: new URL("./fixtures/node-backend-flow-control-worker.mjs", import.meta.url) });
+	t.after(() => backend.close());
+	const messages: JsonObject[] = [];
+	createInterface({ input: backend.transport.input }).on("line", (line) => messages.push(JSON.parse(line) as JsonObject));
+	writeRequest(backend, "options", "inspect-options", {});
+	assert.equal(objectValue((await waitFor(() => response(messages, "options"))).result)?.enableGoals, false);
+});

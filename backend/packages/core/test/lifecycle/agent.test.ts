@@ -214,3 +214,13 @@ test("accepts declared lifecycle transitions and rejects terminal restart", () =
 		AgentTransitionError,
 	);
 });
+
+test("child authority cannot drop inherited read-deny roots or globs", () => {
+	const parent = { trusted: true, permission: "workspace", sandboxMode: "workspace-write", filesystem: "workspace_write", network: "enabled",
+		writableRoots: ["/workspace"], deniedReadRoots: ["/workspace/secret"], deniedReadGlobs: ["**/.env"] } as const;
+	assert.throws(() => narrowAgentExecutionPolicy(parent, { ...parent, deniedReadRoots: [] }), AgentAuthorityError);
+	assert.throws(() => narrowAgentExecutionPolicy(parent, { ...parent, deniedReadGlobs: [] }), AgentAuthorityError);
+	const child = narrowAgentExecutionPolicy(parent);
+	assert.deepEqual(child.deniedReadRoots, parent.deniedReadRoots);
+	assert.equal(Object.isFrozen(child.deniedReadGlobs), true);
+});

@@ -76,6 +76,7 @@ export class NodeGatewaySessionController {
 	readonly #options: NodeGatewaySessionControllerOptions;
 	#admission: SessionAdmissionState = Object.freeze({ kind: "idle" });
 	#unsubscribeQueue: (() => void) | null = null;
+	#unsubscribeGoal: (() => void) | null = null;
 
 	constructor(options: NodeGatewaySessionControllerOptions) {
 		this.#options = options;
@@ -90,6 +91,8 @@ export class NodeGatewaySessionController {
 	}
 
 	close(): void {
+		this.#unsubscribeGoal?.();
+		this.#unsubscribeGoal = null;
 		this.#unsubscribeQueue?.();
 		this.#unsubscribeQueue = null;
 	}
@@ -329,6 +332,11 @@ export class NodeGatewaySessionController {
 	}
 
 	bindQueue(): void {
+		this.#unsubscribeGoal?.();
+		const goalContext = this.context();
+		this.#unsubscribeGoal = this.runtime().goal?.subscribe(() => {
+			if (!this.#options.isClosed() && this.isCurrent(goalContext)) this.#options.publish("status.changed", this.#options.status());
+		}) ?? null;
 		this.#unsubscribeQueue?.();
 		this.#unsubscribeQueue = null;
 		const queue = this.queueCoordinator();
@@ -351,6 +359,7 @@ export class NodeGatewaySessionController {
 	): SessionAdmissionClaim {
 		this.#assertTransitionAvailable(coordinator);
 		const claim: SessionAdmissionClaim = Object.freeze({ kind: "transition", identity: {} });
+		this.runtime().goal?.interrupt();
 		this.#admission = Object.freeze({ kind: "transitioning", claim });
 		this.#options.onTransition?.();
 		return claim;

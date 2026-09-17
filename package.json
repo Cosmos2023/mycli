@@ -76,16 +76,16 @@
     "yaml": "^2.9.0"
   },
   "dependencies": {
-    "@cosmos2023/mycli": "^0.1.0",
-    "@mycli/config": "^0.1.0",
-    "@mycli/contracts": "^0.1.0",
-    "@mycli/core": "^0.1.0",
-    "@mycli/gateway": "^0.1.0",
-    "@mycli/integrations": "^0.1.0",
-    "@mycli/providers": "^0.1.0",
-    "@mycli/runtime": "^0.1.0",
-    "@mycli/storage": "^0.1.0",
-    "@mycli/tools": "^0.1.0",
-    "mycli-shell-tui": "^0.1.0"
+    "@cosmos2023/mycli": "^0.1.1",
+    "@mycli/config": "^0.1.1",
+    "@mycli/contracts": "^0.1.1",
+    "@mycli/core": "^0.1.1",
+    "@mycli/gateway": "^0.1.1",
+    "@mycli/integrations": "^0.1.1",
+    "@mycli/providers": "^0.1.1",
+    "@mycli/runtime": "^0.1.1",
+    "@mycli/storage": "^0.1.1",
+    "@mycli/tools": "^0.1.1",
+    "mycli-shell-tui": "^0.1.1"
   }
 }

@@ -351,6 +351,7 @@ function fallbackSettingsCatalog(settings: MycliShellVisualSettings | undefined)
 		hardwareCursor: false,
 		clearOnShrink: true,
 		terminalProgress: true,
+		terminalNotifications: true,
 		subagentDensity: "normal",
 		colorMode: "auto",
 		reducedMotion: false,
@@ -359,13 +360,14 @@ function fallbackSettingsCatalog(settings: MycliShellVisualSettings | undefined)
 		...settings,
 	};
 	const definitions: readonly [keyof MycliShellVisualSettings, string, string, string, readonly string[]][] = [
-		["statusbarMode", "tui.statusbar_mode", "Statusbar", "Controls footer status density", ["off", "compact", "full"]],
+		["statusbarMode", "tui.statusbar_mode", "Statusbar", "Compact shows model and context; full adds workspace and session", ["off", "compact", "full"]],
 		["viewMode", "tui.view_mode", "View mode", "Controls transcript detail density", ["default", "verbose", "focus"]],
 		["theme", "tui.theme", "Theme", "Selects the terminal color theme", ["dark", "light"]],
 		["hideThinking", "tui.hide_thinking", "Hide thinking", "Hides reasoning blocks", ["true", "false"]],
 		["toolDetailsDefault", "tui.tool_details_default", "Tool details", "Controls completed tool detail expansion", ["collapsed", "expanded"]],
 		["hardwareCursor", "tui.hardware_cursor", "Hardware cursor", "Uses the terminal cursor for IME placement", ["true", "false"]],
 		["clearOnShrink", "tui.clear_on_shrink", "Clear on shrink", "Clears stale cells when the viewport shrinks", ["true", "false"]],
+		["terminalNotifications", "tui.terminal_notifications", "Terminal notifications", "Notifies when unfocused and a turn finishes or needs your attention", ["true", "false"]],
 		["terminalProgress", "tui.terminal_progress", "Terminal progress", "Shows compact progress during a turn", ["true", "false"]],
 		["subagentDensity", "tui.subagent_density", "Subagent detail", "Controls subagent summary density", ["compact", "normal", "detailed"]],
 		["colorMode", "tui.color_mode", "Color mode", "Selects terminal color depth", ["auto", "truecolor", "256", "16", "none"]],

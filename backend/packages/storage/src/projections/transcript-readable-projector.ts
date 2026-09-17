@@ -41,9 +41,9 @@ function readableRows(event: TranscriptEventEnvelope): Readonly<{
 			if (event.payload.source === "approval_resume") return emptyRows();
 			return historyRows({
 				...base,
-				id: projection?.itemId ?? readableUserId(event),
-				type: "user_message",
-				text: event.payload.text,
+				id: event.payload.source === "goal" && event.turnId ? `${event.turnId}:goal` : projection?.itemId ?? readableUserId(event),
+				type: event.payload.source === "goal" ? "status" : "user_message",
+				text: event.payload.source === "goal" ? "Continuing goal" : event.payload.text,
 				metadata: {
 					...(readableCreatedAt ? { created_at: readableCreatedAt } : {}),
 					source: event.payload.source,
@@ -119,6 +119,7 @@ function readableRows(event: TranscriptEventEnvelope): Readonly<{
 				},
 			});
 		case "display_activity":
+			if (event.payload.activityType === "goal") return emptyRows();
 			return historyRows(displayHistoryRow(event));
 		case "turn_lifecycle":
 			return event.payload.phase === "interrupted" && event.turnId

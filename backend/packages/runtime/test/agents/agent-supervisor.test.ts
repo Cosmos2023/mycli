@@ -106,8 +106,11 @@ test("starts one mailbox follow-up turn for an idle resident", async (t) => {
 	let taskIndex = 0;
 	let mailboxRuns = 0;
 	const deliveries: string[] = [];
+	const parentTurns: string[] = [];
 	const supervisor = fixture.supervisor(handle({
+		bindParentTurn: (_turnId, parentTurnId) => { parentTurns.push(parentTurnId); },
 		runMailbox: async () => {
+			assert.equal(parentTurns.at(-1), "call-follow-up");
 			mailboxRuns += 1;
 			return { status: "completed", report: "Follow-up report", usage: {} };
 		},
@@ -121,6 +124,7 @@ test("starts one mailbox follow-up turn for an idle resident", async (t) => {
 	});
 
 	await supervisor.spawn(spawnInput({ mode: "foreground" }));
+	assert.deepEqual(parentTurns, [spawnInput().parentTurnId]);
 	assert.equal(await supervisor.followUp("child-1", "call-follow-up", "Continue review"), true);
 	await supervisor.waitFor("child-1");
 
@@ -765,6 +769,7 @@ function spawnConfig(): AgentSpawnConfigSnapshot {
 
 function handle(overrides: Partial<AgentThreadRuntimeHandle> = {}): AgentThreadRuntimeHandle {
 	return {
+		...(overrides.bindParentTurn ? { bindParentTurn: overrides.bindParentTurn } : {}),
 		run: overrides.run ?? (async () => ({ status: "completed", report: "done", usage: {} })),
 		...(overrides.runMailbox ? { runMailbox: overrides.runMailbox } : {}),
 		send: overrides.send ?? (async () => undefined),

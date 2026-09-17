@@ -23,6 +23,7 @@ test("shell settings load defaults and persist normalized visual settings", asyn
 		hardware_cursor: false,
 		clear_on_shrink: true,
 		terminal_progress: true,
+		terminal_notifications: true,
 		subagent_density: "normal",
 		color_mode: "auto",
 		reduced_motion: false,
@@ -51,6 +52,7 @@ test("shell settings load defaults and persist normalized visual settings", asyn
 			hardwareCursor: true,
 			clearOnShrink: false,
 			terminalProgress: false,
+			terminalNotifications: false,
 			subagentDensity: "detailed",
 			colorMode: "none",
 			reducedMotion: true,
@@ -67,6 +69,7 @@ test("shell settings load defaults and persist normalized visual settings", asyn
 		hardware_cursor: true,
 		clear_on_shrink: false,
 		terminal_progress: false,
+		terminal_notifications: false,
 		subagent_density: "detailed",
 		color_mode: "none",
 		reduced_motion: true,
@@ -90,9 +93,9 @@ test("shell setting descriptors are complete and report per-setting user sources
 		"",
 	].join("\n"), "utf8");
 
-	assert.equal(SHELL_SETTING_DESCRIPTORS.length, 13);
-	assert.equal(new Set(SHELL_SETTING_DESCRIPTORS.map((item) => item.key)).size, 13);
-	assert.equal(new Set(SHELL_SETTING_DESCRIPTORS.map((item) => item.clientKey)).size, 13);
+	assert.equal(SHELL_SETTING_DESCRIPTORS.length, 14);
+	assert.equal(new Set(SHELL_SETTING_DESCRIPTORS.map((item) => item.key)).size, 14);
+	assert.equal(new Set(SHELL_SETTING_DESCRIPTORS.map((item) => item.clientKey)).size, 14);
 	const loaded = await loadShellSettingsState({ homeDir });
 	assert.equal(loaded.settings.theme, "light");
 	assert.equal(loaded.settings.hide_thinking, false);
@@ -165,6 +168,7 @@ test("shell settings preserve comments and CRLF and skip identical replacements"
 		hardwareCursor: true,
 		clearOnShrink: false,
 		terminalProgress: false,
+			terminalNotifications: false,
 		subagentDensity: "detailed",
 	};
 	await saveShellSettings({ homeDir, settings });

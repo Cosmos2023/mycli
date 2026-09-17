@@ -8,6 +8,7 @@ import {
 } from "../../tui-core/index.ts";
 import { getKeybindings } from "../../tui-core/keybindings.ts";
 import type { MycliShellAuthProvider } from "../../model.ts";
+import { defaultAuthProviders } from "../../interaction/provider-defaults.ts";
 import { uiGlyphs } from "../../theme/terminal-style.ts";
 import { theme } from "../../theme/theme.ts";
 import { DynamicBorder } from "../shared/dynamic-border.ts";
@@ -247,14 +248,4 @@ export class LoginFlowComponent extends Container implements Focusable {
 	private cursor(): string {
 		return this._focused ? theme.fg("accent", uiGlyphs().cursor) : "";
 	}
-}
-
-function defaultAuthProviders(): MycliShellAuthProvider[] {
-	return [
-		{ id: "openai", name: "OpenAI", defaultModel: "gpt-5" },
-		{ id: "deepseek", name: "DeepSeek", defaultModel: "deepseek-v4-flash" },
-		{ id: "qwen", name: "Qwen", defaultModel: "qwen-plus" },
-		{ id: "anthropic", name: "Anthropic", defaultModel: "claude-sonnet-4-5" },
-		{ id: "compatible", name: "Compatible" },
-	];
 }

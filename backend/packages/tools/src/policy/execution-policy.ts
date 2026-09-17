@@ -10,6 +10,8 @@ export type FilesystemPolicy = "read_only" | "workspace_write" | "unrestricted";
 export type NetworkPolicy = "disabled" | "enabled";
 
 export interface ExecutionPolicy {
+	readonly deniedReadRoots?: readonly string[];
+	readonly deniedReadGlobs?: readonly string[];
 	readonly mode: SandboxMode;
 	readonly filesystem: FilesystemPolicy;
 	readonly network: NetworkPolicy;
@@ -28,7 +30,7 @@ export function executionPolicy(
 	workspaceRoot: string,
 ): ExecutionPolicy {
 	if (!workspaceRoot.trim()) throw new TypeError("workspaceRoot must be non-empty");
-	const workspace = realpathSync(workspaceRoot);
+	const workspace = realpathSync.native(workspaceRoot);
 	switch (permission) {
 		case "read-only":
 			return immutablePolicy("read-only", "read_only", "disabled", []);

@@ -1,3 +1,5 @@
+import { SessionGoalService, SessionGoalUsageTracker, sessionGoalContext } from "@mycli/runtime";
+import { GoalTool } from "@mycli/tools";
 import { GatewayFailure } from "./node-gateway-errors.ts";
 import { loadGitWorkspaceDiff, repositoryInitPrompt, prepareInteractiveReview, workspaceWorkflowFailure } from "./workspace-slash-workflows.ts";
 import { SelectedSkillContext } from "./selected-skill-context.ts";
@@ -278,6 +280,7 @@ interface RecoverInterruptedTurnOptions {
 export interface StartNodeBackendOptions {
 	readonly signal?: AbortSignal;
 	readonly approvalMode?: "live" | "suspend";
+	readonly enableGoals?: boolean;
 	readonly executionMode?: "review";
 	readonly reviewRevision?: string;
 	readonly cwd: string;
@@ -295,6 +298,7 @@ type ComposedNodeRuntime = NodeGatewayRuntime & Pick<
 	"bindProviderStepExecutor"
 > & {
 	readonly integrations: RuntimeIntegrationComposition;
+	readonly goalUsage: SessionGoalUsageTracker;
 	readonly workspaceRoot: string;
 	toolNames(): readonly string[];
 	closeExtensions(): Promise<void>;
@@ -305,7 +309,6 @@ const DEFAULT_AGENT_MAX_DEPTH = 1;
 const DEFAULT_AGENT_WORKER_INTERRUPT_TIMEOUT_MS = 12_000;
 const DEFAULT_PERMISSION_PROFILE: PermissionProfile = "workspace";
 const PROVIDER_CONNECTIVITY_TIMEOUT_MS = 15_000;
-const MIN_COMPACTION_SUMMARY_OUTPUT_TOKENS = 4_096;
 
 export async function startNodeBackend(options: StartNodeBackendOptions): Promise<NodeBackend> {
 	const startupProfiler = new StartupProfiler({
@@ -607,10 +610,10 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 		threadStore: store.agentThreads,
 		queueForSession: (sessionId) => runtimeRegistry.get(sessionId)?.queueCoordinator,
 		committedQueueIds: (sessionId) => store.loadCommittedQueueIds(sessionId),
-		triggerReceiver: async (receiver, item) => {
+		triggerReceiver: async (receiver, item, sourceTurnId) => {
 			await agentSupervisor?.followUp(
 				receiver.threadId,
-				item.sourceCallId ?? item.messageId,
+				sourceTurnId ?? item.sourceCallId ?? item.messageId,
 				item.payload.kind === "message" ? item.payload.text : "Agent follow-up",
 			);
 		},
@@ -859,6 +862,10 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			const reviewRevision = runtimeOptions.review?.revision ?? options.reviewRevision;
 			const readRoot = runtimeOptions.review?.workspaceRoot ?? workspaceRoot;
 			const allowedTools = reviewMode ? ["Read"] : runtimeOptions.allowedTools;
+			const goal = !reviewMode && !runtimeOptions.subagentContext && options.enableGoals !== false
+				? new SessionGoalService({ sessionId, workspaceRoot, threadId, store: store.goals }) : undefined;
+			goal?.restore();
+			const goalUsage = new SessionGoalUsageTracker(goal);
 			let sessionPreferences = runtimeOptions.subagentContext
 				? undefined
 				: loadSessionPreferences(store, sessionId);
@@ -1013,6 +1020,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			};
 			const toolSearch = new ToolSearchTool(deferredCandidates(allowedDeferredRegistrations()));
 			const staticAdapters = [
+				...(goal ? (["create", "get", "update"] as const).map((operation) => new GoalTool(operation, sessionId, goal)) : []),
 				new ViewImageTool({ workspaceRoot, homeDir }),
 				new ListMcpResourcesTool(integrationComposition.mcpResourceService),
 				new ListMcpResourceTemplatesTool(integrationComposition.mcpResourceService),
@@ -1058,6 +1066,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					...planToolExposure(toolManifest, {
 						...capabilities,
 						requestPermissionsTool: requestPermissionsToolEnabled,
+						goals: goal !== undefined,
 					}),
 					...directExtensionDefinitions,
 				],
@@ -1218,28 +1227,38 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					),
 					reservedOutputTokens: resolved.compactionReservedOutputTokens,
 					triggerRatio: 1,
-					tailTurns: resolved.compactionTailTurns,
-					tailMaxTokens: resolved.compactionTailMaxTokens,
-					minSavingsRatio: resolved.compactionMinSavingsRatio,
-					summaryMaxTokens: compactionSummaryOutputTokens(resolved),
+					retainedUserMaxTokens: resolved.compactionTailMaxTokens,
+					baseInstructions: runtimeInstructions,
+					developerInstructions,
 					summaryModel: resolved.compactionSummarizerModel ?? resolved.model,
-					rehydrationMaxFiles: resolved.compactionRehydrationMaxFiles,
-					rehydrationMaxItemTokens: resolved.compactionRehydrationFileMaxItemTokens,
-					rehydrationMaxTotalTokens: resolved.compactionRehydrationFileMaxTotalTokens,
 					summarize: async (input) => {
 						const summaryConfig = await captureProviderRoute({
 							...resolved,
 							model: input.model ?? resolved.model,
 						}, undefined, runtimeEnvironment);
-						return summarizeCompactionWithProvider(
+						const compactionGoalId = runSnapshot ? goal?.accountingGoalId(runSnapshot.turnId)
+							: goal?.get()?.status === "active" ? goal.get()!.goal_id : undefined;
+						const childGoalUsage = runtimeOptions.subagentContext && runSnapshot ? goalUsage.capture(runSnapshot.turnId) : undefined;
+						const summaryResult = await summarizeCompactionWithProvider(
 							registry.create(summaryConfig, providerRouteForConfig(summaryConfig)),
 							summaryConfig,
-							input,
+							{ ...input, remainingTokenBudget: () => compactionGoalId
+								? goal?.remainingTokenBudget(compactionGoalId, runSnapshot?.turnId)
+								: childGoalUsage?.service.remainingTokenBudget(childGoalUsage.ref.goalId),
+								recordEvent: async (event) => {
+								await input.recordEvent(event);
+								if (event.type === "usage") {
+									const usageId = `compaction:${input.operationId}:${event.attempt}`;
+									if (compactionGoalId) goal?.observeAttributedUsage(compactionGoalId, usageId, event.usage);
+									childGoalUsage?.service.observeAttributedUsage(childGoalUsage.ref.goalId, usageId, event.usage);
+								}
+							} },
 							{ recordDiagnostic: (diagnostic) => tryAppendNodeTrace(homeDir, sessionId,
 								runtimeDiagnosticTraceEvent({ ...diagnostic, kind: "model_stream_diagnostics",
 									turnId: `compaction:${input.operationId}`, provider: summaryConfig.provider,
 									protocol: summaryConfig.protocol, model: summaryConfig.model })) },
 						);
+						return summaryResult;
 					},
 					recordModelEvent: (input) => journal.record(input),
 					createCheckpointId: randomUUID,
@@ -1253,6 +1272,8 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			});
 			const selectedSkills = new SelectedSkillContext({ sessionId, store, service: () => integrationComposition.skills });
 			const coordinatorRuntime = new NodeTurnRuntime({
+			goal,
+			goalUsage: runtimeOptions.subagentContext ? goalUsage : undefined,
 			runLifecycle: {
 				prepare: (turnId, signal) => integrationComposition.prepareRun(JSON.stringify([sessionId, turnId]), signal),
 				finish: (turnId) => integrationComposition.finishRun(JSON.stringify([sessionId, turnId])),
@@ -1272,6 +1293,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			providerAttemptLedger: store.providerAttemptLedger,
 			modelInputTokenCounter: tokenCounter,
 			contextSources: ({ config: activeConfig, runSnapshot }) => Object.freeze({
+				conversationContext: sessionGoalContext(goal?.get() ?? null),
 				skillCatalog: runSnapshot.toolCatalog.skillCatalog ?? "",
 				loadedSkillInstructions: selectedSkills.load(runSnapshot.turnId),
 				workspace: workspaceInstructionsForTrust(
@@ -1428,6 +1450,8 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				return parsed.segments[0]!.words;
 			};
 			const binding = Object.assign(runtime, {
+				goal,
+				goalUsage,
 				sessionPreferences: () => sessionPreferences,
 				setSessionPreferences: (preferences: SessionPreferences) => {
 					sessionPreferences = preferences;
@@ -1473,9 +1497,12 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				integrations: integrationComposition,
 				workspaceRoot,
 				toolNames: () => allToolExposure.map((tool) => tool.name),
-				closeExtensions: () => {
-					unsubscribeExtensions?.();
-					return integrationComposition.close();
+				closeExtensions: async () => {
+					try { goal?.close(); }
+					finally {
+						unsubscribeExtensions?.();
+						await integrationComposition.close();
+					}
 				},
 				refreshExtensions,
 				listCommandAllowances: () => approvalPolicy.listSessionAllowances(),
@@ -1488,17 +1515,18 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					return approvalPolicy.listSessionAllowances();
 				},
 				clearCommandAllowances: () => approvalPolicy.clearSessionAllowances(),
-				compact: async (input: { readonly modelOverride?: string; readonly signal: AbortSignal }) => {
+				compact: async (input: Parameters<NonNullable<NodeGatewayRuntime["compact"]>>[0]) => {
 					const resolved = await resolveRuntimeConfig(input.modelOverride);
-					const commandId = `command_compact_${randomUUID().replaceAll("-", "")}`;
+					const commandId = input.operationId;
 					const startedAt = performance.now();
 					const result = await createCompactionCoordinator(resolved).compact({
+						operationId: commandId,
 						clientTurnId: commandId,
 						turnId: commandId,
 						source: "user_requested",
 						conversation: store.loadConversationItems(sessionId),
 						freshItemIds: new Set(),
-						emit: () => undefined,
+						emit: input.emit,
 						signal: input.signal,
 					});
 					tryAppendNodeTrace(homeDir, sessionId, runtimeDiagnosticTraceEvent({
@@ -1652,12 +1680,16 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					});
 				} finally {
 					signal.removeEventListener("abort", forwardAbort);
+					runtime.goalUsage.release(turnId);
 					activeTurn = undefined;
 					running = false;
 					localAbort = undefined;
 				}
 			};
 			return {
+				bindParentTurn: (turnId, parentTurnId) => {
+					runtime.goalUsage.bind(turnId, runtimeRegistry.get(input.parentSessionId)?.goalUsage.capture(parentTurnId));
+				},
 				run: (prompt, signal, emit, turnId) => runChild(
 					prompt,
 					signal,
@@ -1937,6 +1969,14 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					},
 					workspaceCommands: { diff: loadGitWorkspaceDiff, init: repositoryInitPrompt },
 					sessionCommands: {
+						exportTraining: async (sessionId, settings, signal) => {
+							const { createTrainingExportHandler } = await import("./session-training-export.ts");
+							signal.throwIfAborted();
+							return createTrainingExportHandler(store, {
+								workspaceRoot: sessionCoordinator.snapshot().workspaceRoot, homeDir, env: options.env,
+								...(controlConfig.apiKey ? { apiKey: controlConfig.apiKey } : {}),
+							})(sessionService.resolve(sessionId), settings, signal);
+						},
 						rename: (sessionId, title) => sessionService.rename(sessionId, title),
 						list: (query) => sessionService.list(query),
 						inspect: (sessionId) => sessionService.inspect(sessionId),
@@ -2730,16 +2770,6 @@ function compactionThresholdForModel(config: NodeRuntimeConfig): number {
 	));
 }
 
-function compactionSummaryOutputTokens(config: NodeRuntimeConfig): number {
-	const desired = Math.max(
-		MIN_COMPACTION_SUMMARY_OUTPUT_TOKENS,
-		config.compactionExpectedSummaryTokens,
-	);
-	return config.maxOutputTokens === undefined
-		? desired
-		: Math.min(desired, config.maxOutputTokens);
-}
-
 function totalCompactionBudget(threshold: number, reservedOutputTokens: number): number {
 	const total = threshold + reservedOutputTokens;
 	if (!Number.isSafeInteger(total) || total <= reservedOutputTokens) {
@@ -2767,6 +2797,8 @@ function agentExecutionPolicySnapshot(
 		...(profile?.networkDomains === undefined ? {} : {
 			networkDomains: Object.freeze([...profile.networkDomains]),
 		}),
+		...(profile?.deniedReadRoots === undefined ? {} : { deniedReadRoots: Object.freeze([...profile.deniedReadRoots]) }),
+		...(profile?.deniedReadGlobs === undefined ? {} : { deniedReadGlobs: Object.freeze([...profile.deniedReadGlobs]) }),
 		...(profile?.readableRoots === undefined ? {} : {
 			readableRoots: Object.freeze([...profile.readableRoots]),
 		}),
@@ -2795,6 +2827,8 @@ function inheritedAgentExecutionPolicyConstraints(
 		...(policy.networkDomains === undefined ? {} : {
 			networkDomains: Object.freeze([...policy.networkDomains]),
 		}),
+		...(policy.deniedReadRoots === undefined ? {} : { deniedReadRoots: Object.freeze([...policy.deniedReadRoots]) }),
+		...(policy.deniedReadGlobs === undefined ? {} : { deniedReadGlobs: Object.freeze([...policy.deniedReadGlobs]) }),
 		...(policy.readableRoots === undefined ? {} : {
 			readableRoots: Object.freeze([...policy.readableRoots]),
 		}),

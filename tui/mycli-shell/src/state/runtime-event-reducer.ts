@@ -38,6 +38,7 @@ import {
 	statusSnapshotBelongsToActiveSession,
 } from "./session-ownership.ts";
 import {
+	appendApprovalDecision,
 	clarificationResponseItemId,
 	interactiveResponseMatches,
 	interactiveResponseTurnId,
@@ -134,6 +135,21 @@ function reduceRuntimeEventUnchecked(
 	if (method.startsWith("shell.")) {
 		return applyShellLifecycle(state, method, params);
 	}
+	if (method === "hook.started" || method === "hook.completed") {
+		const id = stringValue(params.operation_id);
+		if (!id || (method === "hook.started" && !state.turnRunning && !state.activeTurnId)) return state;
+		const activeHooks = { ...state.activeHooks };
+		if (method === "hook.started") activeHooks[id] = String(params.point);
+		else delete activeHooks[id];
+		const failed = params.status === "failed" || params.status === "denied";
+		const noticeId = `hook-result:${id}`;
+		const notice = method === "hook.completed" && failed && params.point !== "pre_tool_use"
+			&& !state.transcript.some((item) => item.id === noticeId)
+			? [{ id: noticeId, type: "warning", folded: false,
+				text: `${String(params.point).replaceAll("_", " ")} hook ${params.status}: ${sanitizeRuntimeErrorDetail(params.message) ?? "Open /hooks for details."}` }]
+			: [];
+		return { ...state, activeHooks, transcript: [...state.transcript, ...notice] };
+	}
 	if (method === "turn.started") {
 		if (!eventBelongsToActiveSession(state, params)) return state;
 		const preserveApproval = pendingRequestBelongsToDifferentTurn(state.pendingApproval, params);
@@ -141,6 +157,10 @@ function reduceRuntimeEventUnchecked(
 			state.pendingClarification,
 			params,
 		);
+		const goalMarkerId = `${params.turn_id}:goal`;
+		const transcript = params.source === "goal" && !state.transcript.some((item) => item.id === goalMarkerId)
+			? [...state.transcript, { id: goalMarkerId, type: "system_notice", text: "Continuing goal", turn_id: stringValue(params.turn_id) ?? undefined, metadata: { source: "goal" } }]
+			: state.transcript;
 		return {
 			...state,
 			turnRunning: true,
@@ -153,8 +173,8 @@ function reduceRuntimeEventUnchecked(
 			pendingApproval: preserveApproval ? state.pendingApproval : null,
 			pendingClarification: preserveClarification ? state.pendingClarification : null,
 			transcript: preserveApproval || preserveClarification
-				? state.transcript
-				: removeTransientClarificationItems(removeTransientApprovalItems(state.transcript)),
+				? transcript
+				: removeTransientClarificationItems(removeTransientApprovalItems(transcript)),
 		};
 	}
 	if (method === "item.started") {
@@ -462,15 +482,29 @@ function reduceRuntimeEventUnchecked(
 		};
 	}
 	if (method === "compaction.started" || method === "compaction.completed") {
+		const id = stringValue(params.checkpoint_id)
+			?? `${params.client_turn_id}:${params.source}`;
+		const manual = params.source === "user_requested";
+		const started = method === "compaction.started";
+		const matches = state.activeCompaction?.id === id;
+		const transcript = applyCompactionLifecycle(state.transcript, method, params);
+		// Replayed starts must not reopen a completed operation.
+		if (started && transcript === state.transcript) return state;
 		return {
-			...state,
-			turnRunning: true,
-			liveStatus:
-				method === "compaction.started"
-					? { state: "running", kind: "compaction", text: "Compressing context" }
-					: { state: "running", kind: "running", text: "Running" },
-			transcript: applyCompactionLifecycle(state.transcript, method, params),
+			...state, transcript,
+			activeCompaction: started && (manual || state.turnRunning || state.activeTurnId) ? { id, source: String(params.source), text: "Compacting context" }
+				: matches ? null : state.activeCompaction,
+			...(manual ? {} : {
+				turnRunning: state.turnRunning,
+				liveStatus: started ? { state: "running", kind: "compaction", text: "Compacting context" }
+					: matches || !state.activeCompaction ? { state: "running", kind: "running", text: "Running" }
+						: state.liveStatus,
+			}),
 		};
+	}
+	if (method === "status.update" && params.kind === "compaction") {
+		if (!state.activeCompaction || (params.checkpoint_id && params.checkpoint_id !== state.activeCompaction.id)) return state;
+		return { ...state, activeCompaction: { ...state.activeCompaction, text: String(params.text) } };
 	}
 	if (method === "turn.completed") {
 		const turnState = stringValue(params.turn_state);
@@ -504,6 +538,8 @@ function reduceRuntimeEventUnchecked(
 			: terminalTranscript;
 		return {
 			...state,
+			activeCompaction: null,
+			activeHooks: {},
 			turnRunning: false,
 			activeTurnId: activeTurnIdAfterTerminal(state, params),
 			activeClientTurnId: activeClientTurnIdAfterTerminal(state, params),
@@ -568,6 +604,7 @@ function reduceRuntimeEventUnchecked(
 			?? (params.state === "completed" ? state.liveStatus?.durationMs : undefined);
 		return {
 			...state,
+			...(terminalStatus ? { activeCompaction: null, activeHooks: {} } : {}),
 			turnRunning: params.state === "running" || params.state === "waiting_approval" || params.state === "waiting_clarification",
 			activeTurnId: terminalStatus ? activeTurnIdAfterTerminal(state, params) : state.activeTurnId,
 			activeClientTurnId: terminalStatus
@@ -599,6 +636,8 @@ function reduceRuntimeEventUnchecked(
 		}
 		return {
 			...state,
+			activeCompaction: null,
+			activeHooks: {},
 			turnRunning: false,
 			activeTurnId: activeTurnIdAfterTerminal(state, params),
 			activeClientTurnId: activeClientTurnIdAfterTerminal(state, params),
@@ -651,6 +690,8 @@ function reduceRuntimeEventUnchecked(
 		}
 		return {
 			...state,
+			activeCompaction: null,
+			activeHooks: {},
 			turnRunning: false,
 			activeTurnId: activeTurnIdAfterTerminal(state, params),
 			activeClientTurnId: activeClientTurnIdAfterTerminal(state, params),
@@ -711,10 +752,10 @@ function reduceRuntimeEventUnchecked(
 			liveStatus: childResponse
 				? state.liveStatus
 				: { state: "running", kind: "running", text: "Running" },
-			transcript: removeTransientApprovalItems(
+			transcript: appendApprovalDecision(removeTransientApprovalItems(
 				state.transcript,
 				stringValue(params.decision_id) ?? stringValue(params.decisionId) ?? undefined,
-			),
+			), pending, params),
 		};
 	}
 	if (method === "mcp.elicitation.request") {
@@ -937,6 +978,8 @@ function reduceRuntimeEventUnchecked(
 			sessionTitle: stringValue(params.session_title) ?? state.sessionTitle,
 			pendingApproval: null,
 			pendingClarification: null,
+			activeCompaction: null,
+			activeHooks: {},
 			turnRunning: false,
 			activeTurnId: null,
 			activeClientTurnId: null,

@@ -1,3 +1,4 @@
+import { resolveDeniedReadRoots } from "@mycli/tools";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
@@ -32,6 +33,10 @@ export async function createMcpTransport(options: McpTransportOptions, signal: A
 			if (!options.sandboxProfile) throw new Error("mcp_sandbox_required");
 			const cwd = config.cwd ?? options.cwd ?? options.sandboxProfile.cwd;
 			const profile: SandboxProfile = { ...options.sandboxProfile, cwd,
+				...(options.sandboxProfile.deniedReadGlobs?.length ? {
+					deniedReadRoots: resolveDeniedReadRoots(options.sandboxProfile.workspaceRoot, options.sandboxProfile),
+					deniedReadGlobs: [],
+				} : {}),
 				// The launch directory may be a plugin installation; writable roots remain independently bounded.
 				workspaceRoot: cwd,
 				...(config.sandbox?.mode === "workspace-write" && options.sandboxProfile.filesystem === "unrestricted"
@@ -44,7 +49,7 @@ export async function createMcpTransport(options: McpTransportOptions, signal: A
 			if (profile.network === "enabled" && profile.networkDomains !== undefined) {
 				if (profile.networkDomains.length === 0) launchProfile = { ...profile, network: "disabled" };
 				else {
-					if (process.platform !== "darwin") throw new ProcessSandboxError("network_proxy_unavailable");
+					if (process.platform !== "darwin" && process.platform !== "win32") throw new ProcessSandboxError("network_proxy_unavailable");
 					proxy = await startNetworkProxy({ domains: profile.networkDomains });
 				}
 			}

@@ -114,6 +114,12 @@ function viewportHarness(
 	};
 }
 
+test("short transcript uses its content height and retains intentional blank rows", () => {
+	const lines = ["first", "", "second", ""];
+	const viewport = viewportFor([new MutableLinesComponent(lines)], 20);
+	assert.deepEqual(viewport.render(80), lines);
+});
+
 test("transcript viewport renders only the bounded tail", () => {
 	const components = Array.from({ length: 10_000 }, (_, index) => new CountingComponent(`line ${index}`));
 	const viewport = viewportFor(components, 20);

@@ -85,6 +85,28 @@ test("setup TUI returns its result directly and stops terminal ownership", async
 	assert.equal(terminal.stopped, true);
 });
 
+test("setup TUI uses the current OpenAI and Codex defaults without provider metadata", async () => {
+	for (const provider of ["openai", "codex"]) {
+		const terminal = new TestTerminal();
+		const completion = shell.runSetupTui({ state: { providers: [] }, terminal });
+		press(terminal, "\r");
+		if (provider === "codex") press(terminal, "\x1b[B");
+		press(terminal, "\r");
+		press(terminal, "\r");
+		press(terminal, "\r");
+		press(terminal, "secret-value");
+		press(terminal, "\r");
+		press(terminal, "\r");
+		assert.deepEqual(await completion, {
+			provider,
+			api_base_url: "https://api.openai.com/v1",
+			model: "gpt-5.5",
+			api_key: "secret-value",
+		});
+		assert.equal(terminal.stopped, true);
+	}
+});
+
 test("setup TUI resolves cancellation without producing a result", async () => {
 	const runSetupTui = (shell as unknown as { runSetupTui?: RunSetupTui }).runSetupTui;
 	assert.equal(typeof runSetupTui, "function");

@@ -1,3 +1,5 @@
+export { SessionGoalRepository } from "./sessions/session-goal-repository.ts";
+export type { SessionGoalStore, GoalCommit } from "./sessions/session-goal-repository.ts";
 export {
 	MessageIdConflictError,
 	projectMutationMetadata,
@@ -167,6 +169,7 @@ export {
 	SCHEMA_V13_PROVIDER_ATTEMPTS_SQL,
 	SCHEMA_V13_VERSION,
 	SCHEMA_V14_VERSION,
+	SCHEMA_V15_VERSION,
 	SESSION_RUNTIME_LEASE_SQL,
 	SCHEMA_VERSION,
 	TRANSCRIPT_PROJECTION_INDEX_SQL,
@@ -221,6 +224,7 @@ export type {
 	CommittedProviderStep,
 	ModelInputLedgerFailpoint,
 	ModelInputLedgerStore,
+	ProviderRequestReference,
 	RecoverUnconfirmedProviderStepsInput,
 	SQLiteModelInputLedgerOptions,
 	UnconfirmedProviderStep,
@@ -459,6 +463,16 @@ export {
 	SnapshotStateError,
 	TranscriptSnapshotStore,
 } from "./transcript/transcript-snapshot-store.ts";
+export {
+	snapshotRequestSummary,
+	snapshotSessionMetadata,
+} from "./transcript/transcript-snapshot-metadata.ts";
+export type {
+	TranscriptSnapshotCoverage,
+	TranscriptSnapshotRequestSummary,
+	TranscriptSnapshotSessionMetadata,
+	TranscriptSnapshotWindow,
+} from "./transcript/transcript-snapshot-metadata.ts";
 export type {
 	LegacySnapshotMessage,
 	TranscriptSessionState,

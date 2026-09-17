@@ -154,7 +154,7 @@ test("parses an executing effect checkpoint", () => {
 	}));
 });
 
-test("parses a Python-compatible compact checkpoint", () => {
+test("parses a compatible compact checkpoint with a complete long summary", () => {
 	assert.doesNotThrow(() => parseRuntimeState({
 		kind: "compact_checkpoint",
 		version: 1,
@@ -170,7 +170,7 @@ test("parses a Python-compatible compact checkpoint", () => {
 			replacement_history_hash: "sha256:replacement",
 			replacement_messages: [{
 				role: "developer",
-				content: "Summary",
+				content: "Summary".repeat(25_000),
 				tool_call_id: null,
 				response_id: null,
 				metadata: {},

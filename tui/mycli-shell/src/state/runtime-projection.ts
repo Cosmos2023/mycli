@@ -1,3 +1,5 @@
+import { mcpStartupStatus } from "./extension-feedback.ts";
+import { parseSessionGoal } from "@mycli/contracts";
 import { isRuntimeErrorCode, runtimeErrorNoticeSeverity } from "@mycli/contracts";
 import {
 	hasProviderAttemptRetries,
@@ -258,6 +260,8 @@ function projectRuntimeShellState(
 				? { pendingSteers, rejectedSteers, followUps }
 				: undefined,
 		footer: {
+			extensionStatuses: mcpStartupStatus(state.resources),
+			goal: state.status.goal ? parseSessionGoal(state.status.goal) : null,
 			cwd: state.workspace || process.cwd(),
 			sessionName: state.sessionTitle ?? state.sessionId ?? undefined,
 			provider: state.provider || undefined,
@@ -271,9 +275,11 @@ function projectRuntimeShellState(
 				queueActivity: state.queueActivity?.kind ?? (queueCount > 0 ? "pending_input" : "idle"),
 			trust: state.trust.state ?? "unknown",
 			collaborationMode: state.collaborationMode,
-			liveState: footerLiveState(state),
-			liveStateKind: state.liveStatus?.kind ?? state.liveStatus?.state,
-			liveStateDetail: state.liveStatus?.message,
+			operationRunning: state.activeCompaction !== null,
+			liveOperationId: state.activeCompaction?.id,
+			liveState: state.activeCompaction?.text ?? (Object.values(state.activeHooks).length ? `Running ${Object.values(state.activeHooks)[0]!.replaceAll("_", " ")} hooks` : footerLiveState(state)),
+			liveStateKind: state.activeCompaction ? (state.activeCompaction.cancelling ? "interrupting" : "compaction") : Object.keys(state.activeHooks).length ? "hook" : state.liveStatus?.kind ?? state.liveStatus?.state,
+			liveStateDetail: state.activeCompaction ? "Making room to continue." : state.liveStatus?.message,
 			liveRetryAt: state.liveStatus?.retryAt,
 			turnDurationMs: state.liveStatus?.durationMs,
 			turnRunning: state.turnRunning,

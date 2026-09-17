@@ -123,6 +123,7 @@ export function runtimeDiagnosticTraceEvent(
 				success: event.success,
 				...(event.failureKind ? { failure_kind: event.failureKind } : {}),
 				...(event.failure ? modelFailureTracePayload({
+					error_context: event.failure.errorContext,
 					retryable: event.failure.retryable,
 					retry_after_seconds: event.failure.retryAfterSeconds,
 					additional_details: event.failure.additionalDetails,
@@ -176,6 +177,13 @@ export function runtimeDiagnosticTraceEvent(
 			after_tokens: event.afterTokens,
 			max_tokens: event.maxTokens,
 			duration_ms: event.durationMs,
+			...(event.failure ? {
+				failure_kind: event.failure.code,
+				...modelFailureTracePayload({ error_context: event.failure.errorContext,
+					retryable: event.failure.retryable, additional_details: event.failure.additionalDetails,
+					...event.failure.diagnostics }),
+			} : {}),
+			...(event.usage ? traceUsage(event.usage) : {}),
 		},
 	});
 }
@@ -340,7 +348,9 @@ function modelStreamTracePayload(
 }
 
 function modelFailureTracePayload(value: Readonly<Record<string, unknown>>): Readonly<Record<string, unknown>> {
+	const errorContext = readErrorContext(value.error_context);
 	return compactTracePayload({
+		...(errorContext ? { error_context: errorContext } : {}),
 		retryable: typeof value.retryable === "boolean" ? value.retryable : undefined,
 		retry_after_seconds: typeof value.retry_after_seconds === "number"
 			&& Number.isFinite(value.retry_after_seconds) && value.retry_after_seconds >= 0
@@ -383,6 +393,9 @@ function compactionTracePayload(
 		after_tokens: boundedTraceCount(value.after_tokens),
 		max_tokens: boundedTraceCount(value.max_tokens),
 		duration_ms: boundedTraceNumber(value.duration_ms),
+		failure_kind: boundedTraceToken(value.failure_kind, 64),
+		...modelFailureTracePayload(value),
+		...traceUsage(value),
 	});
 }
 
@@ -446,7 +459,8 @@ function boundedTraceString(value: unknown, limit: number): string | undefined {
 
 function traceUsage(value: Readonly<Record<string, unknown>>): Readonly<Record<string, number>> {
 	const result: Record<string, number> = {};
-	for (const key of ["input_tokens", "output_tokens", "total_tokens", "cached_input_tokens"] as const) {
+	for (const key of ["input_tokens", "output_tokens", "total_tokens", "cached_input_tokens", "reasoning_tokens",
+		"cached_tokens", "cache_write_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"] as const) {
 		const count = value[key];
 		if (typeof count === "number" && Number.isSafeInteger(count) && count >= 0) result[key] = count;
 	}

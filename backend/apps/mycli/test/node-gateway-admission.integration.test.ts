@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { NODE_RUNTIME_CONTEXT_DEFAULTS, type NodeRuntimeConfig } from "@mycli/config";
 import type { RuntimeTurnRecord } from "@mycli/contracts";
-import { NodeTurnRuntime } from "@mycli/runtime";
+import { NodeTurnRuntime, SessionGoalService, QueueCoordinator } from "@mycli/runtime";
 import { openRuntimeSessionStore } from "@mycli/storage";
 import {
 	NodeGatewayTurnController,
@@ -132,6 +132,8 @@ test("Esc during reserved failure cleanup cannot report an unreserved admission 
 
 interface Fixture {
 	readonly runtime: NodeTurnRuntime;
+	readonly goal?: SessionGoalService;
+	readonly queue?: QueueCoordinator;
 	readonly controller: NodeGatewayTurnController;
 	readonly store: ReturnType<typeof openRuntimeSessionStore>;
 	readonly dbPath: string;
@@ -143,6 +145,9 @@ async function createFixture(t: test.TestContext, options: {
 	readonly credentialReadiness?: NodeGatewayTurnSettings["credentialReadiness"];
 	readonly writeTerminalSnapshot?: (turn: RuntimeTurnRecord) => Promise<void>;
 	readonly failPublication?: boolean;
+	readonly goals?: boolean;
+	readonly providerGate?: Promise<void>;
+	readonly hasPendingGoalInteraction?: () => boolean;
 } = {}): Promise<Fixture> {
 	const root = await mkdtemp(join(tmpdir(), "mycli-admission-"));
 	const dbPath = join(root, "sessions.db");
@@ -158,11 +163,20 @@ async function createFixture(t: test.TestContext, options: {
 		supportsImages: false, webSearchMode: "disabled", cacheRetention: "none",
 		requestPermissionsToolEnabled: false, updatesCheckOnStartup: false,
 	};
+	const goal = options.goals ? new SessionGoalService({ sessionId: config.sessionId, threadId: config.sessionId, workspaceRoot: root, store: store.goals }) : undefined;
+	const queue = options.goals ? new QueueCoordinator({ initial: { sessionId: config.sessionId, revision: 0, pendingSteers: [], rejectedSteers: [], followUps: [] },
+		activeTurnId: null, createQueueId: () => `queue-${++id}`, clock: () => new Date().toISOString(),
+		store: { loadCommittedQueueIds: () => new Set(), saveSnapshot: (snapshot) => { store.saveQueueSnapshot({ sessionId: config.sessionId, threadId: config.sessionId, workspaceRoot: root, snapshot }); },
+			commitPending: (turnId, records) => store.commitQueuedInputs({ sessionId: config.sessionId, turnId, records }) } }) : undefined;
 	const runtime = new NodeTurnRuntime({
+		goal, queueCoordinator: queue,
 		sessionId: config.sessionId, threadId: config.sessionId, workspaceRoot: root, store,
 		instructions: "Offline regression.", resolveConfig: () => config,
-		createProvider: () => ({ stream: async function* () {
+		createProvider: () => ({ stream: async function* (_request, input) {
 			calls += 1;
+			if (options.providerGate) await Promise.race([options.providerGate, new Promise<void>((resolve) => {
+				if (input.signal.aborted) resolve(); else input.signal.addEventListener("abort", () => resolve(), { once: true });
+			})]);
 			yield { type: "text_delta", text: "Completed output." };
 			yield { type: "completed", responseId: "synthetic-response" };
 		} }),
@@ -170,14 +184,15 @@ async function createFixture(t: test.TestContext, options: {
 		clock: () => new Date().toISOString(), publishLifecycle: () => undefined,
 		...(options.writeTerminalSnapshot ? { writeTerminalSnapshot: options.writeTerminalSnapshot } : {}),
 	});
+	if (goal) Object.assign(runtime, { goal });
 	const context = { sessionId: config.sessionId, generation: 1 };
 	const events: Fixture["events"] = [];
 	const controller: NodeGatewayTurnController = new NodeGatewayTurnController({
-		dependencies: { createTurnId: () => `turn-${++id}` },
+		dependencies: { createTurnId: () => `turn-${++id}`, hasPendingGoalInteraction: options.hasPendingGoalInteraction },
 		session: {
 			transitionActive: false, controlActive: false, sessionId: () => context.sessionId,
 			context: () => context, isCurrent: (candidate) => candidate === context,
-			runtime: () => runtime, queueCoordinator: () => undefined,
+			runtime: () => runtime, queueCoordinator: () => queue,
 			requiredQueueCoordinator: () => { throw new Error("No queue in fixture"); },
 			assertMutationContext: () => context,
 		},
@@ -199,7 +214,7 @@ async function createFixture(t: test.TestContext, options: {
 		store.close();
 		await rm(root, { recursive: true, force: true });
 	});
-	return { runtime, controller, store, dbPath, events, providerCalls: () => calls };
+	return { runtime, controller, goal, queue, store, dbPath, events, providerCalls: () => calls };
 }
 
 function submitParams(): Record<string, unknown> {
@@ -220,3 +235,70 @@ async function waitFor(read: () => boolean): Promise<void> {
 		await new Promise<void>((resolve) => { setTimeout(resolve, 2); });
 	}
 }
+
+test("duplicate goal idle notifications reserve one ordinary turn", async (t) => {
+	const gate = deferred<void>();
+	const f = await createFixture(t, { goals: true, providerGate: gate.promise });
+	f.goal!.create({ objective: "Finish" });
+	f.controller.requestNextQueuedTurn(); f.controller.requestNextQueuedTurn();
+	await waitFor(() => f.providerCalls() === 1);
+	assert.equal(f.goal!.get()?.rounds_started, 1);
+	f.goal!.interrupt(); gate.resolve();
+	await waitFor(() => !f.controller.hasActiveTurn());
+	assert.equal(f.providerCalls(), 1);
+});
+
+test("pause before queued goal admission prevents any provider work", async (t) => {
+	const f = await createFixture(t, { goals: true });
+	f.goal!.create({ objective: "Finish" });
+	f.controller.requestNextQueuedTurn();
+	f.goal!.interrupt();
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.equal(f.providerCalls(), 0);
+	assert.equal(f.goal!.get()?.rounds_started, 0);
+});
+
+test("goal persistence failure cannot prevent interruption or retain turn execution state", async (t) => {
+	const gate = deferred<void>();
+	const f = await createFixture(t, { goals: true, providerGate: gate.promise });
+	f.goal!.create({ objective: "Finish" });
+	const accepted = await f.controller.submit(submitParams());
+	await waitFor(() => f.providerCalls() === 1);
+	const commit = f.store.goals.commit.bind(f.store.goals);
+	f.store.goals.commit = () => { throw new Error("injected goal persistence failure"); };
+	try {
+		await assert.rejects(async () => f.controller.interrupt({ turn_id: accepted.turn_id }), /goal persistence failure/);
+		await waitFor(() => !f.controller.hasActiveTurn());
+		assert.equal(f.store.loadTurn("admission-session", "client-1")?.status, "interrupted");
+		assert.equal(f.runtime.runExecutionSnapshot(String(accepted.turn_id)), undefined);
+		assert.equal(f.goal!.continuation(), undefined);
+		assert.match(f.goal!.executionHaltReason()!, /runtime stopped/);
+	} finally { f.store.goals.commit = commit; gate.resolve(); }
+});
+
+test("a queued human input wins over automatic continuation", async (t) => {
+	const gate = deferred<void>();
+	const f = await createFixture(t, { goals: true, providerGate: gate.promise });
+	f.goal!.create({ objective: "Finish" });
+	f.queue!.enqueueFollowUp({ clientTurnId: "human-priority", text: "Inspect this first" });
+	f.controller.requestNextQueuedTurn();
+	await waitFor(() => f.providerCalls() === 1);
+	assert.ok(f.store.loadTurn("admission-session", "human-priority"));
+	assert.equal(f.goal!.get()?.rounds_started, 0);
+	f.goal!.interrupt(); gate.resolve();
+	await waitFor(() => !f.controller.hasActiveTurn());
+});
+
+test("pending interactive requests defer goal admission until resolved", async (t) => {
+	let pending = true;
+	const gate = deferred<void>();
+	const f = await createFixture(t, { goals: true, providerGate: gate.promise, hasPendingGoalInteraction: () => pending });
+	f.goal!.create({ objective: "Finish" });
+	f.controller.requestNextQueuedTurn();
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.equal(f.providerCalls(), 0);
+	pending = false; f.controller.requestNextQueuedTurn();
+	await waitFor(() => f.providerCalls() === 1);
+	f.goal!.interrupt(); gate.resolve();
+	await waitFor(() => !f.controller.hasActiveTurn());
+});

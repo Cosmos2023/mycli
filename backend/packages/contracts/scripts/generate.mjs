@@ -25,6 +25,7 @@ async function writeOrCheck(path, content, check) {
 }
 
 const targets = [
+	["session-goal.schema.json", "session-goal.ts"],
 	["error-context.schema.json", "error-context.ts"],
 	["catalog.schema.json", "catalog.ts"],
 	["json-rpc.schema.json", "json-rpc-message.ts"],

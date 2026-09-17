@@ -48,7 +48,7 @@ test("sandbox status maps incomplete Windows setup to bounded actionable state",
 		isExecutable: () => true,
 		windowsHandshake: async () => ({
 			name: "mycli-windows-sandbox",
-			protocolVersion: 1,
+			protocolVersion: 2,
 			setupComplete: false,
 			sandboxReady: false,
 		}),
@@ -58,7 +58,7 @@ test("sandbox status maps incomplete Windows setup to bounded actionable state",
 	assert.equal(response.exitCode, 1);
 	assert.equal(response.readiness.state, "setup_required");
 	assert.equal(response.readiness.code, "setup_incomplete");
-	assert.equal(response.readiness.helperVersion, 1);
+	assert.equal(response.readiness.helperVersion, 2);
 	assert.equal(response.readiness.helperCompatible, true);
 	assert.equal(response.readiness.setupComplete, false);
 	assert.equal(response.readiness.sandboxReady, false);
@@ -77,7 +77,7 @@ test("sandbox setup previews confirmation then verifies one Windows recovery ope
 		isExecutable: () => true,
 		windowsHandshake: async () => ({
 			name: "mycli-windows-sandbox",
-			protocolVersion: 1,
+			protocolVersion: 2,
 			setupComplete,
 			sandboxReady,
 		}),
@@ -130,7 +130,7 @@ test("sandbox reset is explicit idempotent recovery and verifies setup state rem
 		isExecutable: () => true,
 		windowsHandshake: async () => ({
 			name: "mycli-windows-sandbox",
-			protocolVersion: 1,
+			protocolVersion: 2,
 			setupComplete,
 			sandboxReady,
 		}),
@@ -148,6 +148,7 @@ test("sandbox reset is explicit idempotent recovery and verifies setup state rem
 		status: "confirmation_required",
 		code: "confirmation_required",
 	});
+	assert.deepEqual(preview.preview?.effects, ["clean_windows_sandbox_acls", "clear_windows_setup_state"]);
 	assert.deepEqual(operations, []);
 
 	const response = await service.execute(command);
@@ -170,7 +171,7 @@ test("sandbox recovery maps UAC cancellation and incompatible helpers without na
 		isExecutable: () => true,
 		windowsHandshake: async () => ({
 			name: "mycli-windows-sandbox",
-			protocolVersion: 1,
+			protocolVersion: 2,
 			setupComplete: false,
 			sandboxReady: false,
 		}),
@@ -194,13 +195,13 @@ test("sandbox recovery maps UAC cancellation and incompatible helpers without na
 		isExecutable: () => true,
 		windowsHandshake: async () => ({
 			name: "mycli-windows-sandbox",
-			protocolVersion: 2,
+			protocolVersion: 1,
 			setupComplete: true,
 			sandboxReady: true,
 		}),
 	});
 	assert.equal(incompatible.readiness.code, "handshake_failed");
-	assert.equal(incompatible.readiness.helperVersion, 2);
+	assert.equal(incompatible.readiness.helperVersion, 1);
 	assert.equal(incompatible.readiness.helperCompatible, false);
 	assert.match(incompatible.remediation ?? "", /matches this runtime/u);
 });
@@ -237,7 +238,7 @@ test("sandbox recovery contains interruption and native operation failures", asy
 		isExecutable: () => true,
 		windowsHandshake: async () => ({
 			name: "mycli-windows-sandbox",
-			protocolVersion: 1,
+			protocolVersion: 2,
 			setupComplete: false,
 			sandboxReady: false,
 		}),

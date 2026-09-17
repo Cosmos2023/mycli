@@ -82,6 +82,11 @@ test("atomically commits and reconstructs an exact bootstrap provider request", 
 	assert.deepEqual(store.modelInputLedger.loadLatestToolSetSnapshot("session-1"), input.toolSetSnapshot);
 	assert.deepEqual(store.modelInputLedger.loadModelContextEvents("session-1"), input.contextEvents);
 	assert.deepEqual(store.modelInputLedger.loadProviderStepEvents("request-1"), [input.preparedEvent]);
+	assert.deepEqual(store.modelInputLedger.listProviderRequestReferences("session-1"), [
+		{ requestId: "request-1", turnId: "turn-1", providerStep: 0 },
+	]);
+	assert.deepEqual(store.modelInputLedger.listProviderRequestReferences("missing-session"), []);
+	assert.throws(() => store.modelInputLedger.listProviderRequestReferences("../invalid"), StorageFailure);
 
 	store.close();
 	const reopened = sessionStore(fixture.dbPath);

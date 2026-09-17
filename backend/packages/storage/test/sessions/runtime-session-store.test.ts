@@ -16,7 +16,7 @@ import {
 
 const NOW = "2026-08-14T00:00:00.000Z";
 
-test("opens new and empty session databases with error-context schema v14", async (t) => {
+test("opens new and empty session databases with goal schema v15", async (t) => {
 	for (const existingEmptyFile of [false, true]) {
 		const fixture = await databaseFixture(t);
 		if (existingEmptyFile) await writeFile(fixture.dbPath, "");
@@ -25,7 +25,7 @@ test("opens new and empty session databases with error-context schema v14", asyn
 		store.close();
 
 		const database = new Database(fixture.dbPath, { readonly: true });
-		assert.equal(database.prepare("SELECT version FROM schema_version").pluck().get(), 14);
+		assert.equal(database.prepare("SELECT version FROM schema_version").pluck().get(), 15);
 		assert.equal(database.prepare(`
 			SELECT COUNT(*) FROM sqlite_master
 			WHERE type = 'table' AND name IN (
@@ -73,7 +73,7 @@ test("upgrades v12 and rejects v9/v10/v11 without modifying them", async (t) => 
 		assert.throws(
 			() => openRuntimeSessionStore({ dbPath }),
 			(error: unknown) => error instanceof StorageFailure
-				&& error.diagnostics.expected_version === 14
+				&& error.diagnostics.expected_version === 15
 				&& error.diagnostics.actual_version === version,
 		);
 		assert.equal(schemaVersion(dbPath), version);
@@ -85,22 +85,22 @@ test("upgrades v12 and rejects v9/v10/v11 without modifying them", async (t) => 
 	const currentStore = openRuntimeSessionStore({ dbPath: current.dbPath });
 	assert.ok(currentStore instanceof SQLiteTranscriptEventRepository);
 	currentStore.close();
-	assert.equal(schemaVersion(current.dbPath), 14);
+	assert.equal(schemaVersion(current.dbPath), 15);
 });
 
 test("rejects an unsupported marker without installing either runtime schema", async (t) => {
 	const fixture = await databaseFixture(t);
 	const database = new Database(fixture.dbPath);
 	database.exec("CREATE TABLE schema_version (version INTEGER NOT NULL)");
-	database.prepare("INSERT INTO schema_version (version) VALUES (15)").run();
+	database.prepare("INSERT INTO schema_version (version) VALUES (16)").run();
 	database.close();
 
 	assert.throws(
 		() => openRuntimeSessionStore({ dbPath: fixture.dbPath }),
 		(error: unknown) => error instanceof StorageFailure
 			&& error.message === "persistence_error: unsupported session schema version"
-			&& error.diagnostics.expected_version === 14
-			&& error.diagnostics.actual_version === 15,
+			&& error.diagnostics.expected_version === 15
+			&& error.diagnostics.actual_version === 16,
 	);
 	const check = new Database(fixture.dbPath, { readonly: true });
 	assert.deepEqual(check.prepare(`

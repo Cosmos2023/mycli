@@ -135,22 +135,18 @@ async function main() {
 			threadId: sessionId,
 			store,
 			baseContext: "You are mycli.",
+			baseInstructions: "You are mycli.",
 			tokenLimit: 160,
 			reservedOutputTokens: 32,
 			triggerRatio: 1,
-			tailTurns: 1,
-			tailMaxTokens: 128,
-			minSavingsRatio: 0,
-			summaryMaxTokens: SUMMARY_OUTPUT_TOKENS,
+			retainedUserMaxTokens: 128,
 			summaryModel: runtimeConfig.model,
-			rehydrationMaxFiles: 0,
-			rehydrationMaxItemTokens: 0,
-			rehydrationMaxTotalTokens: 0,
 			summarize: async (input) => {
 				try {
 					return await summarizeCompactionWithProvider(
 						registry.create(runtimeConfig),
 						{
+							...runtimeConfig,
 							provider: runtimeConfig.provider,
 							protocol: runtimeConfig.protocol,
 							model: input.model ?? runtimeConfig.model,

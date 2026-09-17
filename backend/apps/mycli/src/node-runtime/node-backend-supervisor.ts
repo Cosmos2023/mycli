@@ -109,6 +109,7 @@ class WorkerNodeBackendSupervisor implements NodeBackend {
 			env: { ...options.env },
 			args: [...options.args],
 			...(options.approvalMode ? { approvalMode: options.approvalMode } : {}),
+			...(options.enableGoals === undefined ? {} : { enableGoals: options.enableGoals }),
 			...(options.executionMode ? { executionMode: options.executionMode } : {}),
 			...(options.reviewRevision ? { reviewRevision: options.reviewRevision } : {}),
 			sessionOwnerId: options.sessionOwnerId ?? randomUUID(),

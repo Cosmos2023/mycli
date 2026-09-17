@@ -47,6 +47,7 @@ export class WriteTool implements ToolAdapter {
 					content,
 					allowOutsideWorkspace: sandbox.allowOutsideWorkspace,
 					allowedWritableRoots: sandbox.allowedWritableRoots,
+					deniedReadPolicy: sandbox.deniedReadPolicy,
 					signal: options.signal,
 				});
 				return Object.freeze({
@@ -86,6 +87,7 @@ export class WriteTool implements ToolAdapter {
 				content,
 				allowOutsideWorkspace: sandbox.allowOutsideWorkspace,
 				allowedWritableRoots: sandbox.allowedWritableRoots,
+				deniedReadPolicy: sandbox.deniedReadPolicy,
 				history: {
 					turnId: options.ownerTurnId ?? options.callId,
 					toolName: "Write",

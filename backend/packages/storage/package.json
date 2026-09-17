@@ -1,10 +1,12 @@
 {
   "name": "@mycli/storage",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "types": "./dist/index.d.ts",
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "exports": {
     ".": {
       "mycli-source": "./src/index.ts",
@@ -18,8 +20,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@mycli/contracts": "0.1.0",
-    "@mycli/core": "0.1.0",
+    "@mycli/contracts": "0.1.1",
+    "@mycli/core": "0.1.1",
     "better-sqlite3": "^13.0.2"
   },
   "devDependencies": {

@@ -126,12 +126,16 @@ service and requires a terminal. `update check` may contact the npm registry, an
 | `mycli config <action> [arguments]` | Validate, inspect, locate, migrate, or update configuration | Supports `validate`, `show`, `get`, `set`, `unset`, `path`, and `migrate`; every action accepts `--json` |
 | `mycli doctor [--json] [--verbose] [--fix [--confirm <plan-id>] \| --support-bundle]` | Inspect health, preview/apply safe repairs, or export bounded support data | Provider-free; default and repair preview are read-only, while apply is bound to the displayed plan id |
 | `mycli update [action]` | Read cached update state, refresh it explicitly, or dismiss one exact version | Only `check` contacts the npm registry; it never installs a package |
-| `mycli sandbox status\|setup\|reset [--confirm] [--json]` | Inspect or recover platform sandbox readiness | Status is read-only; setup/reset preview by default and execute only with `--confirm` |
+| `mycli sandbox status\|setup\|reset\|repair\|uninstall [--confirm] [--json]` | Inspect, recover, or remove platform sandbox state | Status is read-only; all other actions preview by default and execute only with `--confirm` |
 | `mycli hooks <action> [identity]` | List, inspect, approve, or revoke configured hooks | Operates on local hook metadata and supports `--json` |
 | `mycli plugins <action> [arguments]` | Install, manage, inspect, or run plugins; manage marketplaces | Package operations use local or Git sources; declared commands and JSON arguments are validated before execution |
 | `mycli mcp <action> [server-id]` | List or inspect configured MCP servers | May start or contact enabled servers to verify discovery; never starts a model turn |
 | `mycli session <action> [arguments]` | List, resume, fork, rename, archive, restore, delete, or export sessions | Management actions are provider-free; `session resume <id>` enters the interactive TUI |
 | `mycli completion <bash\|zsh\|fish\|powershell>` | Generate completion for one supported shell | Writes a static script to stdout without loading management services, a provider, the backend, or the TUI |
+
+`mycli session export <id> --training --output <new-file.jsonl>` exports one complete conversation
+with stored instructions, messages, plaintext reasoning, tool calls/results and images. Use `--json`
+for its report. See [conversation export format](sessions.md#training-data-export).
 
 `mycli login --oauth [--provider <id>] [--auth-ref <ref>]` uses a supported native provider's
 pi-ai OAuth flow. Credentials are stored privately, secret input is hidden, and cancellation
@@ -198,13 +202,19 @@ mycli sandbox setup [--json]
 mycli sandbox setup --confirm [--json]
 mycli sandbox reset [--json]
 mycli sandbox reset --confirm [--json]
+mycli sandbox repair [--confirm] [--json]
+mycli sandbox uninstall [--confirm] [--json]
 ```
 
-The unconfirmed setup/reset forms return the exact privilege and bounded effects they would use but
+The unconfirmed setup/reset/repair/uninstall forms return the exact privilege and bounded effects they would use but
 perform no mutation. On Windows, confirmed setup may open UAC and verifies the helper handshake
 after elevation. Canceling UAC becomes `operation_canceled` without exposing helper output. A
-confirmed reset removes only mycli's credential and setup-marker state; it preserves the restricted
-local account and firewall/WFP restrictions so a later setup can rebuild safely. On macOS and Linux,
+confirmed reset requires no active sandbox helpers, cleans recorded filesystem ACLs, and removes
+mycli's credential and setup-marker state; it preserves the restricted accounts and firewall/WFP
+restrictions so a later setup can rebuild safely. Repair stops sandbox processes, cleans recorded
+ACLs, rebuilds setup, and verifies readiness. Uninstall also removes owned accounts, their profiles,
+network rules, recorded WFP grants, and known state files. See [Windows maintenance](windows.md).
+On macOS and Linux,
 mycli reports missing system dependencies and manual package-manager guidance instead of installing
 them. Human and JSON output are projections of the same typed response.
 
@@ -272,6 +282,7 @@ also clears the temporary override so the saved choice takes effect.
 | Command | Arguments | TUI behavior | During turn | Discovery |
 | --- | --- | --- | --- | --- |
 | `/model` | optional `[model] [--thinking-effort level]` | provider/model picker when bare; validated session-scoped selection when inline | yes | common |
+| `/goal` | optional `[objective\|pause\|resume\|edit <objective>\|budget <tokens\|off>\|clear]` | controls a durable session goal; `--tokens <n> <objective>` sets an explicit creation budget | yes | common |
 | `/plan` | optional `[task]` | enters Plan mode; an inline task starts a turn with its attachments | no | common |
 | `/mode` | optional `[default\|plan]` | backend | no | search-only |
 | `/permissions` | optional `[allow\|revoke\|clear]` | overlay when bare; backend when inline | yes | common |
@@ -280,6 +291,7 @@ also clears the temporary override so the saved choice takes effect.
 | `/new` | none | creates and switches to a fresh backend session | no | common |
 | `/resume` | optional `[session-id]` | picker when bare; backend when inline | no | common |
 | `/fork` | optional `[source] [new-session] [message-index]` | backend | no | common |
+| `/export` | none required | exports the complete current conversation to an automatically named JSONL file in the workspace; displays the file path and message/tool/reasoning/image counts | no | common |
 | `/status` | none | backend | yes | common |
 | `/update` | optional `[check\|dismiss <version>]` | cached status, explicit registry check, or exact-version dismissal | yes | common |
 | `/usage` | none | backend | yes | common |
@@ -314,9 +326,15 @@ also clears the temporary override so the saved choice takes effect.
 | `/session search` | optional `[query]` | backend | yes | search-only |
 | `/session maintenance` | optional `[--apply-empty\|--apply-payloads\|--apply-orphans\|--apply-vacuum\|--apply-transcript-normalization\|--apply-content-blobs\|--apply-content-blob-gc]` | backend | no | search-only |
 
-When the TUI is idle, `Shift+Tab` cycles between Default and Plan mode. The footer shows the
-shortcut while Plan mode is active and the terminal has enough room; overlays, selectors, and
-running turns keep ownership of the key.
+When the TUI is idle, `Shift+Tab` cycles between Default and Plan mode. The footer displays a
+`plan` badge while Plan mode is active; overlays, selectors, and running turns keep ownership
+of the key. `/help` lists the active shortcuts.
+
+The composer keeps work summaries above the input and session context below it. The first
+footer row shows mode, model, reasoning and context usage; the second shows workspace, branch
+and session. In `/settings`, Statusbar `full` shows both rows, `compact` keeps the first, and
+`off` hides the footer. Goal state, queued input, background work and pending decisions remain
+visible. `/goal`, `/ps` and `/agents` open the corresponding details.
 
 Approval, permission, workspace-trust, clarification, plan-confirmation, and session-repair
 views share a bottom decision panel. Arrow keys or `j`/`k` navigate; Enter confirms the highlighted
@@ -455,7 +473,7 @@ mycli config unset tui.statusbar_mode
 
 The allowlisted keys are `tui.statusbar_mode`, `tui.view_mode`, `tui.theme`,
 `tui.hide_thinking`, `tui.tool_details_default`, `tui.hardware_cursor`,
-`tui.clear_on_shrink`, `tui.terminal_progress`, `tui.subagent_density`, `tui.color_mode`,
+`tui.clear_on_shrink`, `tui.terminal_progress`, `tui.terminal_notifications`, `tui.subagent_density`, `tui.color_mode`,
 `tui.reduced_motion`, `tui.glyph_mode`, and `tui.high_contrast`. These commands do not accept
 arbitrary TOML paths.
 
@@ -554,3 +572,37 @@ composer and never resends it automatically.
 The executable source of truth is
 `backend/apps/mycli/src/node-runtime/node-slash-command-registry.ts`. Its serialized matrix and checksum
 are frozen by the M8 capability audit tests.
+
+### Operation feedback
+
+`/compact` shows progress immediately and accepts Esc or Ctrl+C to cancel. Cancellation leaves
+existing context intact and is reported separately from a compaction failure. Automatic compaction
+uses its own timer; ordinary Working timing resumes afterward. Model selection confirms both the
+selected model and its scope, and approval choices remain visible in the live conversation view.
+
+Local compaction follows the Codex handoff flow: it keeps the original message roles and base
+instructions, appends a concise checkpoint request as the last user message, and supplies no tools.
+It uses the selected model's current reasoning effort and normal generation limits. Completed
+summaries have no separate 4096-token cap and are not shortened by another model request.
+
+If the input exceeds the model context window, the summary request drops the oldest items and
+paired tool results until it can complete or no history remains to remove. Each changed input uses
+the configured request/stream retry budgets. Cancellation, ownership loss and the estimated
+remaining Goal budget are checked before dispatch; each attempt's reported usage is counted.
+
+The replacement window contains recent user-message text followed by the handoff summary. User
+text has a default 20,000-token retention budget (`context.compaction_tail_max_tokens`); the boundary
+message is shortened with an explicit marker. Pre-turn compaction appends fresh incoming input
+after this replacement. Other prior assistant/tool output and images are represented by the summary.
+Current instructions and runtime context are supplied again on the next normal provider request.
+The readable transcript is preserved. Failures and cancellation keep the original window and the
+previous completed checkpoint, with specific failures visible after reopening the session.
+
+The old full-turn retention, summary-size/economics, savings-ratio and file-rehydration settings
+remain accepted for config compatibility but no longer control local compaction. Local compaction
+does not reread workspace files or reject a completed summary based on estimated savings.
+
+MCP startup and Hook execution report progress and failures in the main interface. Use `/mcp`
+or `/hooks` for details. `/settings` includes **Terminal notifications**, enabled by default for
+unfocused terminals that support OSC 9. Set `tui_terminal_notifications = false` to disable them.
+After a gateway disconnect, use the printed `mycli session resume <id>` command to reopen the session.

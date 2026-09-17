@@ -124,6 +124,11 @@ export class WorkerProviderStepExecutor implements ProviderStepExecutor {
 				this.#commandSequence += 1;
 				return;
 			}
+			if (response.type === "provider_step_usage") {
+				if (!input.recordUsage) throw invalid("unsolicited provider usage");
+				await input.recordUsage(response.usage, response.attempt);
+				return;
+			}
 			if (response.type === "provider_step_event") {
 				input.emit(response.event);
 				return;
@@ -221,6 +226,7 @@ export class WorkerProviderStepExecutor implements ProviderStepExecutor {
 				streamDiagnosticsVersion: 1,
 				...(input.errorContextVersion ? { errorContextVersion: input.errorContextVersion } : {}),
 				...(input.recordAttempt ? { recordAttempts: true } : {}),
+				...(input.recordUsage ? { recordUsage: true } : {}),
 				...(input.attemptState ? { attemptState: input.attemptState } : {}),
 			}));
 			this.#commandSequence += 1;

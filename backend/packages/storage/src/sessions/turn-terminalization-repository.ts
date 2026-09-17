@@ -1,6 +1,6 @@
+import { turnInterruptionNotice, type TurnInterruptionReason } from "@mycli/contracts";
 import {
 	parseRuntimeTurnRecord,
-	TURN_INTERRUPTED_NOTICE,
 	turnCompletedDurationId,
 	turnFailedNoticeId,
 	turnFailureNotice,
@@ -295,7 +295,7 @@ export class SQLiteTurnTerminalizationRepository implements TurnTerminalizationS
 		this.#failpoint("failure_after_tools");
 		if (status === "interrupted") {
 			if (options.appendAbortMarker) this.#appendTurnAborted(turn, input.completedAt);
-			this.#appendInterruptedDisplay(turn, input.completedAt, failure.errorContext);
+			this.#appendInterruptedDisplay(turn, input.completedAt, failure.errorContext, input.interruptionReason);
 		} else {
 			this.#appendFailedDisplay(
 				turn,
@@ -309,6 +309,7 @@ export class SQLiteTurnTerminalizationRepository implements TurnTerminalizationS
 		this.#failpoint("failure_after_display");
 		const outbox = this.#appendLifecycle(turn, status, input.completedAt, {
 			errorCode: input.code,
+			...(input.interruptionReason ? { interruptionReason: input.interruptionReason } : {}),
 			message: terminalMessage,
 			...(failure.errorContext ? { errorContext: failure.errorContext } : {}),
 			...(failure.additionalDetails ? { additionalDetails: failure.additionalDetails } : {}),
@@ -325,6 +326,7 @@ export class SQLiteTurnTerminalizationRepository implements TurnTerminalizationS
 			input.code,
 			stableJson({
 				message: terminalMessage,
+				...(input.interruptionReason ? { interruption_reason: input.interruptionReason } : {}),
 				...(failure.errorContext ? { error_context: failure.errorContext } : {}),
 				...(failure.additionalDetails
 					? { additional_details: failure.additionalDetails }
@@ -391,7 +393,7 @@ export class SQLiteTurnTerminalizationRepository implements TurnTerminalizationS
 		}));
 	}
 
-	#appendInterruptedDisplay(turn: RuntimeTurnRecord, createdAt: string, errorContext?: ErrorContext): void {
+	#appendInterruptedDisplay(turn: RuntimeTurnRecord, createdAt: string, errorContext?: ErrorContext, interruptionReason?: TurnInterruptionReason): void {
 		const eventId = turnInterruptedNoticeId(turn.turn_id);
 		if (this.#eventExists(turn.session_id, eventId)) return;
 		this.#appendDisplay({
@@ -404,11 +406,12 @@ export class SQLiteTurnTerminalizationRepository implements TurnTerminalizationS
 			createdAt,
 			payload: {
 				activityType: "warning",
-				text: TURN_INTERRUPTED_NOTICE,
+				text: turnInterruptionNotice(interruptionReason),
 				status: "interrupted",
 				metadata: {
 					event_kind: "turn_interrupted",
 					interrupted_turn_id: turn.turn_id,
+					...(interruptionReason ? { interruption_reason: interruptionReason } : {}),
 					status: "interrupted",
 					...(errorContext ? { error_context: errorContext } : {}),
 				},

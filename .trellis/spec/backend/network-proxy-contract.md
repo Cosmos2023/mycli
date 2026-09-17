@@ -23,8 +23,19 @@ does not approve domains or modify the run snapshot.
   the proxy is created. Preserve the established exact and `*.` matching rules.
 - macOS permits only `(remote tcp "localhost:<owned-port>")` in its restricted
   network policy. Never add unrestricted egress, DNS, inbound, UDP, or Unix socket
-  rules to make a proxy client work. Linux/Windows do not yet have enforced proxy
-  transports: Shell rejects enabled non-empty domain lists before process start.
+  rules to make a proxy client work. Windows uses a separate proxy identity with
+  a persistent per-account WFP block and one dynamic per-logon exception for the
+  owned IPv4 loopback TCP port. Linux rejects enabled non-empty domain lists.
+- Windows installs each proxy exception before resuming its suspended runner. It
+  matches the actual logon SID, protocol, address and port, never a mutable global
+  account-wide port list. Dynamic WFP sessions revoke exceptions on host exit.
+  Ordinary firewall denies still apply; do not use a hard permit. The host owner
+  alone receives filter-add rights to its account's sublayer; sandbox identities
+  receive no WFP management permissions. Account-derived keys prevent another
+  user's setup from replacing live filters.
+- Windows rejects arbitrary process read allowlists and unrestricted filesystem
+  policies combined with constrained networking before launch. It must not
+  narrow or broaden these policies silently.
 - Empty lists and disabled network policy stay offline. Raw process launches
   without a proxy stay offline when the policy contains domains.
 - Proxy listeners bind only IPv4 loopback on ephemeral ports. Each Shell process
@@ -81,4 +92,9 @@ loopback filter is per TCP port, not per listening process identity.
   direct TCP, alternative proxy ports, ignored proxy settings, UDP, and Unix
   socket attempts fail at the OS boundary. Only these tests skip on other OSes;
   their unsupported launch behavior is tested on every host.
+- Windows Server 2022/2025 tests use real Shell launches for online/offline TCP
+  and UDP, proxy allow/deny, direct egress, foreign concurrent proxy ports,
+  ConPTY, process-tree cleanup, and reset/reinitialization. Native protocol and
+  restricted-token tests alone are not an end-to-end gate. Release helper
+  artifacts must pass this same reusable Windows workflow before upload.
 - Run the full repository gates and provider-free installed-package smoke.

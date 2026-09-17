@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { stripVTControlCharacters } from "node:util";
-import { turnFailedNoticeId } from "@mycli/contracts";
+import { createErrorContext, errorSummary, turnFailedNoticeId } from "@mycli/contracts";
 import {
 	initialRuntimeState,
 } from "../src/state/runtime-state-model.ts";
@@ -67,6 +67,51 @@ test("compaction failure details render safely without an assistant answer", () 
 		const text = lines.join(" ").replace(/\s+/gu, " ");
 		assert.match(text, /stream_read_error/u);
 		assert.match(text, /req-summary/u);
+		assert.equal([...text.matchAll(/Provider retry budget exhausted\./gu)].length, 1);
 		assert.doesNotMatch(text, /synthetic-secret/u);
+	}
+});
+
+test("specific compaction output-limit failures are visible live and in restored history", () => {
+	const errorContext = createErrorContext({ reason: "provider.output_limit", source: "provider",
+		scope: { kind: "provider_attempt", id: "summary" }, outcome: { state: "failed", effects: "none" },
+		details: { finish_reason: "length", max_output_tokens: 8192 } });
+	const message = errorSummary(errorContext);
+	const live = reduceRuntimeEvent(initialRuntimeState(), "compaction.completed", {
+		checkpoint_id: "summary", client_turn_id: "compact", source: "user_requested", status: "failed",
+		before_tokens: 40_000, after_tokens: 40_000, max_tokens: 50_000, duration_s: 1,
+		failure: { code: "provider_error", message, retryable: false, errorContext },
+	});
+	const resumed = runtimeStateFromTranscript(initialRuntimeState(), { items: [{ id: "summary-failure", type: "error",
+		text: `Context compression failed: ${message}`, metadata: { event_kind: "compaction_model", purpose: "compaction",
+			readable: true, code: "provider_error", error_context: errorContext } }] });
+	for (const state of [live, resumed]) for (const width of [40, 80, 120]) {
+		const text = renderMycliShell(projectRuntimeState(state), width).map(stripVTControlCharacters).join(" ").replace(/\s+/gu, " ");
+		assert.match(text, /output token limit/u);
+		assert.doesNotMatch(text, /provider request failed/u);
+	}
+});
+
+test("oversized compaction summaries show local validation details live and after resume", () => {
+	const errorContext = createErrorContext({ reason: "runtime.compaction_summary_too_long", source: "runtime",
+		scope: { kind: "request", id: "summary" }, outcome: { state: "failed", effects: "none" },
+		details: { summary_tokens: 10876, summary_max_tokens: 4096 } });
+	const message = errorSummary(errorContext);
+	const live = reduceRuntimeEvent(initialRuntimeState(), "compaction.completed", {
+		checkpoint_id: "summary", client_turn_id: "compact", source: "user_requested", status: "failed",
+		before_tokens: 182173, after_tokens: 182173, max_tokens: 272000, duration_s: 41,
+		failure: { code: "provider_error", message, retryable: false, errorContext },
+	});
+	const resumed = runtimeStateFromTranscript(initialRuntimeState(), { items: [{ id: "summary-failure", type: "error",
+		text: `Context compression failed: ${message}`, metadata: { event_kind: "compaction_model", purpose: "compaction",
+			readable: true, code: "provider_error", error_context: errorContext } }] });
+	for (const state of [live, resumed]) for (const width of [40, 80, 120]) {
+		const lines = renderMycliShell(projectRuntimeState(state), width).map(stripVTControlCharacters);
+		assert.ok(lines.every((line) => visibleWidth(line) <= width));
+		const text = lines.join(" ").replace(/\s+/gu, " ");
+		assert.match(text, /summary exceeded its length limit/u);
+		assert.match(text, /original conversation was kept/u);
+		assert.match(text, /10876 estimated tokens; limit: 4096/u);
+		assert.doesNotMatch(text, /Provider request failed/u);
 	}
 });

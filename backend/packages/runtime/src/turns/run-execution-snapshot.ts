@@ -311,6 +311,8 @@ function executionPolicy(value: unknown): ExecutionPolicy {
 		filesystem: policy.filesystem,
 		network: policy.network,
 		...(networkDomains === undefined ? {} : { networkDomains }),
+		...(policy.deniedReadRoots === undefined ? {} : { deniedReadRoots: policyRootList(policy.deniedReadRoots, "denied read roots") }),
+		...(policy.deniedReadGlobs === undefined ? {} : { deniedReadGlobs: stringList(policy.deniedReadGlobs, "denied read globs", MAX_POLICY_LIST_ITEMS, 4_096) }),
 		...(policy.readableRoots === undefined
 			? {}
 			: { readableRoots: policyRootList(policy.readableRoots, "readable roots") }),

@@ -14,7 +14,7 @@ execution, storage, providers, tool permissions, and shell processes remain owne
 | `transcript/` | Display-independent grouping, search classification, detail projection and replay limits |
 | `components/transcript/` | Transcript cells, shared block factory/renderer, viewport and history viewer |
 | `components/selectors/` | Approvals, clarification, settings, model/session pickers and onboarding surfaces |
-| `components/composer/` | Editor, queued-input preview and footer |
+| `components/composer/` | Editor, queued-input preview, work summary and session footer |
 | `components/shared/` | Reusable component layout, markdown themes, truncation and frame caching |
 | `interaction/` | Typed UI actions, application keybindings, slash commands and plan choices |
 | `transport/` | Shared gateway client adapter, event deduplication, handshake and configured transport |
@@ -62,6 +62,51 @@ state modules cannot depend on the terminal engine or component layer.
 transcript, status and footer. Viewport caching, activity animation, tool detail projection and
 transcript cell creation each have a separate owner. Static output, native output and the history
 viewer use the same transcript block factory as interactive rendering.
+
+## Composer Layout
+
+The current activity follows the last output line with one blank row between them. Spare rows
+stay below that activity and above the work summary and editor. The editor and session footer
+remain at the bottom even when the transcript is short or the turn's activity appears/disappears.
+
+The input area has fixed responsibilities, from top to bottom:
+
+1. The current turn's activity follows the agent output, before all input-related summaries.
+   It owns elapsed time, interruption hints and bounded retry details. Live status is never
+   repeated in the footer or committed to transcript history.
+2. A work summary combines Goal state and background Shell count. Goal controls and `/ps` appear
+   when space permits. Plan progress appears in transcript updates. Extension statuses share at
+   most one additional row; duplicates and blank entries are omitted, and overflow is counted.
+3. Queued messages and background agents keep their own bounded previews above the editor.
+4. Below the editor, the first footer row shows mode/trust, model and reasoning on the left,
+   with context usage on the right. The second shows the workspace/branch and session name.
+
+`tui.statusbar_mode = "full"` shows both footer rows; `"compact"` keeps the first, and `"off"`
+hides the footer. If model context is unavailable, compact mode falls back to workspace context.
+Work summaries and pending interactions remain visible independently of that setting. The
+`terminal_progress` setting continues to control the running activity indicator.
+
+Metadata uses the editor's inset and avoids the terminal's wrap column. Narrow widths omit
+reasoning and branch details before truncating longer labels; trust/mode and Goal status take
+priority. Exact Goal usage and continuation counts remain available through `/goal`.
+Work-only updates invalidate their summary without rebuilding the session footer or transcript.
+
+## Input And Pasted Text
+
+Ordinary text stays inline. A bracketed paste with more than 1,000 Unicode characters or 10 lines
+appears as `[paste #1 1234 chars]` or `[paste #1 +25 lines]`. The marker is an atomic editor item;
+deleting it and undoing restores its associated text. Enter and the follow-up shortcut expand
+all bound pastes before submitting the message. Text inside a paste is expanded only once, so
+literal marker-looking text remains literal.
+
+Unsent input and folded paste bodies stay in memory. Switching sessions within the same TUI run
+keeps each session's draft, cursor, image descriptors and selected skill references. Failed
+submissions restore the source session's input and preserve any newer text. Restarting mycli
+opens an empty composer; drafts are not written to disk or restored from local files.
+
+Unsent drafts stay outside conversation history and training exports. Submitted messages use
+their expanded text in the existing transcript flow. Folding does not reduce context usage.
+Large pastes continue to use full-text submission with the editor's existing text normalization.
 
 ## Integration Inspection
 
@@ -119,3 +164,30 @@ The public package subpaths remain `.`, `./gateway`, and `./gateway-transport`. 
 the `mycli-source` condition; ordinary consumers load `dist/`. TUI builds clean `dist/` before
 compilation so moved files cannot survive as obsolete compiled modules. Root package tests and
 the packed CLI smoke verify source, JavaScript and declaration resolution.
+
+## Operation feedback
+
+`/compact` immediately shows **Compacting context** with a separate timer. Press Esc or Ctrl+C
+once to cancel. Completed, cancelled and failed compactions have distinct results; repeated
+compactions keep separate rows. The Working timer resumes after automatic compaction. The
+input editor and footer remain anchored at the bottom, with live activity next to agent output.
+
+Model changes confirm the selected provider/model, reasoning effort and session/user scope.
+Approval decisions remain visible in the current conversation view. Routine information uses
+neutral styling, while warnings and failures keep their own colors. Idle Ctrl+C shows an exit
+hint below the input; it clears after two seconds or further input.
+
+MCP startup shows server progress, and failures point to `/mcp`. Slow hooks show their execution
+phase; hook failures point to `/hooks`. Settings-load failures explain the fallback. Goal budget
+interruptions include `/goal` recovery instructions and retain their meaning after resume.
+Retry rows show the action and reason; expand them to inspect provider and retry-budget details.
+
+Terminal notifications are enabled by default when the terminal reports that it is unfocused.
+They announce turn completion or a request for approval, an answer or plan review, without
+including conversation contents. Toggle **Terminal notifications** in `/settings`, or set
+`tui_terminal_notifications = false` in your user config. Notifications use OSC 9; the terminal
+emulator must support focus reports and notifications. They are cleared when the runtime stops.
+
+A gateway disconnect prints the session recovery command. This does not automatically reconnect
+to a dead backend. Account-quota prewarnings also depend on provider-supplied quota data and are
+not inferred from context usage or local token counts.

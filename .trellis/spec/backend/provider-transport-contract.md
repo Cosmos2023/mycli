@@ -136,6 +136,18 @@ individual model declarations. `@mycli/config` stores immutable JSON DTOs; only
 - Explicit reasoning is admitted from pi-ai's `getSupportedThinkingLevels()` for catalog models.
   Mycli's `ultra` intent maps to pi-ai level `max` with an explicit `thinkingLevelMap.max = "ultra"`.
   Uncatalogued declared models use their configured reasoning metadata.
+- Keep model reasoning capability separate from request intent. Explicit `none` uses the SDK's
+  off mapping, retaining model capability so the SDK can emit the provider's disable parameter.
+  `streamSimple` encodes off as an absent reasoning option; never pass the unsupported string
+  `off` as `SimpleStreamOptions.reasoning`. For declared models an explicit intent supplies the
+  request model capability; pi-ai still owns wire dialect detection. Catalog models that exclude
+  off must reject it before dispatch. Semantic capabilities expose supported efforts in SDK order
+  and the effective model output/context ceilings without exposing provider wire metadata.
+- The effective generation ceiling is bounded by both user configuration and catalog capacity.
+  Per-request model clones also bound SDK thinking-budget expansion by the caller's total cap.
+  Failed terminal validation (including `length` and empty responses) retains any reported usage
+  exactly once. Preserve `provider.output_limit`/`provider.empty_response` with bounded finish
+  reason and output ceiling; missing upstream usage remains unknown.
 - `onPayload` is absent for ordinary requests. Its allowed uses are inserting
   `{type: "web_search", external_web_access: true}` into a live OpenAI Responses request and
   preserving canonical image detail, which pi-ai 0.84.4 does not yet expose. Image transforms

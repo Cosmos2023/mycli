@@ -2,7 +2,7 @@
 
 ## Error Context Format Fence
 
-Runtime stores now write format 14. The v12/v13 upgrade preserves transcript
+Runtime stores now write format 15 (including the format-14 error contract). The v12/v13 upgrade preserves transcript
 bytes and uses the existing transactional migration boundary. Enriched failures
 are gated by `store.errorContextVersion === 1`; pre-14 writers reject them.
 The same occurrence must survive tool results, completed effects, provider
@@ -354,6 +354,8 @@ assertDeepEqual(committedPrefix, oldManifest.timelineEventIds);
 - Artifact store: `SessionArtifactStore.appendEvent`, `writeTaskOutput`, and
   `writeSubagentSnapshot`.
 - Snapshot store: `TranscriptSnapshotStore.write` and `loadOrRebuild` with schema version 2.
+- Recent snapshot window: `SQLiteTranscriptEventRepository.loadReadableTranscriptSnapshot` returns
+  bounded `items` plus `coverage`; `loadRecentReadableTranscript` delegates to the same projection.
 - Paths: `events.jsonl`, `tasks/<safe-task-id>/output.txt`, and
   `subagents/subagent-<first-16-sha256-chars>.json` under the parent session directory.
 
@@ -361,6 +363,18 @@ assertDeepEqual(committedPrefix, oldManifest.timelineEventIds);
 
 - SQLite is authoritative for provider replay, task status, recovery, and index reconstruction.
 - JSON/JSONL files are private, bounded, readable projections and never replace canonical rows.
+- Schema-v2 snapshots optionally include `session`, `last_request`, and `coverage`. Session metadata
+  retains thread/title/lineage/compaction status; request summaries retain provider/model and context
+  snapshot references only. Never serialize provider configuration wholesale, native transport,
+  request bodies, credentials, or encrypted reasoning into these additions.
+- Coverage describes at most 2,000 raw events after partial-turn removal and 500 projected items.
+  Report raw event boundaries, omitted items in the window, and whether older events exist; do not
+  scan full ordinary-session history to count omissions. `history_truncated` covers omitted history,
+  while `truncated_items` counts retained truncated previews. Empty windows use null boundaries and
+  may still indicate omitted history. Absent coverage in legacy files means unknown coverage.
+- `message_count` remains the provider conversation item count, not the readable item count.
+  `last_request.model_input_event_count` is available for manifest v2/v3 timeline events and is not
+  a token estimate. The last request can precede the current selected model.
 - Terminal turn snapshots append one complete `conversation.saved` JSONL row after SQLite commit.
 - Assistant text emitted alongside a tool-call batch is one transcript message before that batch.
   Persist it once as an `assistant_message`; tool-call history rows keep empty display text and
@@ -369,8 +383,14 @@ assertDeepEqual(committedPrefix, oldManifest.timelineEventIds);
 - Readable transcript projection may repair legacy Node tool rows that contain the duplicated
   preamble by emitting one assistant item and clearing only the projected tool text. This is a
   read-time compatibility repair: it must not rewrite SQLite history or canonical conversation
-  rows. Safe tool targets such as a validated Skill name may be allowlisted into snapshot metadata;
-  raw arguments and private rationale remain excluded.
+  rows. Safe tool targets such as a validated Skill name may be allowlisted into snapshot metadata.
+  Built-in tool `metadata.input` retains only explicit fields by tool name (Read file/range, Shell
+  cwd/tty, discovery query, file/image targets, and legacy search conditions); arbitrary arguments,
+  environment values, mutation input bodies, and private rationale remain excluded. Project and
+  sanitize through the same allowlist so degraded loading preserves these details.
+- Long text, output, commands, selected input fields, and diffs use bounded head/tail previews.
+  Truncation flags survive call/result/Shell merging and repeated snapshot sanitization; item
+  `omitted_chars` is the maximum individual omission rather than a sum across fields.
 - Live subagent updates atomically replace the subagent JSON, refresh the parent snapshot index,
   and append `subagent.updated`; restart repair does not invent historical event rows.
 - Terminal subagent notifications include `<output-file>` only after the child-session task output
@@ -382,7 +402,8 @@ assertDeepEqual(committedPrefix, oldManifest.timelineEventIds);
 
 - Blank, `.`, path-like, traversal-like, NUL-bearing, or angle-placeholder identity -> reject
   before filesystem mutation.
-- Malformed optional `subagents` or `links.events` snapshot metadata -> reject the snapshot.
+- Malformed optional `subagents`, `links.events`, `session`, `last_request`, or `coverage` snapshot
+  metadata -> reject the snapshot. Coverage counts must agree with the sanitized transcript.
 - SQLite available with a stale valid snapshot -> return and rewrite the canonical SQLite
   projection.
 - Atomic task/subagent write fails before rename -> preserve the old target and remove the temp.
@@ -402,6 +423,8 @@ assertDeepEqual(committedPrefix, oldManifest.timelineEventIds);
 
 - Storage unit tests assert paths, private modes, deterministic hashes, JSONL rows, traversal
   rejection, atomic cleanup, enriched degraded loading, and stale-snapshot repair.
+- Coverage regressions include empty and hidden-only windows, item/raw limits, inherited history,
+  incomplete earliest turns, old manifest/v2 compatibility, and long command/input/diff round trips.
 - Storage projection tests assert a non-empty assistant tool preamble appears exactly once before
   sibling tools, new tool rows contain no duplicated preamble, and legacy rows project the same
   visible order without mutating durable history.
@@ -442,6 +465,9 @@ await artifactQueue.run(() => transcriptSnapshots.write(canonical));
 
 ### 3. Contracts
 
+- Local summaries use the normal transcript text storage path without a separate summary-length
+  ceiling. The compact checkpoint's replacement-message schema must accept text beyond the legacy
+  65,536-character suspended-message bound. Large summaries remain complete after reopening.
 - Every successful compact appends one immutable `compaction_boundary`; raw `history_items`,
   `turn_rollouts`, and `conversation_messages` remain append-only.
 - Provider reconstruction selects the newest valid boundary by `sequence_no DESC`, installs its
@@ -1548,3 +1574,62 @@ emitCompleted(terminal.task, terminal.thread);
 const committed = turnTerminalizations.terminalize({ kind: "completed", ...input });
 emit(projectCommittedTurnTerminalization(committed));
 ```
+
+## Goal lifecycle storage
+
+`session_goal` is a validated session-state snapshot. Goal mutations, cumulative
+`session_goal_usage` checkpoints, and non-model-visible `display_activity/goal`
+audit events commit in one transaction. Runtime opens upgrade format 12/13/14 to
+15. Pre-15 writers reject goal events; do not silently write new input sources into
+an old format. Creation, status controls, and usage must retain event identities.
+Usage checkpoints are cumulative per provider attempt; charge positive deltas only.
+Goal-bearing parent turns have stable `goal:<goal-id>:turn:<turn-id>` audit event
+identities. Use their captured revision when attributing deferred child work;
+do not substitute the most recent goal or confuse a tool call id with a turn id.
+
+Current-head forks retain the current goal, while explicitly selected historical
+forks use the goal snapshot before their completed-turn boundary. Assign a new goal
+id and pause active execution; do not resume side effects during history inspection.
+Runtime context rehydrates objective/status after compaction, independently of the
+accounting update stream. See `docs/goals.md` for the public lifecycle contract.
+
+## Training export boundary
+
+`exportSessionTrainingData(store, options, writeChunk)` writes one schema-v3 JSONL conversation
+with `source.session_id`, `messages` and distinct `tools`. Do not dump every provider request,
+raw event archive or cumulative training prefix. Each actual message/attachment appears once;
+preserve genuine repeated user/assistant messages rather than deduplicating by text.
+
+Read the bounded original transcript in sequence, not the readable 2,000-item projection or the
+latest compacted window. Do not append compaction replacement tails or UI status telemetry.
+Failures, interruptions, rollbacks, images and unmatched calls do not filter out conversations.
+Reconstruct only the first request for initial instructions and inherited fork context; subsequent
+context changes and unique tool snapshots come directly from the ledger. Current config/prompts
+are not historical sources. Context hints use their recorded updates and skip unchanged values.
+Do not inject context between a tool batch and its results. Manual compaction ids are not turns.
+
+Project known stored plaintext reasoning (including blob-backed content), and label reasoning
+summaries separately. Never interpret encrypted blocks, signatures or redacted thinking as text.
+Standalone reasoning display content already represented by an assistant block is not duplicated.
+Keep typed image bytes out of text-redaction regexes. Scope normalized tool-call ids by source turn
+so native ids reused across turns cannot cross-pair results. Preserve invalid arguments for curation.
+
+Keep multiline text and tool schemas intact while masking secrets. No new truncation or implicit
+sample-size filter is allowed. Stored tool output may already be capped before persistence; token
+stream chunks/timings were not recorded. Do not fabricate either. Reports expose message/tool/
+reasoning/image counts and fixed warnings for unavailable initial/legacy context, never raw errors.
+
+CLI and slash share `session-training-export-options.ts` and the app's atomic file writer.
+Bare `/export` exports the current session without arguments. Generate a unique
+`session-<UTC timestamp>-<random suffix>.jsonl` filename in the current workspace and report its
+absolute path. Keep explicit `--training --output <path>` compatibility; the CLI continues to
+require both flags for conversation JSONL export (`--json` is CLI reporting). Remove the former
+`--samples-only`, `--include-tool-errors` and `--max-sample-bytes` behavior; it was not the requested
+conversation export. Preserve ordinary readable session export compatibility.
+
+Stream one JSON object with escaped message strings and a single terminating newline to an
+owner-only temporary file. Atomic no-overwrite publication protects existing files and symlinks;
+abort/IO failure removes the partial file. Slash export owns idle session control and shutdown
+drains its cancellation before closing SQLite. No provider invocation or training job occurs.
+Tests cover unique message/image counts across many provider steps and compaction, source paging,
+legacy/missing input, inherited prefixes, secrets, file races, cancellation and CLI/TUI parity.

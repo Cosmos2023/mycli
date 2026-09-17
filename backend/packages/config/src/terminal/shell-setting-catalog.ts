@@ -11,6 +11,7 @@ export interface ShellSettings {
 	readonly hardware_cursor: boolean;
 	readonly clear_on_shrink: boolean;
 	readonly terminal_progress: boolean;
+	readonly terminal_notifications: boolean;
 	readonly subagent_density: "compact" | "normal" | "detailed";
 	readonly color_mode: "auto" | "truecolor" | "256" | "16" | "none";
 	readonly reduced_motion: boolean;
@@ -37,6 +38,7 @@ export type ShellSettingClientKey =
 	| "hardwareCursor"
 	| "clearOnShrink"
 	| "terminalProgress"
+	| "terminalNotifications"
 	| "subagentDensity"
 	| "colorMode"
 	| "reducedMotion"
@@ -67,6 +69,7 @@ export const DEFAULT_SHELL_SETTINGS: ShellSettings = Object.freeze({
 	hardware_cursor: false,
 	clear_on_shrink: true,
 	terminal_progress: true,
+	terminal_notifications: true,
 	subagent_density: "normal",
 	color_mode: "auto",
 	reduced_motion: false,
@@ -162,6 +165,17 @@ export const SHELL_SETTING_DESCRIPTORS: readonly ShellSettingDescriptor[] = Obje
 		path: ["tui_terminal_progress"],
 		legacyPaths: [["terminalProgress"], ["terminal_progress"]],
 		inputKeys: ["terminalProgress", "terminal_progress", "tui_terminal_progress"],
+	}),
+	descriptor({
+		key: "tui.terminal_notifications",
+		settingKey: "terminal_notifications",
+		clientKey: "terminalNotifications",
+		label: "Terminal notifications",
+		description: "Notifies when unfocused and a turn finishes or needs your attention",
+		allowedValues: [true, false],
+		path: ["tui_terminal_notifications"],
+		legacyPaths: [["terminalNotifications"], ["terminal_notifications"]],
+		inputKeys: ["terminalNotifications", "terminal_notifications", "tui_terminal_notifications"],
 	}),
 	descriptor({
 		key: "tui.subagent_density",

@@ -1,3 +1,5 @@
+import { runtimeStateWithResources } from "../state/extension-feedback.ts";
+import { randomUUID } from "node:crypto";
 import type { ReviewSelection } from "@mycli/contracts";
 import { createHookManagerClient } from "./hook-manager-client.ts";
 import { parseSkillReferences } from "@mycli/contracts";
@@ -390,6 +392,7 @@ async function bootstrap(): Promise<void> {
 	await loadRetryHistory();
 	await loadCommands();
 	await loadSettings();
+	await loadResources();
 	await loadSessions().catch(() => undefined);
 	bootstrapped = true;
 }
@@ -400,8 +403,14 @@ async function loadSettings(): Promise<MycliShellSettingsSnapshot | undefined> {
 		const snapshot = withViewModeOverride(settingsSnapshotFromResult(result));
 		setRuntimeState(runtimeStateWithSettingsSnapshot(runtimeState, snapshot));
 		return snapshot;
-	} catch {
-		// Keep built-in defaults when the gateway does not support persistent settings.
+	} catch (error) {
+		// Only an explicitly unsupported service is a compatibility fallback.
+		if (!(error instanceof GatewayRequestError && error.code === "method_not_found")) {
+			setRuntimeState({ ...runtimeState, transcript: [...runtimeState.transcript.filter((item) => item.id !== "settings-load-warning"), {
+				id: "settings-load-warning", type: "warning", folded: false,
+				text: "Could not load saved interface settings. Keeping the current settings (built-in defaults at startup). Run mycli config validate, then reopen /settings.",
+			}] });
+		}
 		return undefined;
 	}
 }
@@ -811,6 +820,19 @@ async function popLastQueuedFollowUp(): Promise<MycliShellQueuedInput | null> {
 
 async function interruptTurn(options: { rollbackUserInput: boolean }): Promise<boolean> {
 	const context = currentSessionMutationContext();
+	const compaction = runtimeState.activeCompaction;
+	if (compaction?.source === "user_requested") {
+		setRuntimeState({ ...runtimeState, activeCompaction: { ...compaction, cancelling: true, text: "Cancelling compaction" } });
+		try {
+			const result = await send("turn.interrupt", { operation_id: compaction.id, ...sessionMutationFields(context) });
+			return result.accepted === true;
+		} catch (error) {
+			if (sessionMutationContextIsCurrent(context) && runtimeState.activeCompaction?.id === compaction.id) {
+				setRuntimeState({ ...runtimeState, activeCompaction: compaction });
+			}
+			throw error;
+		}
+	}
 	const requestedClientTurnId = runtimeState.activeClientTurnId;
 	const pendingClarification = runtimeState.pendingClarification;
 	const pendingClarificationTurnId = pendingClarification
@@ -1145,7 +1167,21 @@ async function loadProviderModels(providerId: string): Promise<MycliShellModel[]
 
 async function runCommand(command: string): Promise<void> {
 	const source = currentSessionMutationContext();
-	const result = await send("command.run", { command, surface: commandSurface, ...sessionMutationFields(source) });
+	const manual = /^\/compact(?:\s|$)/.test(command.trim());
+	const operationId = manual ? `compact_${randomUUID()}` : undefined;
+	if (manual) {
+		if (runtimeState.activeCompaction) throw new Error("Context compaction is already running.");
+		setRuntimeState({ ...runtimeState, activeCompaction: { id: operationId!, source: "user_requested", text: "Compacting context" } });
+	}
+	let result: Record<string, unknown>;
+	try {
+		result = await send("command.run", { command, surface: commandSurface,
+			...(operationId ? { operation_id: operationId } : {}), ...sessionMutationFields(source) });
+	} finally {
+		if (manual && sessionMutationContextIsCurrent(source) && runtimeState.activeCompaction?.id === operationId) {
+			setRuntimeState({ ...runtimeState, activeCompaction: null });
+		}
+	}
 	if (shuttingDown) return;
 	const destination = stringValue(result.session_id);
 	const generation = generationValue(result.generation);
@@ -1160,6 +1196,7 @@ async function runCommand(command: string): Promise<void> {
 		return;
 	}
 	if (!sessionMutationContextIsCurrent(source)) return;
+	if (manual && result.lifecycle_started === true) return;
 	const clientAction = clientActionFromResult(result);
 	if (clientAction && runtime) {
 		await runtime.handleClientAction(clientAction.action, clientAction.args);
@@ -1248,10 +1285,10 @@ async function loadSessionTree() {
 }
 
 async function loadResources() {
+	const context = currentSessionMutationContext();
 	const result = await send("resource.list", {});
 	const resources = resourcesFromResult(result);
-	runtimeState = { ...runtimeState, resources };
-	refreshRuntime();
+	if (sessionMutationContextIsCurrent(context) && !shuttingDown) setRuntimeState(runtimeStateWithResources(runtimeState, resources));
 	return resources;
 }
 
@@ -1330,6 +1367,14 @@ async function handleUnexpectedGatewayClose(error: Error): Promise<void> {
 	});
 	process.stderr.write(`[mycli-shell] ${errorSummary(errorContext)}`
 		+ (logPath ? " Diagnostics were written to ~/.mycli/logs/tui-errors.log.\n" : "\n"));
+	if (runtimeState.sessionId) {
+		const sessionId = runtimeState.sessionId;
+		if (/^[a-zA-Z0-9][a-zA-Z0-9_.:-]*$/u.test(sessionId)) {
+			process.stderr.write(`[mycli-shell] Resume this session: mycli session resume ${sessionId}\n`);
+		} else {
+			process.stderr.write("[mycli-shell] Reopen mycli and choose this session with /resume.\n");
+		}
+	}
 	process.exitCode = 1;
 }
 
@@ -1347,8 +1392,8 @@ async function handleFatalTuiError(error: unknown): Promise<void> {
 async function stopLocalRuntime(): Promise<void> {
 	shuttingDown = true;
 	sessionTransitions.invalidate();
-	if (runtime?.isStarted()) {
-		runtime.ui.stop();
+	if (runtime) {
+		runtime.stop();
 	}
 	if (nativeRuntime?.isStarted()) {
 		await nativeRuntime.stop({ notifyExit: false });

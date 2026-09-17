@@ -288,3 +288,24 @@ async function temporaryWorkspace(t: test.TestContext): Promise<string> {
 	)));
 	return workspace;
 }
+
+test("managed denies survive Full Access, grants, and restored turns", async (t) => {
+	const workspace = await temporaryWorkspace(t);
+	const denied = join(workspace, "secret");
+	const coordinator = new ExecutionPolicyCoordinator({ workspaceRoot: workspace,
+		constraints: { source: "managed", deniedReadRoots: [denied], deniedReadGlobs: ["**/.env"] } });
+	coordinator.configure({ trust: "trusted", permission: "full-access" });
+	const turn = coordinator.beginTurn("denied");
+	assert.equal(turn.profile.mode, "workspace-write");
+	assert.deepEqual(turn.profile.deniedReadRoots, [denied]);
+	const grant = coordinator.grant({ turnId: "denied", scope: "session", permissions: { fileSystem: { read: [denied], write: [denied] } } });
+	assert.equal(grant.constrained, true);
+	assert.deepEqual(grant.permissions.fileSystem, { read: [], write: [] });
+	assert.deepEqual(coordinator.sandboxOverrideProfile().deniedReadGlobs, ["**/.env"]);
+	coordinator.finishTurn("denied");
+	const restored = coordinator.restoreTurn("restore", { toolsEnabled: true, profile: {
+		mode: "danger-full-access", filesystem: "unrestricted", network: "enabled", writableRoots: [workspace],
+	} });
+	assert.deepEqual(restored.profile.deniedReadRoots, [denied]);
+	assert.equal(restored.profile.mode, "workspace-write");
+});

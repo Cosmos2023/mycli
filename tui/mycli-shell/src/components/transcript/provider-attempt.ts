@@ -22,13 +22,14 @@ export class ProviderAttemptComponent extends Container {
 			? "Recovery paused" : stateLabel(latest);
 		const budget = `request ${latest.requestRetriesUsed}/${latest.policy.requestMaxRetries}, stream ${latest.streamRetriesUsed}/${latest.policy.streamMaxRetries}`;
 		this.addChild(new Text(theme.fg("muted",
-			`${view.expanded ? "v" : ">"} ${label} | ${boundedUiText(latest.provider, "Provider", 80)}/${boundedUiText(latest.model, "model", 100)} | attempt ${latest.attempt} (${budget})`,
+			`${view.expanded ? "v" : ">"} ${label} · attempt ${latest.attempt}${latest.state === "scheduled" && latest.retryAt ? ` · waiting ${Math.max(0, (Date.parse(latest.retryAt) - Date.parse(latest.observedAt)) / 1000).toFixed(1)} s` : ""}`,
 		), 1, 0));
 		if (!view.expanded) {
 			const detail = safeReason(latest);
 			if (detail) this.addChild(new Text(theme.fg("dim", `  ${detail}`), 1, 0));
 			return;
 		}
+		this.addChild(new Text(theme.fg("dim", `  ${boundedUiText(latest.provider, "Provider", 80)}/${boundedUiText(latest.model, "model", 100)} | ${budget}`), 1, 0));
 		const visible = view.records.slice(-1000);
 		if (visible[0]!.sequence > 1) {
 			this.addChild(new Text(theme.fg("dim", "  Earlier retry history available"), 1, 0));

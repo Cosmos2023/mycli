@@ -1,4 +1,6 @@
 export { TurnTransitionError } from "./errors.ts";
+export { GoalStateError, goalReference, matchesGoal, goalObjective, goalTokenBudget, createSessionGoal, changeGoalStatus, goalUsageTokens, addGoalCount } from "./lifecycle/session-goal.ts";
+export type { GoalRef, GoalStatus } from "./lifecycle/session-goal.ts";
 export { isSkillReferenceName } from "./skill-reference.ts";
 export { TOOL_RESULT_OUTPUT_MAX_CHARS } from "./conversation/tool-output.ts";
 export { toolDiscovery, parseToolDiscoveries } from "./conversation/tool-discovery.ts";

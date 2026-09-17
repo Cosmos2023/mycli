@@ -1,6 +1,6 @@
 {
   "name": "@mycli/tools",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "types": "./dist/index.d.ts",
@@ -26,8 +26,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@mycli/contracts": "0.1.0",
-    "@mycli/core": "0.1.0",
+    "@mycli/contracts": "0.1.1",
+    "@mycli/core": "0.1.1",
     "adm-zip": "^0.6.0",
     "ajv": "^8.17.1",
     "ajv-formats": "^3.0.1",
@@ -39,12 +39,12 @@
     "tar": "^7.5.22"
   },
   "optionalDependencies": {
-    "@cosmos2023/ripgrep-darwin-arm64": "0.1.0",
-    "@cosmos2023/ripgrep-darwin-x64": "0.1.0",
-    "@cosmos2023/ripgrep-linux-arm64": "0.1.0",
-    "@cosmos2023/ripgrep-linux-x64": "0.1.0",
-    "@cosmos2023/ripgrep-win32-arm64": "0.1.0",
-    "@cosmos2023/ripgrep-win32-x64": "0.1.0"
+    "@cosmos2023/ripgrep-darwin-arm64": "0.1.1",
+    "@cosmos2023/ripgrep-darwin-x64": "0.1.1",
+    "@cosmos2023/ripgrep-linux-arm64": "0.1.1",
+    "@cosmos2023/ripgrep-linux-x64": "0.1.1",
+    "@cosmos2023/ripgrep-win32-arm64": "0.1.1",
+    "@cosmos2023/ripgrep-win32-x64": "0.1.1"
   },
   "devDependencies": {
     "tsx": "^4.22.4",

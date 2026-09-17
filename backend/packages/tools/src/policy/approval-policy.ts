@@ -1,3 +1,4 @@
+import { deniedReadPath } from "./denied-read-policy.ts";
 import {
 	isAbsolute,
 	posix,
@@ -42,11 +43,12 @@ import {
 } from "../shell/shell-sandbox-permissions.ts";
 import {
 	parsePermissionRequest,
-	pathWithinRoot,
 	permissionRequestPreview,
 	permissionRequestSatisfied,
 	REQUEST_PERMISSIONS_TOOL_NAME,
 } from "./permission-grants.ts";
+import { isWithinRoots } from "../path-containment.ts";
+import { canonicalMutationPath } from "../files/canonical-path.ts";
 import type { ToolExecutionResult } from "../types.ts";
 
 const MAX_PREVIEW_CHARS = 512;
@@ -276,7 +278,7 @@ export class ApprovalPolicy {
 					request.errorKind,
 				);
 			}
-			if (permissionRequestSatisfied(request.permissions, executionPolicy)) {
+			if (permissionRequestSatisfied(request.permissions, executionPolicy, this.#workspaceRoot)) {
 				return allow(call, "Requested permissions are already available");
 			}
 			return Object.freeze({
@@ -306,14 +308,19 @@ export class ApprovalPolicy {
 				: "File sandbox justification is not valid for the active policy.", sandbox.errorKind);
 		}
 		const paths = mutationPaths(argumentsValue);
+		if (paths.some((path) => deniedReadPath(this.#workspaceRoot, path, executionPolicy ?? {}))) {
+			return deny(call, "The target is protected by a managed denied-read rule.", "permission_denied");
+		}
 		const projected = paths.map((path) => this.#projectWorkspacePath(path));
-		const permittedByRoots = executionPolicy !== undefined
-			&& paths.every((path) => this.#pathAllowedByPolicy(path, executionPolicy));
+		const targetsWritable = fullAccess || (executionPolicy !== undefined
+			? executionPolicy.filesystem !== "read_only"
+				&& paths.every((path) => this.#pathAllowedByPolicy(path, executionPolicy))
+			: this.#permissionProfile !== "read-only" && projected.every((path) => path !== undefined));
 		const previewTarget = mutationPreviewTarget(
 			manifest.name,
 			paths,
 			projected,
-			fullAccess || permittedByRoots,
+			targetsWritable,
 		);
 		if (sandbox.permissions === "danger-full-access") {
 			const escalationTarget = mutationPreviewTarget(manifest.name, paths, projected, true);
@@ -337,9 +344,9 @@ export class ApprovalPolicy {
 				options: APPROVAL_OPTIONS,
 			});
 		}
-		if (!previewTarget) {
+		if (!previewTarget || !targetsWritable) {
 			this.#rememberMutationSandboxDenial(call, turnId);
-			return deny(call, "Mutation target is outside the workspace.", "workspace_escape");
+			return deny(call, "Mutation target is outside the allowed writable roots.", "workspace_escape");
 		}
 		const preview = bounded(previewTarget);
 		if (fullAccess || this.#autoApproveMedium) {
@@ -526,7 +533,8 @@ export class ApprovalPolicy {
 
 	#projectWorkspacePath(rawPath: string): string | undefined {
 		const normalized = rawPath.trim();
-		if (!normalized || normalized.includes("\0") || WINDOWS_ABSOLUTE_PATH.test(normalized)) {
+		if (!normalized || normalized.includes("\0")
+			|| this.#platform !== "win32" && WINDOWS_ABSOLUTE_PATH.test(normalized)) {
 			return undefined;
 		}
 		const candidate = resolve(this.#workspaceRoot, normalized);
@@ -539,13 +547,15 @@ export class ApprovalPolicy {
 
 	#pathAllowedByPolicy(rawPath: string, policy: ExecutionPolicy): boolean {
 		const normalized = rawPath.trim();
-		if (!normalized || normalized.includes("\0") || WINDOWS_ABSOLUTE_PATH.test(normalized)) {
+		if (!normalized || normalized.includes("\0")
+			|| this.#platform !== "win32" && WINDOWS_ABSOLUTE_PATH.test(normalized)) {
 			return false;
 		}
 		const candidate = isAbsolute(normalized)
 			? resolve(normalized)
 			: resolve(this.#workspaceRoot, normalized);
-		return policy.writableRoots.some((root) => pathWithinRoot(root, candidate));
+		const canonical = canonicalMutationPath(candidate);
+		return canonical !== undefined && isWithinRoots(canonical, policy.writableRoots);
 	}
 
 	#rememberMutationSandboxDenial(call: CanonicalToolCall, turnId: string | undefined): void {

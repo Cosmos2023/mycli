@@ -19,7 +19,12 @@ export class TokenCounter {
 
 	constructor(options: TokenCounterOptions = {}) {
 		this.#maxCache = cacheBound(options.maxCache ?? 10_000);
-		this.#loadEncoder = options.loadEncoder ?? (() => getEncoding("o200k_base"));
+		this.#loadEncoder = options.loadEncoder ?? (() => {
+			const encoder = getEncoding("o200k_base");
+			// Conversation text can quote tokenizer markers. Count them as ordinary
+			// content instead of rejecting them or interpreting them as control tokens.
+			return { encode: (text: string): readonly number[] => encoder.encode(text, [], []) };
+		});
 	}
 
 	count(text: string): number {

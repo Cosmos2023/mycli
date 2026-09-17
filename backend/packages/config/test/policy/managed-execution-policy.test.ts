@@ -74,3 +74,17 @@ async function writeToml(path: string, lines: readonly string[]): Promise<void> 
 	await mkdir(dirname(path), { recursive: true });
 	await writeFile(path, `${lines.join("\n")}\n`, "utf8");
 }
+
+test("managed denied reads are immutable independent constraints with strict paths", async (t) => {
+	const homeDir = await temporaryHome(t);
+	const path = join(homeDir, ".mycli", "managed_config.toml");
+	await writeToml(path, ["[execution_policy]", `denied_read_roots = [${JSON.stringify(join(homeDir, "private"))}]`, 'denied_read_globs = ["**/.env", "**/.env"]']);
+	const policy = await loadManagedExecutionPolicy({ homeDir });
+	assert.deepEqual(policy, { source: "managed", deniedReadRoots: [join(homeDir, "private")], deniedReadGlobs: ["**/.env"] });
+	assert.equal(Object.isFrozen(policy?.deniedReadRoots), true);
+	assert.equal(Object.isFrozen(policy?.deniedReadGlobs), true);
+	for (const line of ['denied_read_roots = ["relative"]', 'denied_read_globs = ["../secret"]', 'denied_read_globs = true']) {
+		await writeToml(path, ["[execution_policy]", line]);
+		await assert.rejects(loadManagedExecutionPolicy({ homeDir }), /config_error/u);
+	}
+});

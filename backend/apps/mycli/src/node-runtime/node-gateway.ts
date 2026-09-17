@@ -1,3 +1,9 @@
+import { modelSelectionNotice } from "@mycli/contracts";
+import { parseTrainingExportSettings, type SessionTrainingExportSettings } from "./session-training-export-options.ts";
+import { TrainingExportError, type TrainingExportResult } from "./session-training-export.ts";
+import { randomUUID } from "node:crypto";
+import { publishCompactionEvent } from "./node-gateway-compaction.ts";
+import { applyGoalControl, describeGoal, parseGoalCommand, type GoalControl } from "./node-goal-commands.ts";
 import {
 	gatewayContractCatalog,
 	createErrorContext,
@@ -123,7 +129,8 @@ class InProcessNodeGateway implements NodeGateway {
 	readonly #capabilityController: NodeGatewayCapabilityController;
 	#errorContextVersion: 1 | undefined;
 	#closePromise: Promise<void> | null = null;
-	#manualCompaction: { readonly controller: AbortController; readonly task: Promise<NodeGatewayCompactionResult> } | null = null;
+	#manualCompaction: { readonly id: string; readonly controller: AbortController; readonly task: Promise<NodeGatewayCompactionResult> } | null = null;
+	#trainingExport: { readonly controller: AbortController; readonly task: Promise<TrainingExportResult> } | null = null;
 	#unsubscribeSubagents: (() => void) | null = null;
 	#unsubscribeExtensions: (() => void) | null = null;
 	#unsubscribeAgentInteractiveRequests: (() => void) | null = null;
@@ -194,7 +201,9 @@ class InProcessNodeGateway implements NodeGateway {
 			publish: (method, params) => { this.#emitRuntime(method, params); },
 		});
 		this.#turnController = new NodeGatewayTurnController({
-			dependencies: options,
+			dependencies: { ...options, hasPendingGoalInteraction: () => this.#interactiveController.hasPending()
+				|| (options.agentInteractiveRequests?.pending().length ?? 0) > 0
+				|| (options.mcpElicitations?.pending().length ?? 0) > 0 },
 			session: this.#sessionController,
 			settings: this.#settingsController,
 			isClosed: () => this.#closed,
@@ -230,6 +239,7 @@ class InProcessNodeGateway implements NodeGateway {
 			const params = { ...notification.params };
 			if (params.session_id !== this.#sessionController.context().sessionId) params.child_session_id = params.session_id;
 			this.#emitRuntime(notification.method, params);
+			this.#turnController.requestNextQueuedTurn();
 		}) ?? null;
 		this.#emitDirect("runtime.ready", { session_id: this.#sessionController.sessionId() });
 		this.#turnController.requestNextQueuedTurn();
@@ -243,6 +253,8 @@ class InProcessNodeGateway implements NodeGateway {
 			const capabilityCleanup = this.#capabilityController.close();
 			const manualCompaction = this.#manualCompaction;
 			manualCompaction?.controller.abort();
+			const trainingExport = this.#trainingExport;
+			trainingExport?.controller.abort();
 			this.#sessionController.close();
 			this.#shellController.close();
 				this.#unsubscribeSubagents?.();
@@ -259,6 +271,7 @@ class InProcessNodeGateway implements NodeGateway {
 			try {
 				await this.#turnController.close();
 				await manualCompaction?.task.catch(() => undefined);
+				await trainingExport?.task.catch(() => undefined);
 				await pluginCleanup;
 				await capabilityCleanup;
 				await this.#options.close();
@@ -293,6 +306,11 @@ class InProcessNodeGateway implements NodeGateway {
 					{ ...request.params, protocol_version: request.params.protocol_version ?? 1 },
 					false,
 				);
+			case "goal.get":
+				return this.#goalSnapshot();
+			case "goal.update":
+				this.#sessionController.assertMutationContext(request.params);
+				return this.#updateGoal(request.params as GoalControl);
 			case "status.get":
 			case "status.inspect":
 				return this.#status();
@@ -418,6 +436,13 @@ class InProcessNodeGateway implements NodeGateway {
 			case "turn.queue.migration.ack":
 				return this.#turnController.acknowledgeQueueMigration(request.params);
 			case "turn.interrupt":
+				if (request.params.operation_id !== undefined) {
+					this.#sessionController.assertMutationContext(request.params);
+					const operation = this.#manualCompaction;
+					if (!operation || operation.id !== request.params.operation_id) return { accepted: false };
+					operation.controller.abort();
+					return { accepted: true, requested: true };
+				}
 				return this.#turnController.interrupt(request.params);
 			case "shutdown":
 				return { ok: true };
@@ -710,6 +735,7 @@ class InProcessNodeGateway implements NodeGateway {
 	}
 
 	#commandUnavailableReason(id: string): string | undefined {
+		if (id === "export" && !this.#options.sessionCommands?.exportTraining) return "Training export is unavailable";
 		if (["login", "model", "settings"].includes(id) && !this.#options.controlCommands) {
 			return "Runtime configuration controls are unavailable";
 		}
@@ -813,12 +839,19 @@ class InProcessNodeGateway implements NodeGateway {
 			}
 			return this.#shellController.psCommandResult();
 		}
-		const coreResult = await this.#coreCommand(invocation);
+		const coreResult = await this.#coreCommand(invocation, params);
 		if (coreResult) return coreResult;
 		throw new GatewayFailure("method_not_found", "Unknown command.");
 	}
 
-	async #coreCommand(invocation: ReturnType<typeof resolveSlashCommand>): Promise<JsonObject | undefined> {
+	async #coreCommand(invocation: ReturnType<typeof resolveSlashCommand>, params: JsonObject): Promise<JsonObject | undefined> {
+		if (invocation.commandId === "export") return this.#exportTraining(invocation);
+		if (invocation.commandId === "goal") {
+			const control = parseGoalCommand(invocation.args);
+			if (control) await this.#updateGoal(control);
+			const goal = this.#sessionController.runtime().goal?.inspect() ?? null;
+			return noticeCommandResult(invocation, "Goal", describeGoal(goal), { extra: { goal } });
+		}
 		if (invocation.commandId === "rename") {
 			const rename = this.#options.sessionCommands?.rename;
 			if (!rename) throw new GatewayFailure("unavailable_feature", "Session rename is unavailable.");
@@ -1226,12 +1259,10 @@ class InProcessNodeGateway implements NodeGateway {
 				}
 			}
 			this.#emitRuntime("status.changed", this.#status());
-			return noticeCommandResult(invocation, "Model updated", [
-				`model=${this.#settingsController.model}`,
-				...(this.#settingsController.reasoningEffort
-					? [`thinking_effort=${this.#settingsController.reasoningEffort}`]
-					: []),
-			].join("; "), {
+			return noticeCommandResult(invocation, "Model changed", modelSelectionNotice(
+				this.#settingsController.provider, this.#settingsController.model,
+				this.#settingsController.reasoningEffort, "session",
+			), {
 				extra: {
 					mutated_model: true,
 					model: this.#settingsController.model,
@@ -1359,16 +1390,34 @@ class InProcessNodeGateway implements NodeGateway {
 			const compact = this.#sessionController.runtime().compact;
 			if (!compact) throw new GatewayFailure("method_not_found", "Manual compaction is unavailable.");
 			if (this.#closed) throw new GatewayFailure("gateway_closed", "Gateway is closed.");
+			const release = this.#sessionController.claimControl("Wait for the current operation before compacting context.");
+			const context = this.#sessionController.context();
 			const controller = new AbortController();
-			const operation = { controller, task: Promise.resolve().then(() => compact({
-				modelOverride: this.#settingsController.model, signal: controller.signal,
+			const operationId = optionalString(params.operation_id) ?? `compact_${randomUUID()}`;
+			let lifecycleStarted = false;
+			const operation = { id: operationId, controller, task: Promise.resolve().then(() => compact({
+				operationId, modelOverride: this.#settingsController.model, signal: controller.signal,
+				emit: (event) => {
+					if (this.#closed || !this.#sessionController.isCurrent(context)) return;
+					if (event.type === "compaction_started") lifecycleStarted = true;
+					publishCompactionEvent(event, (method, payload) => this.#eventProjector.emitRuntime(method, payload, context));
+				},
 			})) };
 			this.#manualCompaction = operation;
 			let result: NodeGatewayCompactionResult;
 			try {
 				result = await operation.task;
+			} catch (error) {
+				if (lifecycleStarted || !controller.signal.aborted || !(error instanceof Error) || error.name !== "AbortError") {
+					throw error;
+				}
+				return noticeCommandResult(invocation, "Compaction cancelled", "Context compaction cancelled.", {
+					severity: "info",
+					extra: { command_kind: "compact", compaction_status: "interrupted", lifecycle_started: false },
+				});
 			} finally {
 				if (this.#manualCompaction === operation) this.#manualCompaction = null;
+				release();
 			}
 			const presentation = compactionCommandPresentation(result);
 			return noticeCommandResult(
@@ -1380,6 +1429,7 @@ class InProcessNodeGateway implements NodeGateway {
 					extra: {
 						command_kind: "compact",
 						compaction_status: result.status,
+						lifecycle_started: lifecycleStarted,
 						tokens: { before: result.beforeTokens, after: result.afterTokens },
 						...(result.failure ? { failure: result.failure } : {}),
 						...(result.usage ? { usage: result.usage } : {}),
@@ -1411,6 +1461,66 @@ class InProcessNodeGateway implements NodeGateway {
 		await this.#options.integrations?.refresh?.();
 		const resources = await this.#options.integrations?.listResources?.() ?? [];
 		return { resources: resources.map(boundedResource).filter(isObject) };
+	}
+
+	async #exportTraining(invocation: ReturnType<typeof resolveSlashCommand>): Promise<JsonObject> {
+		let settings: SessionTrainingExportSettings | undefined;
+		try { settings = invocation.args.trim() ? parseTrainingExportSettings(shellWords(invocation.args)) : {}; }
+		catch { /* Show canonical usage below. */ }
+		if (!settings) return errorCommandResult(invocation, "Use /export to save the current session's complete conversation as JSONL.", "/export");
+		const exportTraining = this.#options.sessionCommands?.exportTraining;
+		if (!exportTraining) return errorCommandResult(invocation, "Training export is unavailable.");
+		if (this.#closed) throw new GatewayFailure("gateway_closed", "Gateway is closed.");
+		const release = this.#sessionController.claimControl("Wait for the current operation before exporting training data.");
+		const controller = new AbortController();
+		const sessionId = this.#sessionController.sessionId();
+		try {
+			this.#settingsController.ensureSessionPreferences(this.#settingsController.collaborationMode);
+			const task = Promise.resolve().then(() => {
+				controller.signal.throwIfAborted();
+				return exportTraining(sessionId, settings, controller.signal);
+			});
+			this.#trainingExport = { controller, task };
+			const { output_path: outputPath, report } = await task;
+			return diagnosticCommandResult(invocation, "Conversation exported", [
+				{ label: "File", value: outputPath },
+				{ label: "Messages", value: String(report.messages) },
+				{ label: "Tool calls", value: String(report.tool_calls) },
+				{ label: "Tool results", value: String(report.tool_results) },
+				{ label: "Reasoning blocks", value: String(report.reasoning_blocks) },
+				{ label: "Images", value: String(report.images) },
+				{ label: "Redactions", value: String(report.redactions) },
+				...report.warnings.map((warning) => ({ label: "Warning", value: humanize(warning) })),
+			]);
+		} catch (error) {
+			return errorCommandResult(invocation, controller.signal.aborted ? "Training export cancelled."
+				: error instanceof TrainingExportError ? error.message
+					: "Training export failed; check the session database and output directory.");
+		} finally {
+			this.#trainingExport = null;
+			release();
+		}
+	}
+
+	#goalSnapshot(): JsonObject {
+		return { session_id: this.#sessionController.sessionId(), generation: this.#sessionController.context().generation,
+			goal: this.#sessionController.runtime().goal?.inspect() ?? null };
+	}
+
+	async #updateGoal(control: GoalControl): Promise<JsonObject> {
+		if (this.#sessionController.transitionActive || this.#sessionController.controlActive) throw new GatewayFailure("session_changed", "Session control is busy.");
+		const service = this.#sessionController.runtime().goal;
+		if (!service) throw new GatewayFailure("unavailable_feature", "Goals are available in interactive root sessions.");
+		if (control.action === "create" || control.action === "resume") {
+			this.#settingsController.ensureSessionPreferences(this.#settingsController.collaborationMode);
+		}
+		applyGoalControl(service, control);
+		const turnId = this.#turnController.activeTurnId();
+		if (turnId && (control.action === "pause" || control.action === "clear" || control.action === "edit")) {
+			await this.#turnController.interrupt({ ...this.#sessionController.context(), session_id: this.#sessionController.sessionId(), turn_id: turnId }, control.action !== "edit");
+		}
+		this.#turnController.requestNextQueuedTurn();
+		return this.#goalSnapshot();
 	}
 
 	#status(): JsonObject {
@@ -1447,6 +1557,7 @@ class InProcessNodeGateway implements NodeGateway {
 			suspended_turn: session?.pendingApproval !== undefined
 				|| session?.pendingClarification !== undefined
 				|| session?.suspendedTurn === true,
+			goal: this.#sessionController.runtime().goal?.get() ?? null,
 			turn_running: this.#turnController.hasActiveTurn(),
 			turn_id: this.#turnController.activeTurnId(),
 			queued_steering: steering.map((item) => item.text),
@@ -1492,9 +1603,11 @@ class InProcessNodeGateway implements NodeGateway {
 				if (this.#closed) return;
 				if (notification.method === "interactive.cancelled") {
 					this.#interactiveController.cancel({ ...notification.params });
+					this.#turnController.requestNextQueuedTurn();
 					return;
 				}
 				this.#emitRuntime(notification.method, { ...notification.params });
+				this.#turnController.requestNextQueuedTurn();
 			},
 		) ?? null;
 	}

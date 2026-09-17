@@ -22,6 +22,7 @@ export function reduceRuntimeLifecycle(
 	reduced: RuntimeShellState,
 	event: DecodedRuntimeEvent<string>,
 ): RuntimeShellState {
+	if (previous === reduced && (event.method === "approval.respond" || event.method === "clarify.respond")) return reduced;
 	const patch = runtimeLifecyclePatch(previous, event);
 	return patch ? { ...reduced, ...patch } : reduced;
 }
@@ -44,6 +45,8 @@ function runtimeLifecyclePatch(
 	) {
 		return null;
 	}
+	if (method === "compaction.started" || method === "compaction.completed"
+		|| (method === "status.update" && params.kind === "compaction")) return null;
 	if (method === "turn.started") {
 		return {
 			turnRunning: true,
@@ -56,8 +59,6 @@ function runtimeLifecyclePatch(
 	if (
 		method === "reasoning.delta" ||
 		method === "thinking.delta" ||
-		method === "compaction.started" ||
-		method === "compaction.completed" ||
 		method === "stream.retrying"
 	) {
 		return { turnRunning: true };

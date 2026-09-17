@@ -588,7 +588,7 @@ async function createRuntimeIntegrationContent(input: {
 		homeDir: options.homeDir, env: options.env, includeRepository: input.projectConfigurationEnabled });
 	const pluginDiscovery = configuration.plugins;
 	const bundles = pluginBundleContributions(pluginDiscovery, { workspaceRoot: input.workspaceRoot, env: options.env,
-		sandboxProfile: (cwd) => workspaceSandboxProfile(input.workspaceRoot, cwd),
+		sandboxProfile: (cwd) => workspaceSandboxProfile(input.workspaceRoot, cwd, options.managedExecutionPolicy),
 		hookEnabled: (hook) => integrationEnabled(configuration.enablement, "hook", pluginHookIdentity(hook), hook.origin?.enabled ?? true),
 	});
 	const hookDiscovery = configuration.hooks;
@@ -688,7 +688,7 @@ async function createRuntimeIntegrationContent(input: {
 							homeDir: options.homeDir,
 							env: options.env,
 							includeRepository: input.projectConfigurationEnabled,
-							sandboxProfile: pluginSandboxProfile,
+							sandboxProfile: (manifest) => pluginSandboxProfile(manifest, options.managedExecutionPolicy, input.workspaceRoot),
 							discovery: pluginDiscovery,
 							bundleIssues: [...bundles.issues, ...(skillRegistry?.diagnostics().issues ?? [])
 								.filter((issue) => bundles.skills.some((skill) => skill.pluginId === issue.fileLabel))
@@ -759,7 +759,7 @@ function createRuntimeHookRunner(
 		workspaceRoot: content.workspaceRoot,
 		allowlistStore,
 		env: options.env,
-		sandboxProfile: (cwd) => workspaceSandboxProfile(content.workspaceRoot, cwd),
+		sandboxProfile: (cwd) => workspaceSandboxProfile(content.workspaceRoot, cwd, options.managedExecutionPolicy),
 	});
 	return new HookManager({
 		configuredHooks: content.hookDiscovery.hooks.map((hook) => configuredHookEnablement(hook, content.configuration.enablement)),

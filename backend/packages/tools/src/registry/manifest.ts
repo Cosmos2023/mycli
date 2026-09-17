@@ -1,3 +1,4 @@
+import { GOAL_MANIFEST_ENTRIES } from "./goal-manifest.ts";
 import type { ToolDefinition } from "@mycli/core";
 import type {
 	BuiltInToolManifest,
@@ -686,6 +687,7 @@ const BUILTIN_MANIFEST: BuiltInToolManifest = deepFreeze({
 		{ id: "interaction", tool_count: 1 },
 		{ id: "permissions", tool_count: 1 },
 		{ id: "planning", tool_count: 1 },
+		{ id: "goals", tool_count: GOAL_MANIFEST_ENTRIES.length },
 		{ id: "web", tool_count: 1 },
 		{ id: "discovery", tool_count: 4 },
 		{ id: "terminal", tool_count: SHELL_MANIFEST_ENTRIES.length },
@@ -700,6 +702,7 @@ const BUILTIN_MANIFEST: BuiltInToolManifest = deepFreeze({
 		UPDATE_PLAN_MANIFEST_ENTRY,
 		WEB_FETCH_MANIFEST_ENTRY,
 		TOOL_SEARCH_MANIFEST_ENTRY,
+		...GOAL_MANIFEST_ENTRIES,
 		...CONTEXT_MANIFEST_ENTRIES,
 		...SHELL_MANIFEST_ENTRIES,
 	],

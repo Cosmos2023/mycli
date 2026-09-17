@@ -70,6 +70,10 @@ mycli sandbox setup
 mycli sandbox setup --confirm --json
 mycli sandbox reset
 mycli sandbox reset --confirm --json
+mycli sandbox repair
+mycli sandbox repair --confirm --json
+mycli sandbox uninstall
+mycli sandbox uninstall --confirm --json
 mycli hooks list --json
 mycli hooks inspect <identity> --json
 mycli hooks approve <identity>
@@ -493,10 +497,12 @@ does not create, migrate, repair, delete, or vacuum local state.
 
 `mycli sandbox status [--json]` runs the same side-effect-free sandbox readiness classifier without
 loading extensions, starting the interactive backend/TUI, calling a provider, requesting elevation,
-or running setup. `sandbox setup` and `sandbox reset` return a typed preview by default and require
+or running setup. `sandbox setup`, `reset`, `repair`, and `uninstall` return a typed preview by default and require
 `--confirm` before any state change. Their response includes the required privilege, bounded effects,
-result code, and post-operation readiness. Windows setup may request UAC; reset retains the restricted
-account and firewall rules. macOS/Linux missing dependencies remain manual recovery steps. Raw helper
+result code, and post-operation readiness. Windows setup may request UAC; reset cleans recorded ACLs
+and local setup state while retaining accounts and network rules. Repair stops sandbox processes and
+rebuilds setup; uninstall also removes owned accounts and network rules. See [Windows maintenance](windows.md).
+macOS/Linux missing dependencies remain manual recovery steps. Raw helper
 output and paths never enter any response.
 
 Common remediation:

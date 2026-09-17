@@ -296,6 +296,38 @@ test("Shell requires runtime authorization before using an escalated process pro
 	assert.equal(manager.starts[0]?.cwd, await realpath(outside));
 });
 
+test("Shell escalation preserves managed read denies with explicit and fallback policies", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-shell-denied-read-"));
+	t.after(() => import("node:fs/promises").then(({ rm }) => rm(root, { recursive: true, force: true })));
+	const manager = new StartManager(completedSnapshot());
+	const tool = new ShellTool({
+		workspaceRoot: root,
+		manager,
+		platform: "linux",
+		profile: resolveShellProfile({ platform: "linux", shellPath: "/bin/sh" }),
+		processSandboxProbes: { platform: "linux", isExecutable: () => true },
+	});
+	for (const override of [undefined, executionPolicy("full-access", root)]) {
+		const result = await tool.execute({
+			command: "cat secrets",
+			sandbox_permissions: "require_escalated",
+		}, {
+			...executionOptions(root),
+			executionPolicy: {
+				...executionPolicy("workspace", root),
+				deniedReadRoots: [join(root, "secrets")],
+				deniedReadGlobs: ["**/.env"],
+			},
+			sandboxOverrideApproved: true,
+			...(override ? { sandboxOverridePolicy: override } : {}),
+		});
+		// Linux cannot enforce these denies yet: approval must not silently
+		// drop them and launch an unrestricted process.
+		assert.equal(result.errorKind, "sandbox_unavailable");
+	}
+	assert.equal(manager.starts.length, 0);
+});
+
 test("Shell freezes proxy authority before async preparation and transfers process ownership", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-shell-proxy-"));
 	t.after(() => import("node:fs/promises").then(({ rm }) => rm(root, { recursive: true, force: true })));
@@ -329,7 +361,7 @@ test("Shell freezes proxy authority before async preparation and transfers proce
 test("Shell rejects unsupported proxy platforms and never creates a proxy when networking is disabled", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-shell-proxy-"));
 	t.after(() => import("node:fs/promises").then(({ rm }) => rm(root, { recursive: true, force: true })));
-	for (const platform of ["linux", "win32"] as const) {
+	for (const platform of ["linux"] as const) {
 		let proxies = 0;
 		const manager = new StartManager(completedSnapshot());
 		const tool = new ShellTool({

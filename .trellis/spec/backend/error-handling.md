@@ -32,7 +32,7 @@ without changing the active turn.
   legacy mappings, public summaries, and bounded context validation.
 - `gateway/runtime-errors.ts` remains a compatibility facade for the 17 legacy
   runtime codes, `RuntimeFailure`, redaction, and terminal message helpers.
-- Version-1 `error_context` adds 66 precise reasons without expanding those
+- Version-1 `error_context` adds 69 precise reasons without expanding those
   legacy codes. It contains a stable occurrence ID, source, operation scope,
   outcome/effect evidence, reason-specific details, and at most three causal
   snapshots. Its encoded size cannot exceed 8 KiB.

@@ -9,5 +9,6 @@ UniqueHandle CreateRestrictedPrimaryToken(const std::vector<PSID>& restricting_s
 UniqueHandle CreateRestrictedPrimaryTokenFrom(
     HANDLE base_token,
     const std::vector<PSID>& restricting_sids);
+std::vector<unsigned char> CopyTokenLogonSid(HANDLE token);
 
 }  // namespace mycli::sandbox

@@ -15,6 +15,8 @@ import {
 } from "@mycli/runtime";
 import {
 	SnapshotStateError,
+	snapshotRequestSummary,
+	snapshotSessionMetadata,
 	sessionSubagentIndexEntry,
 	subagentRunId,
 	type AgentThreadRecord,
@@ -227,7 +229,11 @@ export function canonicalSnapshot(
 	pendingClarification: boolean,
 	suspendedTurn: boolean,
 ): TranscriptSnapshotV2 {
-	const transcript = recentCanonicalTranscript(store, overview.sessionId);
+	const window = store.loadReadableTranscriptSnapshot(overview.sessionId);
+	const hasCanonicalHistory = window.coverage.included_events > 0 || window.coverage.has_older_events;
+	const transcript = hasCanonicalHistory ? window.items : legacyConversationTranscript(store, overview.sessionId);
+	const coverage = hasCanonicalHistory || transcript.length === 0 ? window.coverage : undefined;
+	const manifest = store.modelInputLedger.loadLatestProviderRequestManifest(overview.sessionId);
 	return {
 		schema_version: 2,
 		session_id: overview.sessionId,
@@ -240,6 +246,9 @@ export function canonicalSnapshot(
 		message_count: overview.messageCount,
 		created_at: overview.createdAt,
 		updated_at: overview.updatedAt,
+		session: snapshotSessionMetadata(overview),
+		...(manifest ? { last_request: snapshotRequestSummary(manifest) } : {}),
+		...(coverage ? { coverage } : {}),
 		transcript,
 		subagents: subagentIndex(store, overview.sessionId),
 		links: { events: "events.jsonl" },

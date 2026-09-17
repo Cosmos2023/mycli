@@ -60,6 +60,7 @@ export interface ChildRuntimeResult {
 }
 
 export interface ChildRuntimeHandle {
+	bindParentTurn?(turnId: string, parentTurnId: string): void;
 	run(
 		prompt: string,
 		signal: AbortSignal,
@@ -202,6 +203,7 @@ export interface AgentCoordinationMailboxContract {
 		triggerMode: AgentMailboxTriggerMode;
 		logicalId: string;
 		sourceCallId?: string;
+		sourceTurnId?: string;
 		payload: AgentMailboxPayload;
 	}>): Promise<Readonly<{
 		disposition: "enqueued" | "duplicate";
@@ -226,6 +228,7 @@ export interface SpawnAgentInput {
 
 export interface SendAgentCoordinationInput {
 	readonly ownerSessionId: string;
+	readonly ownerTurnId?: string;
 	readonly target: string;
 	readonly message: string;
 	readonly triggerMode: AgentMailboxTriggerMode;
@@ -418,6 +421,7 @@ export class SubagentController implements SubagentControlContract, AgentCoordin
 			triggerMode: input.triggerMode,
 			logicalId: input.callId,
 			sourceCallId: input.callId,
+			...(input.ownerTurnId ? { sourceTurnId: input.ownerTurnId } : {}),
 			payload: { kind: "message", text: input.message },
 		});
 		return Object.freeze({

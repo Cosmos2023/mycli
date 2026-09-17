@@ -1,3 +1,4 @@
+import type { DeniedReadPolicy } from "../policy/denied-read-policy.ts";
 import {
 	modelInputSha256,
 	type CanonicalToolCall,
@@ -33,7 +34,8 @@ export type FileSandboxAccess =
 	| {
 		readonly ok: true;
 		readonly allowOutsideWorkspace: boolean;
-		readonly allowedWritableRoots: readonly string[];
+		readonly allowedWritableRoots?: readonly string[];
+		readonly deniedReadPolicy?: DeniedReadPolicy;
 	}
 	| {
 		readonly ok: false;
@@ -86,13 +88,19 @@ export function resolveFileSandboxAccess(
 		&& options.sandboxOverridePolicy
 		? options.sandboxOverridePolicy
 		: options.executionPolicy;
+	const writableRoots = effectivePolicy?.filesystem === "read_only" ? [] : effectivePolicy?.writableRoots;
 	return {
 		ok: true,
 		allowOutsideWorkspace: hasUnrestrictedFilesystem(effectivePolicy)
 			|| (request.permissions === "danger-full-access"
 				&& options.sandboxOverrideApproved === true
 				&& options.sandboxOverridePolicy === undefined),
-		allowedWritableRoots: Object.freeze([...(effectivePolicy?.writableRoots ?? [])]),
+		deniedReadPolicy: {
+			deniedReadRoots: [...(options.executionPolicy?.deniedReadRoots ?? []), ...(effectivePolicy?.deniedReadRoots ?? [])],
+			deniedReadGlobs: [...(options.executionPolicy?.deniedReadGlobs ?? []), ...(effectivePolicy?.deniedReadGlobs ?? [])],
+		},
+		// Omitting a policy preserves the standalone workspace default; explicit [] denies writes.
+		...(writableRoots === undefined ? {} : { allowedWritableRoots: Object.freeze([...writableRoots]) }),
 	};
 }
 

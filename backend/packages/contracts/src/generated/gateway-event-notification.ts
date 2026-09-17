@@ -2,6 +2,16 @@
 export type GatewayEventNotification =
   | {
       jsonrpc: "2.0";
+      method: "hook.started";
+      params: Hook;
+    }
+  | {
+      jsonrpc: "2.0";
+      method: "hook.completed";
+      params: Hook1;
+    }
+  | {
+      jsonrpc: "2.0";
       method: "mcp.elicitation.respond";
       params: McpElicitation;
     }
@@ -290,6 +300,8 @@ export type ErrorReasonDetails =
       reason:
         | "provider.invalid_request"
         | "provider.context_limit"
+        | "provider.output_limit"
+        | "provider.empty_response"
         | "provider.rate_limited"
         | "provider.quota_exceeded"
         | "provider.overloaded"
@@ -365,6 +377,7 @@ export type ErrorReasonDetails =
         | "runtime.retry_exhausted"
         | "runtime.tool_budget_exceeded"
         | "runtime.continuation_unavailable"
+        | "runtime.compaction_summary_too_long"
         | "runtime.effect_outcome_unknown"
         | "runtime.internal_error";
       details?: RuntimeErrorDetails;
@@ -577,6 +590,22 @@ export type ProviderAttemptRecord = ProviderAttemptFields & {
   [k: string]: any;
 };
 
+export interface Hook {
+  operation_id: string;
+  turn_id: string;
+  point: string;
+  status?: "completed" | "failed" | "denied" | "interrupted";
+  message?: string;
+  [k: string]: any;
+}
+export interface Hook1 {
+  operation_id: string;
+  turn_id: string;
+  point: string;
+  status: "completed" | "failed" | "denied" | "interrupted";
+  message?: string;
+  [k: string]: any;
+}
 export interface McpElicitation {
   request_id: string;
   session_id: string;
@@ -823,7 +852,7 @@ export interface Compaction {
   duration_s: number;
   max_tokens: number;
   source: string;
-  status: "compressed" | "skipped" | "failed";
+  status: "compressed" | "skipped" | "failed" | "interrupted";
   [k: string]: any;
 }
 export interface Failure {
@@ -882,6 +911,8 @@ export interface ProviderErrorDetails {
   provider_code?: string;
   provider_type?: string;
   retry_after_seconds?: number;
+  finish_reason?: "length" | "stop" | "toolUse" | "error" | "aborted";
+  max_output_tokens?: number;
 }
 export interface CapabilityErrorDetails {
   provider?: string;
@@ -933,6 +964,8 @@ export interface RuntimeErrorDetails {
   request_retries?: number;
   stream_retries?: number;
   omitted_causes?: number;
+  summary_tokens?: number;
+  summary_max_tokens?: number;
   exit_code?: number;
   signal?: string;
 }
@@ -1193,6 +1226,7 @@ export interface Shell {
   [k: string]: any;
 }
 export interface Status {
+  goal?: SessionGoal | null;
   context_window: {
     max_tokens?: number;
     source?: string;
@@ -1316,6 +1350,21 @@ export interface Status {
   turn_running: boolean;
   workspace: string;
   [k: string]: any;
+}
+export interface SessionGoal {
+  goal_id: string;
+  revision: number;
+  objective: string;
+  status: "active" | "paused" | "blocked" | "usage_limited" | "budget_limited" | "complete";
+  token_budget: number | null;
+  tokens_used: number;
+  elapsed_ms: number;
+  rounds_started: number;
+  audit_turns: number;
+  created_at: string;
+  updated_at: string;
+  stop_reason: string | null;
+  usage_incomplete: boolean;
 }
 export interface SkillReference {
   id: string;
@@ -1553,6 +1602,7 @@ export interface Turn3 {
   [k: string]: any;
 }
 export interface Turn4 {
+  interruption_reason?: "user" | "goal_budget" | "goal_usage_unavailable" | "goal_changed" | "goal_stopped";
   error_context?: ErrorContextV1;
   error_context_invalid?: true;
   session_id?: string;
@@ -1680,6 +1730,7 @@ export interface TurnQueue {
   [k: string]: any;
 }
 export interface Turn5 {
+  source?: "user" | "goal";
   session_id?: string;
   generation?: number;
   client_turn_id: string;

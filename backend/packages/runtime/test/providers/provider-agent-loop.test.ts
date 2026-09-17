@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { providerAttemptId, type ProviderAttemptUpdate } from "@mycli/contracts";
-import type { ProviderEvent, ProviderRequest, RuntimeEvent } from "@mycli/core";
+import type { ProviderEvent, ProviderRequest, ProviderUsage, RuntimeEvent } from "@mycli/core";
 import {
 	ProviderFailure,
 	ProviderRegistry,
@@ -13,6 +13,23 @@ import {
 	type ProviderAgentLoopFailure,
 	type ProviderStreamDiagnostics,
 } from "../../src/index.ts";
+
+test("provider attempts with output but no usage record an unknown observation before retry", async () => {
+	const observations: { usage: ProviderUsage; attempt: number }[] = [];
+	const observed: ProviderRequest[] = [];
+	const result = await new ProviderAgentLoop().runStep({
+		provider: scriptedProvider(observed, [
+			[{ type: "text_delta", text: "partial" }],
+			[{ type: "text_delta", text: "done" }, { type: "completed", responseId: "done" }],
+		]),
+		request: providerRequest(), requestMaxRetries: 0, maxRetries: 1,
+		signal: new AbortController().signal, toolCallsAllowed: false,
+		emit: () => {}, normalizeFailure, sleep: async () => {},
+		recordUsage: async (usage, attempt) => { observations.push({ usage, attempt }); },
+	});
+	assert.equal("failure" in result, false);
+	assert.deepEqual(observations, [{ usage: {}, attempt: 1 }, { usage: {}, attempt: 2 }]);
+});
 
 test("ProviderAgentLoop dispatches the exact committed request", async () => {
 	const request = providerRequest();

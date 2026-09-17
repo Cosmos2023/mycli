@@ -134,6 +134,10 @@ function spec(
 }
 
 const BUILTIN_SLASH_COMMANDS: readonly SlashCommandSpec[] = Object.freeze([
+	spec("goal", "/goal", "Create, inspect, pause, or resume a session goal", {
+		argumentHint: "[objective|pause|resume|edit <objective>|budget <tokens|off>|clear]",
+		argumentPolicy: "optional", availableDuringTurn: true,
+	}),
 	spec("model", "/model", "Choose the model and thinking effort", {
 		argumentHint: "[model] [--thinking-effort level]",
 		argumentPolicy: "optional",
@@ -187,6 +191,10 @@ const BUILTIN_SLASH_COMMANDS: readonly SlashCommandSpec[] = Object.freeze([
 		availableDuringTurn: false,
 	}),
 	spec("status", "/status", "Show runtime status"),
+	spec("export", "/export", "Export the current conversation to a JSONL file", {
+		argumentPolicy: "optional",
+		availableDuringTurn: false,
+	}),
 	spec("update", "/update", "Inspect cached updates or dismiss a version", {
 		argumentHint: "[check|dismiss <version>]",
 		argumentPolicy: "optional",
@@ -446,7 +454,7 @@ function commandManifestItem(command: SlashCommandSpec): SlashCommandManifestIte
 function commandCategory(id: string): SlashCommandCategory {
 	if (["model", "mode", "plan"].includes(id)) return "model";
 	if (["permissions", "sandbox", "trust"].includes(id)) return "safety";
-	if (["new", "resume", "rename", "fork", "session_search", "session_maintenance", "compact", "clear"].includes(id)) {
+	if (["goal", "new", "resume", "rename", "fork", "export", "session_search", "session_maintenance", "compact", "clear"].includes(id)) {
 		return "session";
 	}
 	if (["skills", "mcp", "plugins", "hooks", "resources"].includes(id)) return "integrations";

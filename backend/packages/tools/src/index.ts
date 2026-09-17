@@ -383,3 +383,8 @@ export {
 	READ_MCP_RESOURCE_TOOL_DEFINITION,
 } from "./registry/context-manifest.ts";
 export { startNetworkProxy, type NetworkProxyLease } from "./network/network-proxy.ts";
+
+export { GoalTool, type GoalToolService } from "./interaction/goal-tool.ts";
+export { CREATE_GOAL_TOOL_DEFINITION, GET_GOAL_TOOL_DEFINITION, UPDATE_GOAL_TOOL_DEFINITION } from "./registry/goal-manifest.ts";
+
+export { deniedReadPath, hasDeniedReads, resolveDeniedReadRoots, validateDeniedReadGlobs, type DeniedReadPolicy } from "./policy/denied-read-policy.ts";

@@ -25,6 +25,7 @@ export function projectCommittedTurnTerminalization(
 	const message = outbox.payload.message ?? runtimeErrorPublicMessage(code);
 	if (terminalization.kind === "interrupted") {
 		return Object.freeze({ type: "turn_interrupted", message,
+			...(outbox.payload.interruptionReason ? { interruptionReason: outbox.payload.interruptionReason } : {}),
 			...(outbox.payload.errorContext ? { errorContext: outbox.payload.errorContext } : {}),
 		});
 	}

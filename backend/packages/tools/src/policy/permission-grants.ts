@@ -1,3 +1,4 @@
+import { deniedReadPath, hasDeniedReads } from "./denied-read-policy.ts";
 import { realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type {
@@ -77,9 +78,13 @@ export function parsePermissionRequest(
 export function permissionRequestSatisfied(
 	permissions: PermissionRequestProfile,
 	policy: ExecutionPolicy | undefined,
+	workspaceRoot?: string,
 ): boolean {
 	if (!policy) return false;
 	if (permissions.network?.enabled && policy.network !== "enabled") return false;
+	const paths = [...(permissions.fileSystem?.read ?? []), ...(permissions.fileSystem?.write ?? [])];
+	if (paths.length > 0 && hasDeniedReads(policy)
+		&& (!workspaceRoot || paths.some((path) => deniedReadPath(workspaceRoot, path, policy)))) return false;
 	if (policy.filesystem === "unrestricted") return true;
 	const readableRoots = [
 		...(policy.readableRoots ?? []),

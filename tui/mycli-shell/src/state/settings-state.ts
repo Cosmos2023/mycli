@@ -194,7 +194,7 @@ function settingsCategoryId(value: unknown): MycliShellSettingsCategoryId | null
 function shellSettingClientKey(value: unknown): keyof MycliShellVisualSettings | null {
 	return ([
 		"statusbarMode", "viewMode", "theme", "hideThinking", "toolDetailsDefault",
-		"hardwareCursor", "clearOnShrink", "terminalProgress", "subagentDensity",
+		"hardwareCursor", "clearOnShrink", "terminalProgress", "terminalNotifications", "subagentDensity",
 		"colorMode", "reducedMotion", "glyphMode", "highContrast",
 	] as unknown[]).includes(value) ? value as keyof MycliShellVisualSettings : null;
 }
@@ -213,6 +213,7 @@ function normalizeVisualSettings(
 			toolDetailsDefaultValue(raw.toolDetailsDefault ?? raw.tool_details_default) ?? fallback.toolDetailsDefault ?? "collapsed",
 		hardwareCursor: booleanValue(raw.hardwareCursor ?? raw.hardware_cursor) ?? fallback.hardwareCursor ?? false,
 		clearOnShrink: booleanValue(raw.clearOnShrink ?? raw.clear_on_shrink) ?? fallback.clearOnShrink ?? true,
+		terminalNotifications: booleanValue(raw.terminalNotifications ?? raw.terminal_notifications) ?? fallback.terminalNotifications ?? true,
 		terminalProgress: booleanValue(raw.terminalProgress ?? raw.terminal_progress) ?? fallback.terminalProgress ?? true,
 		subagentDensity: subagentDensityValue(raw.subagentDensity ?? raw.subagent_density) ?? fallback.subagentDensity ?? "normal",
 		colorMode: colorModeValue(raw.colorMode ?? raw.color_mode) ?? fallback.colorMode ?? "auto",

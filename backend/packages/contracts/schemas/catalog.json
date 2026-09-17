@@ -51,6 +51,8 @@
     "clarify.respond",
     "compaction.completed",
     "compaction.started",
+    "hook.started",
+    "hook.completed",
     "extension.updated",
     "gateway.error",
 	"interactive.cancelled",
@@ -93,6 +95,8 @@
   ],
   "protocolVersion": 1,
   "rpcMethods": [
+    "goal.get",
+    "goal.update",
     "skills.list",
     "skills.config.write",
     "hooks.list",

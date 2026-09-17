@@ -22,6 +22,12 @@ export function errorPublicDetails(context: ErrorContext): string | undefined {
 	}
 	if (details && "exit_code" in details && details.exit_code !== undefined) parts.push(`Exit code: ${details.exit_code}.`);
 	if (details && "http_status" in details && details.http_status !== undefined) parts.push(`HTTP ${details.http_status}.`);
+	if (context.reason === "provider.output_limit" && details && "max_output_tokens" in details
+		&& details.max_output_tokens !== undefined) parts.push(`Output limit: ${details.max_output_tokens} tokens.`);
+	if (context.reason === "runtime.compaction_summary_too_long" && details && "summary_tokens" in details
+		&& details.summary_tokens !== undefined && details.summary_max_tokens !== undefined) {
+		parts.push(`Summary length: ${details.summary_tokens} estimated tokens; limit: ${details.summary_max_tokens}.`);
+	}
 	if (context.source === "integration" && details) {
 		if ("integration" in details && details.integration) parts.push(`Integration: ${details.integration}.`);
 		if ("operation" in details && details.operation) parts.push(`Operation: ${details.operation}.`);

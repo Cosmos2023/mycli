@@ -1,3 +1,8 @@
+import type { TurnInterruptionReason } from "@mycli/contracts";
+import { GoalStateError } from "@mycli/core";
+import type { SessionGoalService } from "../sessions/session-goal-service.ts";
+import type { SessionGoalUsageTracker } from "../sessions/session-goal-usage.ts";
+import type { GoalRef } from "@mycli/core";
 import type { SkillReference, ReviewSelection } from "@mycli/contracts";
 import { resolveProviderRetryPolicy, type NodeRuntimeConfig } from "@mycli/config";
 import {
@@ -152,7 +157,8 @@ export interface TurnSubmission {
 	readonly localImages?: readonly string[];
 	readonly modelOverride?: string;
 	readonly reasoningEffort?: ReasoningEffort;
-	readonly source?: "user" | "agent_mailbox";
+	readonly source?: "user" | "agent_mailbox" | "goal";
+	readonly goalRef?: GoalRef;
 }
 
 export interface NodeTurnRuntimeOptions {
@@ -170,6 +176,8 @@ export interface NodeTurnRuntimeOptions {
 	readonly createModelInputId?: (
 		kind: "tools" | "context" | "request" | "lifecycle",
 	) => string;
+	readonly goal?: SessionGoalService;
+	readonly goalUsage?: SessionGoalUsageTracker;
 	readonly agentBudget?: AgentBudget;
 	readonly store: RuntimeTurnStore;
 	readonly runLifecycle?: {
@@ -335,6 +343,7 @@ export interface ForceInterruptInput {
 }
 
 type NormalizedFailure = RuntimeFailure & {
+	readonly interruptionReason?: TurnInterruptionReason;
 	readonly providerFailure?: ProviderFailure;
 	readonly reason?: ErrorReasonDetails;
 	readonly source?: FailureSource;
@@ -517,11 +526,22 @@ export class NodeTurnRuntime {
 		this.#options.approvalPolicy?.configurePermissionProfile?.(input.permission);
 	}
 
+	readonly #goalTurnClients = new Map<string, string>();
+
 	#finishTurn(turnId: string): void {
-		this.#options.toolRouter?.finishTurn?.(turnId);
-		this.#options.approvalPolicy?.finishTurn?.(turnId);
-		this.#runExecutions.finish(turnId);
-		this.#options.runLifecycle?.finish(turnId);
+		const clientTurnId = this.#goalTurnClients.get(turnId);
+		this.#goalTurnClients.delete(turnId);
+		try {
+			if (clientTurnId && this.#options.goal) {
+				const record = this.#options.store.loadTurn(this.#options.sessionId, clientTurnId);
+				this.#options.goal.finishTurn(turnId, record?.status ?? "failed", record?.error_code ?? undefined);
+			}
+		} finally {
+			this.#options.toolRouter?.finishTurn?.(turnId);
+			this.#options.approvalPolicy?.finishTurn?.(turnId);
+			this.#runExecutions.finish(turnId);
+			this.#options.runLifecycle?.finish(turnId);
+		}
 	}
 
 	configureRuntimeContext(input: {
@@ -540,6 +560,10 @@ export class NodeTurnRuntime {
 	}
 
 	reserve(submission: TurnSubmission): TurnReservation {
+		if (submission.source === "goal") {
+			if (!this.#options.goal || !submission.goalRef) throw new Error("goal_runtime_unavailable");
+			this.#options.goal.assertContinuation(submission.goalRef);
+		}
 		const turnId = submission.turnId ?? this.#options.createTurnId();
 		const imagePaths = submission.localImages ?? [];
 		const images = imagePaths.length > 0
@@ -590,6 +614,8 @@ export class NodeTurnRuntime {
 		try {
 			let prepared: PreparedTurn;
 				try {
+					this.#goalTurnClients.set(turnId, submission.clientTurnId);
+					this.#options.goal?.beginTurn(turnId, submission.source ?? "user", submission.goalRef);
 					prepared = await this.#prepareTurn(submission, turnId, emit, options.signal);
 				} catch (error) {
 					return await this.#finalizeFailure(
@@ -952,6 +978,7 @@ export class NodeTurnRuntime {
 			signal,
 			...(this.#options.hookRunner ? {
 				hookCoordinator: new HookCoordinator({
+					emit,
 					runner: this.#options.hookRunner,
 					sessionId: this.#options.sessionId,
 					turnId,
@@ -1189,6 +1216,8 @@ export class NodeTurnRuntime {
 				memoryCollected = true;
 				memoryItem = await this.#collectMemoryItem(context);
 			}
+			const goalStop = this.#options.goal?.stopReason(turnId) ?? this.#options.goalUsage?.stopReason(turnId);
+			if (goalStop) return this.#finalizeFailure(submission, { code: "interrupted", message: goalStop, interruptionReason: this.#options.goal?.interruptionReason(turnId) ?? this.#options.goalUsage?.interruptionReason(turnId), retryable: false }, emit);
 			const providerBudgetExhausted = this.#agentBudget.beginProviderStep();
 			if (providerBudgetExhausted) {
 				return this.#finalizeAgentBudget(context, providerBudgetExhausted);
@@ -1299,8 +1328,15 @@ export class NodeTurnRuntime {
 				);
 			}
 			let rawStepResult;
+			let usageObserved = false;
+			const usageId = durableRequestId ?? `${turnId}:step:${this.#agentBudget.providerStepCount()}`;
 			try {
 				rawStepResult = await this.#providerStepExecutor.execute({
+					...(this.#options.goal || this.#options.goalUsage ? { recordUsage: async (usage: ProviderUsage, attempt: number) => {
+						usageObserved = true;
+						this.#options.goal?.observeUsage(turnId, `${usageId}:${attempt}`, usage);
+						this.#options.goalUsage?.observe(turnId, `${usageId}:${attempt}`, usage);
+					} } : {}),
 					errorContextVersion: this.#options.store.errorContextVersion,
 					config,
 					provider,
@@ -1411,6 +1447,10 @@ export class NodeTurnRuntime {
 			const stepResult = providerStepWithReplayTokenEstimate(rawStepResult);
 			try {
 				this.#persistWebSearchCalls(turnId, stepResult.webSearchCalls);
+				if (!usageObserved) {
+					this.#options.goal?.observeUsage(turnId, `${usageId}:final`, stepResult.usage);
+					this.#options.goalUsage?.observe(turnId, `${usageId}:final`, stepResult.usage);
+				}
 			} catch (error) {
 				return this.#finalizeFailure(
 					submission,
@@ -1456,6 +1496,8 @@ export class NodeTurnRuntime {
 					requestInput: logicalRequest.items ?? history,
 				});
 			}
+			const toolsStop = this.#options.goal?.toolsStopReason(turnId) ?? this.#options.goalUsage?.stopReason(turnId);
+			if (toolsStop) return this.#finalizeFailure(submission, { code: "interrupted", message: toolsStop, interruptionReason: this.#options.goal?.interruptionReason(turnId) ?? this.#options.goalUsage?.interruptionReason(turnId), retryable: false }, emit);
 			if (!hasUniqueCallIds(stepResult.toolCalls)) {
 				return this.#finalizeFailure(submission, toolProtocolFailure(), emit);
 			}
@@ -1679,6 +1721,8 @@ export class NodeTurnRuntime {
 			status: result.status,
 			beforeTokens: result.beforeTokens,
 			afterTokens: result.afterTokens,
+			...(result.failure ? { failure: result.failure } : {}),
+			...(result.usage ? { usage: result.usage } : {}),
 			maxTokens: context.config.maxPromptTokens,
 			durationMs: boundedDurationMs(startedAt, finishedAt),
 		});
@@ -1688,7 +1732,7 @@ export class NodeTurnRuntime {
 	async #collectMemoryItem(
 		context: TurnExecutionContext,
 	): Promise<Extract<CanonicalConversationItem, { readonly type: "user" }> | undefined> {
-		if (context.submission.source === "agent_mailbox") return undefined;
+		if ((context.submission.source ?? "user") !== "user") return undefined;
 		const service = this.#options.memoryContextService;
 		if (!service || !context.config.memoryEnabled) return undefined;
 		try {
@@ -1797,7 +1841,7 @@ export class NodeTurnRuntime {
 			});
 			if (snapshotWritten
 				&& memoryEnabled
-				&& submission.source !== "agent_mailbox"
+				&& (submission.source ?? "user") === "user"
 				&& this.#options.memoryContextService) {
 				try {
 					await this.#options.memoryContextService.applyExplicitActions({
@@ -1852,6 +1896,7 @@ export class NodeTurnRuntime {
 			}
 			terminalization = this.#options.store.turnTerminalizations.terminalize({
 				kind: "failed",
+				...(failure.interruptionReason ? { interruptionReason: failure.interruptionReason } : {}),
 				sessionId: this.#options.sessionId,
 				clientTurnId: submission.clientTurnId,
 					code: failure.code,
@@ -1949,6 +1994,7 @@ function normalizeFailure(
 	signal: AbortSignal | undefined,
 	fallbackCode: RuntimeErrorCode,
 ): NormalizedFailure {
+	if (error instanceof GoalStateError) return { code: "interrupted", message: error.message, retryable: false };
 	if (signal?.aborted || (error instanceof Error && error.name === "AbortError")) {
 		return {
 			code: "interrupted",

@@ -85,7 +85,11 @@ export type RuntimeLiveStatus = {
 	retryAt?: string;
 };
 
+export type RuntimeCompaction = { id: string; source: string; text: string; cancelling?: boolean };
+
 export type RuntimeShellState = {
+	activeCompaction: RuntimeCompaction | null;
+	activeHooks: Record<string, string>;
 	sessionId: string | null;
 	sessionGeneration: number | null;
 	sessionTitle: string | null;
@@ -142,6 +146,8 @@ export type RuntimeShellState = {
 export function initialRuntimeState(): RuntimeShellState {
 	const workspace = process.cwd();
 	return {
+		activeCompaction: null,
+		activeHooks: {},
 		sessionId: null,
 		sessionGeneration: null,
 		sessionTitle: null,
@@ -206,6 +212,7 @@ export function defaultVisualSettings(): Required<MycliShellVisualSettings> {
 		hardwareCursor: false,
 		clearOnShrink: true,
 		terminalProgress: true,
+		terminalNotifications: true,
 		subagentDensity: "normal",
 		colorMode: "auto",
 		reducedMotion: false,

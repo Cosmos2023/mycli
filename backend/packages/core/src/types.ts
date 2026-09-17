@@ -1,3 +1,5 @@
+import type { HookPoint } from "./extensions.ts";
+import type { TurnInterruptionReason } from "@mycli/contracts";
 import type { ErrorContext, GatewayTerminalInteraction, ProviderAttemptRecord, RuntimeErrorCode, RuntimeFailure } from "@mycli/contracts";
 import type { ShellLifecycleEvent } from "./lifecycle/shell-lifecycle.ts";
 import type { ProviderNativeTransportSnapshot } from "./conversation/provider-native-transport.ts";
@@ -244,7 +246,17 @@ export type ProviderEvent =
 		readonly argumentsJson: string;
 	};
 
+export type HookRuntimeEvent = {
+	readonly operationId: string;
+	readonly turnId: string;
+	readonly point: HookPoint;
+} & (
+	| { readonly type: "hook_started" }
+	| { readonly type: "hook_completed"; readonly status: "completed" | "failed" | "denied" | "interrupted"; readonly message?: string }
+);
+
 export type RuntimeEvent =
+	| HookRuntimeEvent
 	| ShellLifecycleEvent
 	| { readonly type: "turn_started"; readonly clientTurnId: string; readonly turnId: string }
 	| {
@@ -258,6 +270,7 @@ export type RuntimeEvent =
 	}
 	| {
 		readonly type: "compaction_started";
+		readonly operationId: string;
 		readonly clientTurnId: string;
 		readonly source: "pre_turn" | "mid_turn" | "context_overflow" | "user_requested";
 		readonly beforeTokens: number;
@@ -265,11 +278,12 @@ export type RuntimeEvent =
 	}
 	| {
 		readonly type: "compaction_completed";
+		readonly operationId: string;
 		readonly failure?: RuntimeFailure;
 		readonly usage?: ProviderUsage;
 		readonly clientTurnId: string;
 		readonly source: "pre_turn" | "mid_turn" | "context_overflow" | "user_requested";
-		readonly status: "compressed" | "skipped" | "failed";
+		readonly status: "compressed" | "skipped" | "failed" | "interrupted";
 		readonly beforeTokens: number;
 		readonly afterTokens: number;
 		readonly maxTokens: number;
@@ -383,7 +397,7 @@ export type RuntimeEvent =
 		readonly additionalDetails?: string;
 		readonly errorContext?: ErrorContext;
 	}
-	| { readonly type: "turn_interrupted"; readonly message: string; readonly errorContext?: ErrorContext };
+	| { readonly type: "turn_interrupted"; readonly interruptionReason?: TurnInterruptionReason; readonly message: string; readonly errorContext?: ErrorContext };
 
 export type ApprovalChoice =
 	| "approve_once"

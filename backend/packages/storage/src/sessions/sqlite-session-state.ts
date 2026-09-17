@@ -1,4 +1,4 @@
-import { parseSkillReferences, type SkillReference } from "@mycli/contracts";
+import { parseSkillReferences, parseSessionGoal, type SkillReference } from "@mycli/contracts";
 import { ContractValidationError, parseRuntimeState } from "@mycli/contracts";
 import {
 	ApprovalConflictError,
@@ -946,7 +946,7 @@ export class SQLiteSessionStateRepository implements SessionStateStore {
 
 	commitCompaction(input: CommitCompactionInput): boolean {
 		const sessionId = nonEmpty(input.sessionId, "sessionId");
-		const summary = boundedSummary(input.summary);
+		const summary = nonEmpty(input.summary, "summary");
 		const messages = input.replacementMessages.map(validateMessage);
 		const checkpoint = validateStatePayload("compact_checkpoint", {
 			...input.checkpoint,
@@ -1401,6 +1401,10 @@ function parseStateJson(value: unknown, key: RuntimeStateKey): unknown {
 }
 
 function validateStatePayload(key: RuntimeStateKey, payload: unknown): unknown {
+	if (key === "session_goal") {
+		try { return parseSessionGoal(payload); }
+		catch { throw new SessionStateError("session_state_invalid", key); }
+	}
 	if (!isRecord(payload)) {
 		throw new SessionStateError("session_state_invalid", key);
 	}
@@ -1840,6 +1844,7 @@ function freezeJson<Value>(value: Value): Value {
 }
 
 const RUNTIME_STATE_KEYS = new Set<RuntimeStateKey>([
+	"session_goal",
 	"input_queue",
 	"session_metadata",
 	"session_preferences",

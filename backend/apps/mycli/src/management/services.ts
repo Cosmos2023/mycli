@@ -40,6 +40,7 @@ import { runDoctor } from "./doctor/runner.ts";
 import { DoctorManagementService } from "./doctor/service.ts";
 import { SandboxManagementService } from "./sandbox.ts";
 import { SessionManagementService } from "./session.ts";
+import { createTrainingExportHandler } from "../node-runtime/session-training-export.ts";
 import { SessionService } from "../node-runtime/session-service.ts";
 import type { SessionManagementCommand } from "./types.ts";
 import { UpdateManagementService } from "./update.ts";
@@ -94,7 +95,7 @@ export interface ConfigManagementContract {
 }
 
 export interface SessionManagementContract {
-	execute(command: SessionManagementCommand): MaybePromise<ManagementResponse>;
+	execute(command: SessionManagementCommand, signal: AbortSignal): MaybePromise<ManagementResponse>;
 }
 
 export interface UpdateManagementContract {
@@ -247,7 +248,7 @@ export class ManagementServices implements ManagementExecutor {
 			}
 		}
 		if (command.kind === "session") {
-			return this.#services.session?.execute(command)
+			return this.#services.session?.execute(command, signal)
 				?? failure(command.action, "session management is unavailable", "session_unavailable");
 		}
 		return failure("management", "management command is unavailable", "management_unavailable");
@@ -349,7 +350,7 @@ export async function createDefaultManagementServices(
 		auth,
 		update,
 		session: {
-			execute: async (command) => {
+			execute: async (command, signal) => {
 				const currentConfig = await resolveConfig({
 					homeDir: options.homeDir,
 					workspaceRoot: options.workspaceRoot,
@@ -398,7 +399,11 @@ export async function createDefaultManagementServices(
 						},
 						...(managedExecutionPolicy ? { managedExecutionPolicy } : {}),
 					});
-					return new SessionManagementService(sessions).execute(command);
+					const exportTraining = createTrainingExportHandler(store, {
+						workspaceRoot: options.workspaceRoot, homeDir: options.homeDir, env: options.env,
+						...(currentConfig.apiKey ? { apiKey: currentConfig.apiKey } : {}),
+					});
+					return await new SessionManagementService(sessions, exportTraining).execute(command, signal);
 				} finally {
 					store.close();
 				}

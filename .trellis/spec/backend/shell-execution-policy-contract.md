@@ -73,7 +73,8 @@
   execution.
 - A policy with `networkDomains` is not unrestricted network access. `web_fetch` checks domains
   directly. Enabled, non-empty domain policies on macOS Shell use a process-owned proxy; Seatbelt
-  permits only its loopback TCP port. Linux/Windows return `network_proxy_unavailable`. Empty or
+  permits only its loopback TCP port. Windows uses a per-logon WFP exception for the same proxy;
+  Linux returns `network_proxy_unavailable`. Empty or
   disabled policies and raw launches without a proxy remain offline.
 - The model's escalation request never discards policy without host authorization. Full filesystem
   access alone cannot remove network bounds; an approved fallback without an explicit runtime
@@ -150,7 +151,7 @@
 | Exact allow/session rule plus escalation | Allow and forward the host authorization bit |
 | Approved escalation under managed constraints | Apply the runtime override policy without exceeding it |
 | Enabled, non-empty domain-constrained Shell on macOS | Use the frozen proxy lease and keep direct egress denied |
-| Enabled, non-empty domain-constrained Shell on Linux/Windows | Fail before process start with `network_proxy_unavailable` |
+| Enabled, non-empty domain-constrained Shell on Linux | Fail before process start with `network_proxy_unavailable` |
 | Disabled or empty domain-constrained Shell policy | Keep the sandbox network disabled |
 | First valid restricted Windows request without setup | Request UAC elevation once, verify setup, then run |
 | Invalid Windows sandbox request | Reject before requesting elevation |
@@ -234,3 +235,57 @@ const effectivePolicy = requested
 	? executionPolicy("full-access", workspaceRoot)
 	: activePolicy;
 ```
+
+### Windows Native Execution Contract
+
+- Node and the native helper share explicit protocol fields, including empty deny lists. Validate
+  version without integer truncation, reject embedded NULs and malformed proxy ports before UAC.
+- Read-only and workspace-write (including an empty or narrowed write allowlist) retain restricted
+  tokens. Online, offline, and proxy execution use distinct local accounts and encrypted credentials.
+- `sandbox_ready` reflects verified identities, restricted-token creation, live network rules, and
+  host permissions on the proxy sublayer. A successful setup alone must not bypass these checks.
+- Match async and sync path normalization with native realpath. Windows short/long names must not
+  make the same cwd appear outside the workspace.
+- Private ancestors receive non-inheriting traversal and attribute access only, never directory
+  listing or sibling content access. Skip ACL changes where the identity already has access;
+  system install directories must not require host WRITE_DAC on every launch.
+- ConPTY startup can initially report PID 0. Wait with a bounded deadline while retaining early
+  output/exit, and clean up failed starts. Test transport selection must match production.
+- Pass the sanitized host environment explicitly through CreateProcessWithLogonW. Preserve the
+  host-owned proxy environment; never choose proxy authority from an inherited variable.
+- ACL preparation and setup/reset use the owner mutex, but commands execute concurrently. Protect
+  existing workspace metadata even when writable roots are narrowed. Reject metadata reparse points.
+  Deny mutation rights without denying shared READ_CONTROL/SYNCHRONIZE rights needed for reads.
+- Job objects attach suspended runners before resume and kill descendants on helper exit. Dynamic
+  proxy exceptions are installed before resume and disappear with their host's WFP session.
+- Reset requires no active helpers and clears recorded filesystem ACLs, all three credentials,
+  and setup markers, retaining accounts and network blocks.
+- Unsupported filesystem/network combinations fail before launch; no automatic unrestricted retry.
+- Regression tests must exercise the real Node Shell adapter and native helper on Windows, including
+  ConPTY input/resize, Unicode and short paths, read/write/network boundaries, cleanup, and rebuild
+  after reset. Release builds consume artifacts only after the reusable Windows gate passes.
+
+### Windows denied-read and maintenance boundaries
+
+- Helper protocol v2 requires explicit exact deny roots and an empty glob list. Resolve managed
+  workspace-relative globs in Node, including dotfiles, with hard scan/match limits. Never ignore
+  these fields during approval, Full Access, grants, suspension/recovery, or agent inheritance.
+- Read/view_image and mutation preparation/commit check the same deny policy. Shell overrides,
+  stdio MCP, plugin commands and hooks inherit it; unsupported process backends fail closed.
+- Windows uses a private desktop per runner and grants its actual logon SID before resuming.
+  Capability derivation includes the sandbox account and complete write-root set, preventing
+  concurrent policies and Windows owners from sharing mutable audit authority.
+- Pin ACL path components without DELETE sharing; reject reparse traversal. Journal before ACL
+  mutations and use additive grants so preparation never drops active deny ACEs. Denied objects
+  also deny mutation/deletion; their parent denies FILE_DELETE_CHILD fallback.
+- Lease records contain helper PID and creation time. A changed denied-read snapshot cannot replace
+  live account-wide denies. Cleanup occurs only with no active helpers or after explicit maintenance.
+- `repair`/`uninstall` require preview plus `--confirm`; stop helpers and disable/stop account processes
+  before cleanup. Replay filesystem journals only as the non-elevated owner, never from the elevated
+  maintenance child. Remove only managed SIDs/recorded WFP bits, not whole saved DACLs or user trees.
+- Audit is bounded (2 seconds / 50k paths / 1k children per directory / depth 2); skip reparses and
+  unreadable ACLs. Found public write grants must be denied successfully before the command starts.
+- Uninstall verifies account/state absence, not merely setup_required. Unknown account collisions,
+  failed cleanup, invalid journals, and canceled elevation must retain safe, retryable state.
+- Windows-target cross compilation checks declarations/linkage only. Actual MSVC/native/ConPTY/WFP
+  integration remains a Windows gate, and must not be claimed from macOS tests.

@@ -401,7 +401,8 @@
           "enum": [
             "compressed",
             "skipped",
-            "failed"
+            "failed",
+            "interrupted"
           ],
           "type": "string"
         }
@@ -455,6 +456,77 @@
         "max_tokens"
       ],
       "type": "object"
+    },
+    "hook.started": {
+      "name": "hook.started",
+      "type": "object",
+      "required": [
+        "operation_id",
+        "turn_id",
+        "point"
+      ],
+      "properties": {
+        "operation_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "turn_id": {
+          "type": "string"
+        },
+        "point": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "status": {
+          "enum": [
+            "completed",
+            "failed",
+            "denied",
+            "interrupted"
+          ]
+        },
+        "message": {
+          "type": "string",
+          "maxLength": 1024
+        }
+      }
+    },
+    "hook.completed": {
+      "name": "hook.completed",
+      "type": "object",
+      "required": [
+        "operation_id",
+        "turn_id",
+        "point",
+        "status"
+      ],
+      "properties": {
+        "operation_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "turn_id": {
+          "type": "string"
+        },
+        "point": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "status": {
+          "enum": [
+            "completed",
+            "failed",
+            "denied",
+            "interrupted"
+          ]
+        },
+        "message": {
+          "type": "string",
+          "maxLength": 1024
+        }
+      }
     },
     "gateway.error": {
       "name": "gateway.error",
@@ -1268,6 +1340,7 @@
     "status.changed": {
       "name": "status.changed",
       "properties": {
+        "goal": {"anyOf": [{"$ref": "session-goal.schema.json"}, {"type": "null"}]},
         "context_window": {
           "properties": {
             "max_tokens": {
@@ -2165,6 +2238,7 @@
     "turn.interrupted": {
       "name": "turn.interrupted",
       "properties": {
+        "interruption_reason": { "enum": ["user", "goal_budget", "goal_usage_unavailable", "goal_changed", "goal_stopped"] },
         "error_context": { "$ref": "error-context.schema.json" },
         "error_context_invalid": { "const": true },
         "session_id": {
@@ -2601,6 +2675,7 @@
     "turn.started": {
       "name": "turn.started",
       "properties": {
+        "source": {"type": "string", "enum": ["user", "goal"]},
         "session_id": {
           "maxLength": 256,
           "minLength": 1,
@@ -2739,6 +2814,46 @@
   "$id": "https://mycli.local/contracts/gateway-events.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
 	"oneOf": [
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "hook.started"
+        },
+        "params": {
+          "$ref": "#/$defs/hook.started"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "hook.completed"
+        },
+        "params": {
+          "$ref": "#/$defs/hook.completed"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
 		{
 		  "type": "object",
 		  "required": [

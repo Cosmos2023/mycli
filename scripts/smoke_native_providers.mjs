@@ -51,14 +51,17 @@ export async function runNativeProviderSmoke(options, dependencies = {}) {
 		if (!auth.configured) return outcome({ ...evidence, status: "skipped", reason: "missing_credentials" });
 		if (!options.live) return outcome({ ...evidence, status: "ready" });
 		const provider = new ProviderRegistry(dependencies.fetch ? { fetch: dependencies.fetch } : {}).create({
-			...config, homeDir, nativeTransport, providerEnv, supportsImages: false, maxOutputTokens: 128,
+			...config, homeDir, nativeTransport, providerEnv, supportsImages: false, maxOutputTokens: 4096,
 		});
+		const levels = (await provider.resolveCapabilities?.())?.reasoningEfforts;
+		const reasoningEffort = !levels || levels.includes("none") ? "none" : levels[0] ?? "none";
 		const events = [];
 		for await (const event of provider.stream({
 			provider: providerId, model: config.model, protocol: config.protocol, nativeTransport,
 			instructions: "Complete this fixed provider verification without tools.",
 			messages: [{ role: "user", content: "Reply with exactly OK and no other text." }],
-			tools: [], reasoningEffort: "none", maxOutputTokens: 128, cacheRetention: "none", webSearchMode: "disabled",
+			tools: [], reasoningEffort, maxOutputTokens: reasoningEffort === "none" ? 128 : 4096,
+			cacheRetention: "none", webSearchMode: "disabled",
 		}, { signal: AbortSignal.timeout(45_000) })) events.push(event);
 		const checks = canonicalProviderChecks(events, providerId, config.model);
 		const passed = Object.values(checks).every(Boolean);

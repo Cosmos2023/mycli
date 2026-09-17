@@ -1,5 +1,5 @@
 import type { ErrorContext, RuntimeErrorCode, RuntimeFailure } from "@mycli/contracts";
-import type { ProtocolId, ProviderRouteId } from "@mycli/core";
+import type { ProtocolId, ProviderRouteId, ProviderUsage } from "@mycli/core";
 
 export interface ProviderStreamDiagnostics {
 	readonly attempt: number;
@@ -65,6 +65,8 @@ export type RuntimeDiagnosticEvent =
 		readonly turnId: string;
 		readonly source: "pre_turn" | "mid_turn" | "context_overflow" | "user_requested";
 		readonly status: "not_needed" | "compressed" | "skipped" | "failed" | "interrupted";
+		readonly failure?: RuntimeFailure;
+		readonly usage?: ProviderUsage;
 		readonly beforeTokens: number;
 		readonly afterTokens: number;
 		readonly maxTokens: number;

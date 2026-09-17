@@ -14,9 +14,10 @@ import {
 	encodeSessionContentBlob,
 	MODEL_INPUT_CONTENT_BLOB_MARKER_JSON,
 	openRuntimeSessionStore,
-	SCHEMA_V14_VERSION,
+	SCHEMA_V15_VERSION,
 	subagentRunId,
 	type RuntimeSessionStore,
+	type TranscriptSnapshotV2,
 } from "@mycli/storage";
 import { renderMycliShell } from "mycli-shell-tui";
 import type { GatewayEvent } from "../../../../tui/mycli-shell/src/transport/gateway-client.ts";
@@ -345,7 +346,7 @@ test("Node backend advertises a refreshed update only on the next startup", asyn
 	await second.close();
 });
 
-test("fresh schema-v14 bootstrap loads the virtual session transcript without persisting it", async (t) => {
+test("fresh schema-v15 bootstrap loads the virtual session transcript without persisting it", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-virtual-session-"));
 	const home = join(root, "home");
 	const workspace = join(root, "workspace");
@@ -400,7 +401,7 @@ test("fresh schema-v14 bootstrap loads the virtual session transcript without pe
 
 	const database = new DatabaseSync(join(home, ".mycli", "sessions.db"), { readOnly: true });
 	try {
-		assert.equal(database.prepare("SELECT version FROM schema_version").get()?.version, SCHEMA_V14_VERSION);
+		assert.equal(database.prepare("SELECT version FROM schema_version").get()?.version, SCHEMA_V15_VERSION);
 		assert.equal(database.prepare("SELECT COUNT(*) AS count FROM sessions").get()?.count, 0);
 	} finally {
 		database.close();
@@ -522,14 +523,15 @@ test("native Azure environment auth reaches in-process and Worker requests with 
 		const workspace = join(root, "workspace");
 		await mkdir(home);
 		await mkdir(workspace);
-		const captured: Array<{ url: string; key: string | undefined; model: unknown }> = [];
+		const captured: Array<{ url: string; key: string | undefined; model: unknown; reasoning: unknown }> = [];
 		const server = createServer((request, response) => {
 			let body = "";
 			request.setEncoding("utf8");
 			request.on("data", (chunk) => { body += chunk; });
 			request.on("end", () => {
+				const payload = JSON.parse(body) as Record<string, unknown>;
 				captured.push({ url: request.url ?? "", key: request.headers["api-key"] as string | undefined,
-					model: (JSON.parse(body) as Record<string, unknown>).model });
+					model: payload.model, reasoning: payload.reasoning });
 				response.writeHead(200, { "content-type": "text/event-stream" });
 				if (captured.length === 1) {
 					response.end('event: error\ndata: {"type":"error","error":{"code":"stream_read_error","type":"upstream_error","message":"Upstream request failed"}}\n\n');
@@ -549,7 +551,7 @@ test("native Azure environment auth reaches in-process and Worker requests with 
 		const sessionId = `azure-${adapter}`;
 		const backend = await startNodeBackend({ cwd: workspace, args: ["--session", sessionId], env: {
 			HOME: home, MYCLI_PROVIDER: "azure-openai-responses", MYCLI_AGENT_EXECUTION_ADAPTER: adapter,
-			MYCLI_THINKING_ENABLED: "false", MYCLI_REQUEST_MAX_RETRIES: "0", MYCLI_STREAM_MAX_RETRIES: "1",
+			MYCLI_REASONING_EFFORT: "low", MYCLI_REQUEST_MAX_RETRIES: "0", MYCLI_STREAM_MAX_RETRIES: "1",
 			AZURE_OPENAI_BASE_URL: `http://127.0.0.1:${address.port}/openai/v1`, AZURE_OPENAI_API_KEY: "fixture-azure-key",
 			AZURE_OPENAI_API_VERSION: "2025-04-01-preview", AZURE_OPENAI_DEPLOYMENT_NAME_MAP: "gpt-5.5=fixture-deployment",
 		} });
@@ -567,6 +569,7 @@ test("native Azure environment auth reaches in-process and Worker requests with 
 		assert.equal(captured.length, 2);
 		assert.equal(captured[0]?.key, "fixture-azure-key");
 		assert.equal(captured[0]?.model, "fixture-deployment");
+		assert.equal((captured[0]?.reasoning as { effort: string }).effort, "low");
 		assert.equal(new URL(captured[0]!.url, "http://fixture.invalid").searchParams.get("api-version"), "2025-04-01-preview");
 		await backend.close();
 		const store = openRuntimeSessionStore({ dbPath: join(home, ".mycli", "sessions.db") });
@@ -714,6 +717,7 @@ test("Worker-backed root composes sessions, provider streaming, transcripts, and
 		providerToolNames(capture.requestBody?.tools),
 			[
 				"Read", "Edit", "Patch", "Write", "request_permissions", "update_plan", "web_fetch",
+				"create_goal", "get_goal", "update_goal",
 				"list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "Skill",
 				"spawn_agent", "send_message", "followup_task", "interrupt_agent", "list_agents",
 				"wait_agent", "web_search",
@@ -785,10 +789,23 @@ test("Worker-backed root composes sessions, provider streaming, transcripts, and
 	const snapshot = JSON.parse(await readFile(
 		join(home, ".mycli", "sessions", "integration-session", "session.json"),
 		"utf8",
-	)) as Record<string, unknown>;
+	)) as TranscriptSnapshotV2;
 	assert.equal(snapshot.schema_version, 2);
 	assert.equal(snapshot.session_id, "integration-session");
 	assert.equal(snapshot.state, "idle");
+	assert.equal(snapshot.session?.thread_id, "integration-session");
+	assert.equal(snapshot.session?.summary_count, 0);
+	assert.equal(snapshot.session?.latest_turn_status, "completed");
+	assert.equal(snapshot.last_request?.turn_id, submittedTurnId);
+	assert.equal(snapshot.last_request?.provider, "openai");
+	assert.equal(snapshot.last_request?.protocol, "responses");
+	assert.equal(snapshot.last_request?.model, "gpt-test");
+	assert.ok(snapshot.last_request?.instruction_snapshot_id);
+	assert.ok(snapshot.last_request?.tool_set_snapshot_id);
+	assert.equal(snapshot.coverage?.included_items, snapshot.transcript.length);
+	assert.equal(snapshot.coverage?.history_truncated, false);
+	assert.equal(snapshot.coverage?.truncated_items, 0);
+	assert.doesNotMatch(JSON.stringify(snapshot), /test-key|encrypted_content|nativeTransport/u);
 	assert.equal(JSON.stringify(snapshot.transcript).includes("hello from node"), true);
 	const newSessionSnapshot = JSON.parse(await readFile(
 		join(home, ".mycli", "sessions", String(newSessionId), "session.json"),
@@ -802,6 +819,12 @@ test("Worker-backed root composes sessions, provider streaming, transcripts, and
 	);
 	const reopened = openRuntimeSessionStore({ dbPath: join(home, ".mycli", "sessions.db") });
 	try {
+		const request = reopened.modelInputLedger.loadLatestProviderRequestManifest("integration-session");
+		assert.equal(snapshot.last_request?.request_id, request?.requestId);
+		assert.equal(request?.schemaVersion, 3);
+		if (request?.schemaVersion === 3) {
+			assert.equal(snapshot.last_request?.model_input_event_count, request.timelineEventCount);
+		}
 		const userHistory = reopened.loadHistoryItems("integration-session")[0];
 		assert.equal(userHistory?.id, `${submittedTurnId}:user:integration-message`);
 		const continuation = reopened.loadState(
@@ -1359,7 +1382,7 @@ test("Explicit in-process rollback resumes default Worker state without duplicat
 		reopened.close();
 	}
 	const database = new DatabaseSync(dbPath, { readOnly: true });
-	assert.equal(database.prepare("SELECT version FROM schema_version").get()?.version, SCHEMA_V14_VERSION);
+	assert.equal(database.prepare("SELECT version FROM schema_version").get()?.version, SCHEMA_V15_VERSION);
 	const ownerCount = Number(database.prepare("SELECT COUNT(*) AS count FROM model_input_blobs").get()?.count);
 	const referenceCount = Number(database.prepare("SELECT COUNT(*) AS count FROM model_input_blob_refs").get()?.count);
 	assert.ok(ownerCount > 0);
@@ -4100,12 +4123,14 @@ test("Worker-backed root exposes Shell only on turns accepted after workspace tr
 
 	assert.deepEqual(requestTools[0], [
 		"Read", "Edit", "Patch", "Write", "update_plan", "web_fetch",
+		"create_goal", "get_goal", "update_goal",
 		"list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "Skill",
 		"spawn_agent", "send_message", "followup_task", "interrupt_agent", "list_agents",
 		"wait_agent", "web_search",
 	]);
 	assert.deepEqual(requestTools[1], [
 		"Read", "Edit", "Patch", "Write", "update_plan", "web_fetch",
+		"create_goal", "get_goal", "update_goal",
 		"list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "Shell", "WriteStdin", "Skill", "spawn_agent", "send_message",
 		"followup_task", "interrupt_agent", "list_agents", "wait_agent", "web_search",
 	]);
@@ -5003,7 +5028,7 @@ test("Worker-backed root retains provider-free slash commands in the coordinator
 	assert.equal(displayValue(normalizedResult, "kind"), "notice");
 	assert.equal(resultValue(normalizedResult, "phase"), "complete");
 	assert.equal(resultValue(normalizedResult, "status"), "already_normalized");
-	assert.equal(resultValue(normalizedResult, "schema_version"), SCHEMA_V14_VERSION);
+	assert.equal(resultValue(normalizedResult, "schema_version"), SCHEMA_V15_VERSION);
 	writeRequest(backend, "provider-free-shutdown", "shutdown", {});
 	assert.equal(await backend.completion, 0);
 	const normalized = openRuntimeSessionStore({ dbPath });
@@ -5064,7 +5089,7 @@ test("Node backend reports v14 content blobs complete and collects explicit orph
 	const complete = await runCommand("/session maintenance --apply-content-blobs");
 	assert.equal(resultValue(complete, "phase"), "complete");
 	assert.equal(resultValue(complete, "status"), "already_blob_backed");
-	assert.equal(resultValue(complete, "schema_version"), SCHEMA_V14_VERSION);
+	assert.equal(resultValue(complete, "schema_version"), SCHEMA_V15_VERSION);
 	assert.doesNotMatch(JSON.stringify(complete), /private backend content|content-event/u);
 
 	const orphan = encodeSessionContentBlob("private backend orphan ".repeat(500));
@@ -5521,7 +5546,7 @@ test("Node backend persists canonical TUI control state without exposing credent
 	const modelList = await waitFor(() => response(firstMessages, "models"));
 	assert.equal(resultValue(modelList, "provider"), "openai");
 	const listedModels = resultValue(modelList, "models") as Array<Record<string, unknown>>;
-	assert.deepEqual(listedModels.map((entry) => entry.model), ["gpt-5", "gpt-selected"]);
+	assert.deepEqual(listedModels.map((entry) => entry.model), ["gpt-5.5", "gpt-selected"]);
 	assert.equal(listedModels[1]?.context_window_tokens, 200_000);
 	assert.equal(listedModels[1]?.max_output_tokens, 50_000);
 

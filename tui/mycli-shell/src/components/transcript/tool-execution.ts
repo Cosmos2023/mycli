@@ -7,7 +7,7 @@ import { theme } from "../../theme/theme.ts";
 import { stripDiffHunkHeaders, styleCompactDiff } from "./diff-renderer.ts";
 import { keyHint } from "../shared/keybinding-hints.ts";
 import { contextToolKind, contextToolLabel, shortPreview } from "../../transcript/tool-display.ts";
-import { conciseToolResult, presentationForTool } from "../../transcript/tool-presentation.ts";
+import { conciseToolResult, firstMeaningfulLine, presentationForTool } from "../../transcript/tool-presentation.ts";
 import {
 	TRANSCRIPT_BRANCH_INDENT,
 	TRANSCRIPT_DETAIL_INDENT,
@@ -143,7 +143,13 @@ export class ToolExecutionComponent extends Container {
 
 	private detailText(): string {
 		if (this.tool.status === "error") {
-			return this.tool.errorPreview ?? this.tool.detailPreview ?? this.tool.outputPreview ?? "";
+			const detail = this.tool.errorPreview ?? this.tool.detailPreview ?? this.tool.outputPreview ?? "";
+			if (!this.tool.expanded && this.tool.name === "Compact") {
+				const summary = firstMeaningfulLine(this.tool.errorPreview ?? this.tool.outputPreview);
+				const lines = detail.trimStart().split("\n");
+				if (lines[0]?.trim() === summary) return lines.slice(1).join("\n");
+			}
+			return detail;
 		}
 		if (this.tool.diffPreview) {
 			return this.tool.diffPreview;

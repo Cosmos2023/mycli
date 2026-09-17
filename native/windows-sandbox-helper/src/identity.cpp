@@ -8,6 +8,8 @@
 #include <ntsecapi.h>
 #include <sddl.h>
 #include <shlobj.h>
+#include <userenv.h>
+#include "path-guard.hpp"
 
 #include <array>
 #include <filesystem>
@@ -24,7 +26,7 @@ namespace {
 
 constexpr std::array<unsigned char, 16> kCredentialMagic{
     'M', 'Y', 'C', 'L', 'I', 'W', 'S', 'C', 'R', 'E', 'D', '0', '0', '0', '0', '1'};
-constexpr wchar_t kCredentialDescription[] = L"mycli Windows sandbox offline credential";
+constexpr wchar_t kCredentialDescription[] = L"mycli Windows sandbox credential";
 constexpr wchar_t kDpapiEntropy[] = L"mycli/windows-sandbox/credential/v1";
 
 std::filesystem::path StateDirectory() {
@@ -38,8 +40,14 @@ std::filesystem::path StateDirectory() {
     return path;
 }
 
-std::filesystem::path CredentialPath(const std::filesystem::path& state_directory) {
-    return state_directory / L"offline.credential";
+std::filesystem::path CredentialPath(
+    const std::filesystem::path& state_directory, SandboxIdentityKind kind) {
+    switch (kind) {
+        case SandboxIdentityKind::kOffline: return state_directory / L"offline.credential";
+        case SandboxIdentityKind::kOnline: return state_directory / L"online.credential";
+        case SandboxIdentityKind::kProxy: return state_directory / L"proxy.credential";
+    }
+    throw std::invalid_argument("unknown sandbox identity kind");
 }
 
 void RequireAdministrator() {
@@ -122,9 +130,9 @@ void RestrictStatePath(
         SetLastError(acl_status);
         throw Win32Error("SetEntriesInAclW(state path)");
     }
-    std::wstring path_text = path.wstring();
-    const DWORD security_status = SetNamedSecurityInfoW(
-        path_text.data(),
+    const PathGuard guard{path, READ_CONTROL | WRITE_DAC};
+    const DWORD security_status = SetSecurityInfo(
+        guard.leaf(),
         SE_FILE_OBJECT,
         DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
         nullptr,
@@ -265,9 +273,10 @@ std::vector<unsigned char> ProtectPassword(const std::wstring& password) {
 void SavePassword(
     const std::filesystem::path& state_directory,
     const std::wstring& owner_sid,
+    SandboxIdentityKind kind,
     const std::wstring& password) {
     PrepareStateDirectory(state_directory, owner_sid);
-    const auto target = CredentialPath(state_directory);
+    const auto target = CredentialPath(state_directory, kind);
     const std::filesystem::path temporary = target.wstring() + L".tmp";
     const auto protected_data = ProtectPassword(password);
     std::ofstream output{temporary, std::ios::binary | std::ios::trunc};
@@ -285,8 +294,9 @@ void SavePassword(
     RestrictStatePath(target, owner_sid, NO_INHERITANCE);
 }
 
-std::wstring LoadPassword(const std::filesystem::path& state_directory) {
-    std::ifstream input{CredentialPath(state_directory), std::ios::binary};
+std::wstring LoadPassword(
+    const std::filesystem::path& state_directory, SandboxIdentityKind kind) {
+    std::ifstream input{CredentialPath(state_directory, kind), std::ios::binary};
     const std::vector<unsigned char> data{
         std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
     if (data.size() <= kCredentialMagic.size() ||
@@ -321,13 +331,45 @@ std::wstring LoadPassword(const std::filesystem::path& state_directory) {
     return password;
 }
 
+std::wstring OwnershipComment(const std::wstring& owner_sid) {
+    return L"mycli sandbox owner=" + owner_sid;
+}
+
+bool RequireOwnedAccount(const std::filesystem::path& state_directory,
+    const std::wstring& owner_sid, SandboxIdentityKind kind) {
+    const auto username = SandboxUsernameForOwner(owner_sid, kind);
+    LPBYTE raw = nullptr;
+    const auto status = NetUserGetInfo(nullptr, username.c_str(), 1, &raw);
+    if (status == NERR_UserNotFound) return false;
+    if (status != NERR_Success) throw std::runtime_error("could not inspect sandbox account ownership");
+    const auto* user = reinterpret_cast<const USER_INFO_1*>(raw);
+    const std::wstring comment = user->usri1_comment == nullptr ? L"" : user->usri1_comment;
+    NetApiBufferFree(raw);
+    const auto expected = OwnershipComment(owner_sid);
+    if (comment == expected) return true;
+    // Migrate a legacy account only if its protected saved credential still
+    // authenticates as the expected SID. A matching username is not ownership.
+    if (!comment.empty()) throw std::runtime_error("sandbox account name belongs to another account");
+    const auto identity = LoadSandboxIdentity(state_directory, owner_sid, kind);
+    static_cast<void>(identity);
+    USER_INFO_1007 info{const_cast<LPWSTR>(expected.c_str())};
+    DWORD parameter = 0;
+    if (NetUserSetInfo(nullptr, username.c_str(), 1007, reinterpret_cast<LPBYTE>(&info), &parameter) != NERR_Success) {
+        throw std::runtime_error("could not mark legacy sandbox account ownership");
+    }
+    return true;
+}
+
 void CreateOrResetAccount(
     const std::wstring& username,
-    const std::wstring& password) {
+    const std::wstring& password,
+    const std::wstring& owner_sid) {
     USER_INFO_1 user{};
     user.usri1_name = const_cast<LPWSTR>(username.c_str());
     user.usri1_password = const_cast<LPWSTR>(password.c_str());
     user.usri1_priv = USER_PRIV_USER;
+    auto comment = OwnershipComment(owner_sid);
+    user.usri1_comment = comment.data();
     user.usri1_flags = UF_SCRIPT | UF_DONT_EXPIRE_PASSWD | UF_PASSWD_CANT_CHANGE;
     DWORD parameter_error = 0;
     NET_API_STATUS status = NetUserAdd(nullptr, 1, reinterpret_cast<LPBYTE>(&user), &parameter_error);
@@ -340,6 +382,10 @@ void CreateOrResetAccount(
             reinterpret_cast<LPBYTE>(&password_info),
             &parameter_error);
     }
+    if (status == NERR_Success) {
+        USER_INFO_1008 flags{UF_SCRIPT | UF_DONT_EXPIRE_PASSWD | UF_PASSWD_CANT_CHANGE};
+        status = NetUserSetInfo(nullptr, username.c_str(), 1008, reinterpret_cast<LPBYTE>(&flags), &parameter_error);
+    }
     if (status != NERR_Success) {
         throw std::runtime_error(
             "failed to create sandbox account: NetAPI status " + std::to_string(status));
@@ -348,14 +394,79 @@ void CreateOrResetAccount(
 
 }  // namespace
 
-bool OfflineIdentityCredentialsExist(
-    const std::filesystem::path& state_directory) {
+bool SandboxIdentityCredentialsExist(
+    const std::filesystem::path& state_directory, SandboxIdentityKind kind) {
     std::error_code error;
-    return std::filesystem::is_regular_file(CredentialPath(state_directory), error);
+    return std::filesystem::is_regular_file(CredentialPath(state_directory, kind), error);
 }
 
 std::filesystem::path SandboxStateDirectory() {
     return StateDirectory();
+}
+
+std::wstring TokenUserSidString(HANDLE token) { return SidStringFromToken(token); }
+
+std::vector<std::wstring> OwnedSandboxAccountSids(
+    const std::filesystem::path& directory, const std::wstring& owner_sid) {
+    std::vector<std::wstring> result;
+    for (const auto kind : {SandboxIdentityKind::kOffline, SandboxIdentityKind::kOnline, SandboxIdentityKind::kProxy}) {
+        if (RequireOwnedAccount(directory, owner_sid, kind)) {
+            const auto [sid, text] = LookupOfflineSid(SandboxUsernameForOwner(owner_sid, kind));
+            result.push_back(text);
+        }
+    }
+    return result;
+}
+
+bool SandboxAccountsExist(const std::wstring& owner_sid) {
+    for (const auto kind : {SandboxIdentityKind::kOffline, SandboxIdentityKind::kOnline, SandboxIdentityKind::kProxy}) {
+        const auto username = SandboxUsernameForOwner(owner_sid, kind);
+        LPBYTE raw = nullptr;
+        const auto status = NetUserGetInfo(nullptr, username.c_str(), 0, &raw);
+        if (raw != nullptr) NetApiBufferFree(raw);
+        if (status != NERR_UserNotFound) return true;  // Ambiguity is never uninstall success.
+    }
+    return false;
+}
+
+void DisableSandboxAccounts(const std::filesystem::path& directory, const std::wstring& owner_sid) {
+    RequireAdministrator();
+    for (const auto kind : {SandboxIdentityKind::kOffline, SandboxIdentityKind::kOnline, SandboxIdentityKind::kProxy}) {
+        if (!RequireOwnedAccount(directory, owner_sid, kind)) continue;
+        const auto username = SandboxUsernameForOwner(owner_sid, kind);
+        USER_INFO_1008 info{UF_SCRIPT | UF_DONT_EXPIRE_PASSWD | UF_PASSWD_CANT_CHANGE | UF_ACCOUNTDISABLE};
+        DWORD parameter = 0;
+        if (NetUserSetInfo(nullptr, username.c_str(), 1008, reinterpret_cast<LPBYTE>(&info), &parameter) != NERR_Success) {
+            throw std::runtime_error("could not disable sandbox account");
+        }
+    }
+}
+
+void DeleteSandboxAccounts(const std::filesystem::path& directory, const std::wstring& owner_sid) {
+    RequireAdministrator();
+    for (const auto kind : {SandboxIdentityKind::kOffline, SandboxIdentityKind::kOnline, SandboxIdentityKind::kProxy}) {
+        if (!RequireOwnedAccount(directory, owner_sid, kind)) continue;
+        const auto username = SandboxUsernameForOwner(owner_sid, kind);
+        const auto [sid, sid_string] = LookupOfflineSid(username);
+        if (DeleteProfileW(sid_string.c_str(), nullptr, nullptr) == 0 &&
+            GetLastError() != ERROR_FILE_NOT_FOUND && GetLastError() != ERROR_PATH_NOT_FOUND) {
+            throw Win32Error("delete sandbox account profile");
+        }
+        LSA_OBJECT_ATTRIBUTES attributes{};
+        attributes.Length = sizeof(attributes);
+        LSA_HANDLE policy = nullptr;
+        auto status = LsaOpenPolicy(nullptr, &attributes, POLICY_LOOKUP_NAMES, &policy);
+        if (status != 0) throw std::runtime_error("could not open sandbox account logon rights");
+        status = LsaRemoveAccountRights(policy, sid.get(), TRUE, nullptr, 0);
+        LsaClose(policy);
+        if (status != 0 && LsaNtStatusToWinError(status) != ERROR_FILE_NOT_FOUND) {
+            throw std::runtime_error("could not remove sandbox account logon rights");
+        }
+        const auto result = NetUserDel(nullptr, username.c_str());
+        if (result != NERR_Success && result != NERR_UserNotFound) {
+            throw std::runtime_error("could not delete sandbox account");
+        }
+    }
 }
 
 std::wstring CurrentUserSidString() {
@@ -367,52 +478,13 @@ std::wstring CurrentUserSidString() {
     return SidStringFromToken(token.get());
 }
 
-std::wstring OfflineUsernameForOwner(const std::wstring& owner_sid) {
+std::wstring SandboxUsernameForOwner(
+    const std::wstring& owner_sid, SandboxIdentityKind kind) {
     static_cast<void>(SidFromString(owner_sid));
-    BCRYPT_ALG_HANDLE algorithm = nullptr;
-    if (BCryptOpenAlgorithmProvider(
-            &algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0) {
-        throw std::runtime_error("BCryptOpenAlgorithmProvider failed");
-    }
-    DWORD object_bytes = 0;
-    DWORD copied = 0;
-    if (BCryptGetProperty(
-            algorithm,
-            BCRYPT_OBJECT_LENGTH,
-            reinterpret_cast<PUCHAR>(&object_bytes),
-            sizeof(object_bytes),
-            &copied,
-            0) < 0) {
-        BCryptCloseAlgorithmProvider(algorithm, 0);
-        throw std::runtime_error("BCryptGetProperty failed");
-    }
-    std::vector<unsigned char> hash_object(object_bytes);
-    std::array<unsigned char, 32> digest{};
-    BCRYPT_HASH_HANDLE hash = nullptr;
-    auto status = BCryptCreateHash(
-        algorithm,
-        &hash,
-        hash_object.data(),
-        static_cast<ULONG>(hash_object.size()),
-        nullptr,
-        0,
-        0);
-    if (status >= 0) {
-        status = BCryptHashData(
-            hash,
-            reinterpret_cast<PUCHAR>(const_cast<wchar_t*>(owner_sid.data())),
-            static_cast<ULONG>(owner_sid.size() * sizeof(wchar_t)),
-            0);
-    }
-    if (status >= 0) {
-        status = BCryptFinishHash(
-            hash, digest.data(), static_cast<ULONG>(digest.size()), 0);
-    }
-    if (hash != nullptr) BCryptDestroyHash(hash);
-    BCryptCloseAlgorithmProvider(algorithm, 0);
-    if (status < 0) throw std::runtime_error("BCrypt SHA-256 failed");
+    const auto digest = HashSandboxKey(owner_sid);
     constexpr wchar_t hex[] = L"0123456789abcdef";
-    std::wstring username = L"mcli_";
+    std::wstring username = kind == SandboxIdentityKind::kOffline ? L"mcli_"
+        : kind == SandboxIdentityKind::kOnline ? L"mclo_" : L"mclp_";
     for (std::size_t index = 0; index < 15; ++index) {
         const unsigned char byte = digest[index / 2];
         username.push_back(
@@ -421,39 +493,50 @@ std::wstring OfflineUsernameForOwner(const std::wstring& owner_sid) {
     return username;
 }
 
-void SetupOfflineIdentity(
+void SetupSandboxIdentity(
     const std::filesystem::path& state_directory,
-    const std::wstring& owner_sid) {
+    const std::wstring& owner_sid,
+    SandboxIdentityKind kind) {
     RequireAdministrator();
-    const auto username = OfflineUsernameForOwner(owner_sid);
-    const auto password = GeneratePassword();
-    CreateOrResetAccount(username, password);
-    auto [sid, sid_string] = LookupOfflineSid(username);
-    static_cast<void>(sid_string);
-    GrantLogonRights(sid.get());
-    SavePassword(state_directory, owner_sid, password);
+    const auto username = SandboxUsernameForOwner(owner_sid, kind);
+    static_cast<void>(RequireOwnedAccount(state_directory, owner_sid, kind));
+    auto password = GeneratePassword();
+    try {
+        CreateOrResetAccount(username, password, owner_sid);
+        auto [sid, sid_string] = LookupOfflineSid(username);
+        static_cast<void>(sid_string);
+        GrantLogonRights(sid.get());
+        SavePassword(state_directory, owner_sid, kind, password);
+        SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
+    } catch (...) {
+        SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
+        throw;
+    }
 }
 
-void ResetOfflineIdentityCredentials(
+void ResetSandboxIdentityCredentials(
     const std::filesystem::path& state_directory) {
-    const auto credential = CredentialPath(state_directory);
-    std::error_code error;
-    std::filesystem::remove(credential, error);
-    if (error) {
-        throw std::runtime_error("failed to clear sandbox credential state");
-    }
-    error.clear();
-    std::filesystem::remove(credential.wstring() + L".tmp", error);
-    if (error) {
-        throw std::runtime_error("failed to clear temporary sandbox credential state");
+    for (const auto kind : {SandboxIdentityKind::kOffline, SandboxIdentityKind::kOnline, SandboxIdentityKind::kProxy}) {
+        const auto credential = CredentialPath(state_directory, kind);
+        std::error_code error;
+        std::filesystem::remove(credential, error);
+        if (error) {
+            throw std::runtime_error("failed to clear sandbox credential state");
+        }
+        error.clear();
+        std::filesystem::remove(credential.wstring() + L".tmp", error);
+        if (error) {
+            throw std::runtime_error("failed to clear temporary sandbox credential state");
+        }
     }
 }
 
-OfflineIdentity LoadOfflineIdentity(
+SandboxIdentity LoadSandboxIdentity(
     const std::filesystem::path& state_directory,
-    const std::wstring& owner_sid) {
-    const auto username = OfflineUsernameForOwner(owner_sid);
-    auto password = LoadPassword(state_directory);
+    const std::wstring& owner_sid,
+    SandboxIdentityKind kind) {
+    const auto username = SandboxUsernameForOwner(owner_sid, kind);
+    auto password = LoadPassword(state_directory, kind);
     HANDLE raw_token = nullptr;
     const BOOL logged_on = LogonUserW(
         username.c_str(),
@@ -463,21 +546,28 @@ OfflineIdentity LoadOfflineIdentity(
         LOGON32_PROVIDER_DEFAULT,
         &raw_token);
     SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
-    if (logged_on == 0) throw Win32Error("LogonUserW(offline sandbox account)");
+    if (logged_on == 0) throw Win32Error("LogonUserW(sandbox account)");
+    UniqueHandle token{raw_token};
     auto [sid, sid_string] = LookupOfflineSid(username);
-    return OfflineIdentity{UniqueHandle{raw_token}, std::move(sid), std::move(sid_string)};
+    if (SidStringFromToken(token.get()) != sid_string) {
+        throw std::runtime_error("sandbox account token does not match its identity");
+    }
+    return SandboxIdentity{std::move(token), std::move(sid), std::move(sid_string)};
 }
 
-DWORD RunAsOfflineIdentity(
+DWORD RunAsSandboxIdentity(
     const std::filesystem::path& state_directory,
     const std::wstring& owner_sid,
+    SandboxIdentityKind kind,
     const std::vector<std::wstring>& argv,
-    const std::filesystem::path& cwd) {
-    const auto username = OfflineUsernameForOwner(owner_sid);
-    auto password = LoadPassword(state_directory);
+    const std::filesystem::path& cwd,
+    unsigned short network_proxy_port) {
+    const auto username = SandboxUsernameForOwner(owner_sid, kind);
+    const auto [sid, sid_string] = LookupOfflineSid(username);
+    auto password = LoadPassword(state_directory, kind);
     try {
         const DWORD exit_code = RunProcessWithLogonInJob(
-            username, password, argv, cwd);
+            username, password, argv, cwd, sid_string, network_proxy_port);
         SecureZeroMemory(password.data(), password.size() * sizeof(wchar_t));
         return exit_code;
     } catch (...) {

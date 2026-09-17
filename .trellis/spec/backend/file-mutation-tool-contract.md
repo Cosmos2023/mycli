@@ -184,7 +184,19 @@ Required tests for mutation tool changes:
 - A frozen unrestricted execution policy permits canonical Read and mutation targets outside the
   workspace. Atomic-write, path, encoding, size, binary, and secret checks still apply. Outside
   mutations do not create workspace file-history snapshots.
-- Workspace-local mutations auto-allow in M4. A restricted outside attempt fails as
+- Mutations auto-allow only inside the effective writable roots. A path-only workspace preview
+  does not authorize writes. An explicit empty root list grants no writes, including paths inside
+  the workspace; a nested or external grant never implicitly adds the workspace root. An explicit
+  execution policy overrides the fallback permission profile, and read-only policies grant no
+  writes. Restricted root membership uses the shared path-containment predicate in both approval
+  and canonical path resolution.
+- Approval preflight resolves each existing target or its nearest existing ancestor against the
+  canonical grants. Workspace aliases such as macOS `/var` and `/private/var` must not cause false
+  denials; symlinks into ungranted paths must not inherit the alias directory's write authority.
+- Standalone calls without an execution policy retain the workspace-only default. Preserve the
+  distinction between omitted `allowedWritableRoots` and an explicitly empty array through the
+  adapter, preparation, and commit. Read access may still include the workspace independently.
+- A mutation outside the effective writable roots fails as
   `workspace_escape`; only a matching retry with `danger-full-access` and a bounded justification
   may suspend for one-time user approval.
 - Retry eligibility is turn-scoped, consumed when the approval request is created, and fingerprinted
@@ -196,6 +208,9 @@ Required tests for mutation tool changes:
 - Approved execution resolves access from the runtime-owned override policy when present. Managed
   writable roots still cap the mutation; the approval bit by itself does not imply unrestricted
   filesystem access.
+- Patch checks all source and destination paths before committing any change, including a denied
+  path after an otherwise permitted add. Canonical symlink targets and the final commit path must
+  satisfy the same writable roots, even when both the alias and target are inside the workspace.
 - The bounded justification is the user-visible approval reason. It is not copied into mutation
   receipts, result metadata, file-history rows, or diff output.
 - A live approved mutation includes the prepared guard mutation id in its effect fingerprint. Only
@@ -267,6 +282,10 @@ Required tests for mutation tool changes:
 - Direct adapter escalation without the host authorization bit ->
   `sandbox_override_not_approved` with no write.
 - Approved escalation outside the runtime override roots -> `workspace_escape` with no write.
+- Read-only or explicit empty writable roots -> `workspace_escape` for every mutation, without
+  target changes, new directories, temporary files, or file-history capture.
+- A managed/granted subdirectory -> allow only that directory; other workspace paths and sibling
+  prefixes fail. An approved override with those same roots cannot expand them.
 - Successful create/overwrite -> `add`/`update` file-change kind, bounded diff, compact receipt,
   and durable call/result order.
 
@@ -309,6 +328,10 @@ Required tests for mutation tool changes:
   outside-path rejection.
 - Exact retry fingerprinting, one-time consumption, justification bounds, forged escalation
   rejection, exact-call authorization forwarding, and approval recovery after restart.
+- Read-only, empty roots, exact file and nested-directory grants, full access, bounded approved
+  overrides, in-workspace symlink escapes, and Patch source/destination validation. App integration
+  tests explicitly configure the intended permission profile and verify denied calls reach both
+  provider replay and gateway failures with unchanged bytes.
 - Bounded mutation preview tests for side-effect-free Write add/overwrite, real-line-number Edit and
   multi-file Patch diffs, delete/move kinds, approval and full-access live gateway projection, and
   child-agent projection. Restart integration must assert all proposal and guard fields are absent

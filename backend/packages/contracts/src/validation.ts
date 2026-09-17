@@ -8,6 +8,7 @@ import type { JsonRpcMessage } from "./generated/json-rpc-message.ts";
 import type { PluginV2Manifest } from "./generated/plugin-v2-manifest.ts";
 import type { PluginV2ProtocolMessage } from "./generated/plugin-v2-protocol.ts";
 import type { RuntimeStateRecord } from "./generated/runtime-state-record.ts";
+import type { SessionGoal } from "./generated/session-goal.ts";
 import type { RuntimeTurnRecord } from "./generated/runtime-turn-record.ts";
 import { parseProviderAttemptRecord } from "./provider-attempt.ts";
 import { ContractValidationError } from "./contract-validation-error.ts";
@@ -31,6 +32,7 @@ function compile(name: string): ValidateFunction {
 }
 
 const validateCatalog = compile("catalog.schema.json");
+const validateSessionGoal = compile("session-goal.schema.json");
 const validateGatewayToolRecord = compile("gateway-tool-record.schema.json");
 const validateRuntimeTurnRecord = compile("runtime-turn.schema.json");
 ajv.addSchema(JSON.parse(readFileSync(new URL("../schemas/provider-attempt.schema.json", import.meta.url), "utf8")) as object,
@@ -53,6 +55,10 @@ function parse<T>(value: unknown, validator: ValidateFunction, label: string): T
 
 export function isGatewayErrorCode(value: unknown): value is Extract<GatewayEventNotification, { method: "gateway.error" }>["params"]["code"] {
 	return validateGatewayErrorCode(value) === true;
+}
+
+export function parseSessionGoal(value: unknown): SessionGoal {
+	return Object.freeze(parse<SessionGoal>(value, validateSessionGoal, "session goal"));
 }
 
 export function parseGatewayEvent(value: unknown): GatewayEventNotification {

@@ -30,5 +30,6 @@ parentPort.on("message", (message) => {
 		return;
 	}
 	if (request.method === "hold") return;
+	if (request.method === "inspect-options") { send({ jsonrpc: "2.0", id: request.id, result: { enableGoals: options.enableGoals } }); return; }
 	send({ jsonrpc: "2.0", id: request.id, result: { ...request.params, generation } });
 });

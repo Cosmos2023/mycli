@@ -1,10 +1,12 @@
 {
   "name": "@mycli/core",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "types": "./dist/index.d.ts",
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "exports": {
     ".": {
       "mycli-source": "./src/index.ts",
@@ -18,7 +20,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@mycli/contracts": "0.1.0"
+    "@mycli/contracts": "0.1.1"
   },
   "devDependencies": {
     "tsx": "^4.22.4",

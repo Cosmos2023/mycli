@@ -1,3 +1,4 @@
+import { isAbsolute, normalize } from "node:path";
 import type { WorkspaceTrustState } from "@mycli/config";
 import type {
 	PermissionGrantScope,
@@ -5,6 +6,8 @@ import type {
 } from "@mycli/core";
 import {
 	executionPolicy,
+	validateDeniedReadGlobs,
+	deniedReadPath,
 	freezePermissionRequest,
 	normalizeNetworkDomains,
 	pathWithinRoot,
@@ -24,6 +27,8 @@ export interface ExecutionPolicyConstraints {
 	readonly network?: "enabled" | "disabled";
 	readonly networkDomains?: readonly string[];
 	readonly readableRoots?: readonly string[];
+	readonly deniedReadRoots?: readonly string[];
+	readonly deniedReadGlobs?: readonly string[];
 	readonly writableRoots?: readonly string[];
 }
 
@@ -137,7 +142,7 @@ export class ExecutionPolicyCoordinator {
 		}
 		const restored = Object.freeze({
 			toolsEnabled: policy.toolsEnabled,
-			profile: copyExecutionPolicy(policy.profile),
+			profile: this.#applyConstraints(copyExecutionPolicy(policy.profile)),
 		});
 		this.#active = Object.freeze({
 			turnId,
@@ -238,15 +243,18 @@ export class ExecutionPolicyCoordinator {
 			: policy.network;
 		const networkDomains = this.#constraints.networkDomains ?? policy.networkDomains;
 		const readableRoots = this.#constraints.readableRoots ?? policy.readableRoots;
-		if (constrainedRoots === undefined
+		const deniedReadRoots = uniqueStrings([...(policy.deniedReadRoots ?? []), ...(this.#constraints.deniedReadRoots ?? [])]);
+		const deniedReadGlobs = uniqueStrings([...(policy.deniedReadGlobs ?? []), ...(this.#constraints.deniedReadGlobs ?? [])]);
+		const hasDenies = deniedReadRoots.length > 0 || deniedReadGlobs.length > 0;
+		if (!hasDenies && constrainedRoots === undefined
 			&& network === policy.network
 			&& networkDomains === policy.networkDomains
 			&& readableRoots === policy.readableRoots) return policy;
 		return immutablePolicy(
-			policy,
+			{ ...policy, ...(hasDenies ? { deniedReadRoots, deniedReadGlobs } : {}) },
 			roots,
 			network,
-			constrainedRoots !== undefined || this.#constraints.readableRoots !== undefined,
+			constrainedRoots !== undefined || this.#constraints.readableRoots !== undefined || hasDenies,
 			networkDomains,
 			readableRoots,
 		);
@@ -258,18 +266,14 @@ export class ExecutionPolicyCoordinator {
 	} {
 		const allowedReadRoots = this.#constraints?.readableRoots;
 		const requestedRead = permissions.fileSystem?.read ?? [];
-		const read = allowedReadRoots === undefined
-			? requestedRead
-			: requestedRead.filter((path) => (
-				allowedReadRoots.some((root) => pathWithinRoot(root, path))
-			));
+		const read = requestedRead.filter((path) =>
+			(allowedReadRoots === undefined || allowedReadRoots.some((root) => pathWithinRoot(root, path)))
+			&& !deniedReadPath(this.#workspaceRoot, path, this.#constraints ?? {}));
 		const allowedRoots = this.#constraints?.writableRoots;
 		const requestedWrite = permissions.fileSystem?.write ?? [];
-		const write = allowedRoots === undefined
-			? requestedWrite
-			: requestedWrite.filter((path) => (
-				allowedRoots.some((root) => pathWithinRoot(root, path))
-			));
+		const write = requestedWrite.filter((path) =>
+			(allowedRoots === undefined || allowedRoots.some((root) => pathWithinRoot(root, path)))
+			&& !deniedReadPath(this.#workspaceRoot, path, this.#constraints ?? {}));
 		const constrainedDomains = this.#constraints?.networkDomains;
 		const networkAllowed = this.#constraints?.network !== "disabled"
 			&& (constrainedDomains === undefined || constrainedDomains.length > 0);
@@ -308,6 +312,13 @@ function normalizeConstraints(
 	}
 	return Object.freeze({
 		source: constraints.source,
+		...(constraints.deniedReadRoots === undefined ? {} : {
+			deniedReadRoots: uniqueStrings(constraints.deniedReadRoots.map((root) => {
+				if (!isAbsolute(root) || /[\0\r\n]/u.test(root)) throw new TypeError("denied-read roots must be absolute paths");
+				return normalize(root);
+			})),
+		}),
+		...(constraints.deniedReadGlobs === undefined ? {} : { deniedReadGlobs: validateDeniedReadGlobs(constraints.deniedReadGlobs) }),
 		...(constraints.network ? { network: constraints.network } : {}),
 		...(constraints.networkDomains ? {
 			networkDomains: normalizeNetworkDomains(constraints.networkDomains),
@@ -377,6 +388,8 @@ function immutablePolicy(
 			? "unrestricted"
 			: hasWritableRoots ? "workspace_write" : "read_only",
 		network,
+		...(base.deniedReadRoots === undefined ? {} : { deniedReadRoots: Object.freeze([...base.deniedReadRoots]) }),
+		...(base.deniedReadGlobs === undefined ? {} : { deniedReadGlobs: Object.freeze([...base.deniedReadGlobs]) }),
 		...(networkDomains === undefined ? {} : {
 			networkDomains: Object.freeze([...networkDomains]),
 		}),
@@ -392,6 +405,8 @@ function copyExecutionPolicy(policy: ExecutionPolicy): ExecutionPolicy {
 		mode: policy.mode,
 		filesystem: policy.filesystem,
 		network: policy.network,
+		...(policy.deniedReadRoots === undefined ? {} : { deniedReadRoots: Object.freeze([...policy.deniedReadRoots]) }),
+		...(policy.deniedReadGlobs === undefined ? {} : { deniedReadGlobs: Object.freeze([...policy.deniedReadGlobs]) }),
 		...(policy.networkDomains === undefined ? {} : {
 			networkDomains: Object.freeze([...policy.networkDomains]),
 		}),

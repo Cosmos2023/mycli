@@ -20,7 +20,7 @@ import {
 	openRuntimeSessionStore,
 	SCHEMA_V12_VERSION,
 	SCHEMA_V13_VERSION,
-	SCHEMA_V14_VERSION,
+	SCHEMA_V15_VERSION,
 	SQLiteSessionStore,
 	SQLiteTranscriptEventRepository,
 	stageV10ContentBlobMigrationBatch,
@@ -73,7 +73,7 @@ const PROFILES = Object.freeze({
 });
 const REQUEST_TIMEOUT_MS = 15 * 60 * 1_000;
 const SAMPLE_INTERVAL_MS = 10;
-const CURRENT_STORAGE_SCHEMA = `v${SCHEMA_V14_VERSION}`;
+const CURRENT_STORAGE_SCHEMA = `v${SCHEMA_V15_VERSION}`;
 const TIMELINE_STORAGE_SCHEMAS = new Set(["v12", "v13", CURRENT_STORAGE_SCHEMA]);
 const STORAGE_SCHEMAS = new Set(["v9", "v10", "v11", ...TIMELINE_STORAGE_SCHEMAS, "paired"]);
 const CONTENT_BLOB_BATCH_SIZE = 500;

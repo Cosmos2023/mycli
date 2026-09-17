@@ -5,6 +5,8 @@ import {
 	errorSummary,
 	readErrorContext,
 	TURN_INTERRUPTED_NOTICE,
+	turnInterruptionNotice,
+	isTurnInterruptionReason,
 	diagnosticRecoveryAction,
 	isDiagnosticCategory,
 	isDiagnosticRecoveryActionId,
@@ -44,7 +46,7 @@ export function appendInterruptedNotice(
 			id: turnId ? turnInterruptedNoticeId(turnId) : nextId("turn-interrupted"),
 			...(turnId ? { turn_id: turnId } : {}),
 			type: "warning",
-			text: TURN_INTERRUPTED_NOTICE,
+			text: turnInterruptionNotice(isTurnInterruptionReason(params.interruption_reason) ? params.interruption_reason : undefined),
 			folded: false,
 			metadata: {
 				...errorNoticeMetadata(params),
@@ -501,20 +503,25 @@ export function applyReasoning(items: RuntimeTranscriptItem[], text: string, met
 }
 
 export function applyCompactionLifecycle(items: RuntimeTranscriptItem[], method: string, params: Record<string, unknown>): RuntimeTranscriptItem[] {
+	const id = stringValue(params.checkpoint_id) ?? legacyCompactionId(items, method, params);
+	const existing = items.find((item) => recordValue(item.metadata).call_id === id);
+	if (method === "compaction.started" && existing) return items;
 	const metadata = {
 		...params,
-		tool_id: compactionId(params),
-		call_id: compactionId(params),
+		tool_id: id,
+		call_id: id,
 		tool_name: "Compact",
 		name: "Compact",
 		status:
 			method === "compaction.started"
 				? "running"
-				: stringValue(params.status) === "failed"
+				: stringValue(params.status) === "interrupted"
+					? "interrupted"
+					: stringValue(params.status) === "failed"
 					? "failed"
 					: "done",
 		summary: compactionSummary(method, params),
-		context: stringValue(params.source) ?? "context",
+		context: params.source === "user_requested" ? "Manual" : params.source === "pre_turn" ? "Before turn" : "During turn",
 	};
 	const matchIndex = findToolIndex(items, metadata);
 	const item = {
@@ -527,12 +534,20 @@ export function applyCompactionLifecycle(items: RuntimeTranscriptItem[], method:
 	return matchIndex >= 0 ? [...items.slice(0, matchIndex), item, ...items.slice(matchIndex + 1)] : [...items, item];
 }
 
-function compactionId(params: Record<string, unknown>): string {
-	return [
+function legacyCompactionId(items: RuntimeTranscriptItem[], method: string, params: Record<string, unknown>): string {
+	const prefix = [
 		"compaction",
 		stringValue(params.client_turn_id) ?? "turn",
 		stringValue(params.source) ?? "context",
 	].join(":");
+	if (method === "compaction.completed") {
+		const active = items.findLast((item) => {
+			const metadata = recordValue(item.metadata);
+			return stringValue(metadata.call_id)?.startsWith(`${prefix}:`) && metadata.status === "running";
+		});
+		if (active) return String(recordValue(active.metadata).call_id);
+	}
+	return `${prefix}:${nextId("operation")}`;
 }
 
 function compactionSummary(method: string, params: Record<string, unknown>): string {
@@ -543,10 +558,15 @@ function compactionSummary(method: string, params: Record<string, unknown>): str
 		return before === null ? "Compressing context" : `Compressing context ${uiGlyphs().separator} ${formatTokens(before)} tokens`;
 	}
 	const durationText = duration === null ? "" : ` for ${formatSeconds(duration)}`;
+	if (params.status === "interrupted" || recordValue(params.failure).code === "interrupted") {
+		return `Context compaction cancelled${durationText}`;
+	}
 	if (stringValue(params.status) === "failed") {
 		const failure = recordValue(params.failure);
-		const message = sanitizeRuntimeErrorDetail(failure.message);
-		const details = sanitizeRuntimeErrorDetail(failure.additionalDetails);
+		const context = readErrorContext(failure.errorContext);
+		const message = context ? errorSummary(context) : sanitizeRuntimeErrorDetail(failure.message);
+		const details = sanitizeRuntimeErrorDetail(failure.additionalDetails)
+			?? (context ? errorPublicDetails(context) : undefined);
 		return [`Context compression failed${durationText}${message ? `: ${message}` : ""}`, details]
 			.filter(Boolean).join("\n");
 	}

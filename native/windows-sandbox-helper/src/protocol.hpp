@@ -6,7 +6,7 @@
 
 namespace mycli::sandbox {
 
-inline constexpr std::uint32_t kProtocolVersion = 1;
+inline constexpr std::uint32_t kProtocolVersion = 2;
 
 enum class FilesystemPolicy {
     kReadOnly,
@@ -34,9 +34,9 @@ struct SandboxRequest {
     FilesystemPolicy filesystem;
     NetworkPolicy network;
     SandboxMode mode;
+    unsigned short network_proxy_port = 0;
 };
 
 SandboxRequest ParseAndValidateRequest(const std::wstring& request_json);
 
 }  // namespace mycli::sandbox
-

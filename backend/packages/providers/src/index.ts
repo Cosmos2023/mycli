@@ -8,6 +8,7 @@ export {
 export type { ProviderFailureOptions, ProviderFailureProjection } from "./errors.ts";
 export type {
 	ModelProvider,
+	ProviderCapabilities,
 	ProviderStreamOptions,
 	ProviderStreamPhase,
 } from "./model-provider.ts";

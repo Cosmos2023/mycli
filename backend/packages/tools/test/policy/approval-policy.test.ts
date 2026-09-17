@@ -31,6 +31,45 @@ test("strict-medium requests one-time approval without allowing workspace escape
 	assert.equal(policy.evaluate(writeCall("/private/outside.txt")).kind, "deny");
 });
 
+test("file approval honors an empty write list and read-only profiles", () => {
+	const policy = approvalPolicy({ autoApproveMedium: true });
+	for (const filesystem of ["read_only", "workspace_write"] as const) {
+		const executionPolicy: ExecutionPolicy = { ...WORKSPACE_EXECUTION_POLICY, filesystem, writableRoots: [] };
+		const decision = policy.evaluate(writeCall("notes.txt"), executionPolicy);
+		assert.equal(decision.kind, "deny");
+		assert.equal(decision.errorKind, "workspace_escape");
+	}
+	policy.configurePermissionProfile("read-only");
+	assert.equal(policy.evaluate(writeCall("notes.txt")).kind, "deny");
+	assert.equal(policy.evaluate(toolCall("Read", { file_path: "notes.txt" })).kind, "allow");
+	assert.equal(policy.evaluate(writeCall("notes.txt"), WORKSPACE_EXECUTION_POLICY).kind, "allow");
+});
+
+test("file approval checks every mutation path against the complete writable roots", () => {
+	const policy = approvalPolicy({ autoApproveMedium: true });
+	const narrowed: ExecutionPolicy = { ...WORKSPACE_EXECUTION_POLICY, writableRoots: ["/private/workspace/generated"] };
+	assert.equal(policy.evaluate(writeCall("generated/notes.txt"), narrowed).kind, "allow");
+	assert.equal(policy.evaluate(writeCall("notes.txt"), narrowed).kind, "deny");
+	assert.equal(policy.evaluate(writeCall("generated-other/notes.txt"), narrowed).kind, "deny");
+	assert.equal(policy.evaluate(toolCall("Edit", {
+		file_path: "notes.txt", old_string: "before", new_string: "after",
+	}), narrowed).kind, "deny");
+	for (const operation of [
+		{ type: "delete", file_path: "notes.txt" },
+		{ type: "move", from_path: "notes.txt", to_path: "generated/notes.txt" },
+		{ type: "move", from_path: "generated/notes.txt", to_path: "notes.txt" },
+	]) {
+		assert.equal(policy.evaluate(toolCall("Patch", { operations: [
+			{ type: "add", file_path: "generated/created.txt", content: "after" }, operation,
+		] }), narrowed).kind, "deny");
+	}
+	policy.configurePermissionProfile("full-access");
+	assert.equal(policy.evaluate(writeCall("notes.txt"), narrowed).kind, "deny");
+	const granted: ExecutionPolicy = { ...narrowed, writableRoots: [...narrowed.writableRoots, "/private/exports"] };
+	assert.equal(policy.evaluate(writeCall("/private/exports/notes.txt"), granted).kind, "allow");
+	assert.equal(policy.evaluate(writeCall("notes.txt"), granted).kind, "deny");
+});
+
 test("file escalation is a one-time exact retry after workspace denial", () => {
 	const policy = approvalPolicy({ autoApproveMedium: true });
 	policy.beginTurn("turn-1");
@@ -66,6 +105,21 @@ test("file escalation is a one-time exact retry after workspace denial", () => {
 
 	assert.equal(policy.evaluate(retry, WORKSPACE_EXECUTION_POLICY, "turn-1").kind, "deny");
 	policy.finishTurn("turn-1");
+});
+
+test("a denied read-only mutation can request approval for the exact operation", () => {
+	const policy = approvalPolicy({ autoApproveMedium: true });
+	const readOnly: ExecutionPolicy = { ...WORKSPACE_EXECUTION_POLICY, mode: "read-only", filesystem: "read_only", writableRoots: [] };
+	policy.beginTurn("read-only-turn");
+	assert.equal(policy.evaluate(writeCall("notes.txt"), readOnly, "read-only-turn").kind, "deny");
+	const retry = toolCall("Write", {
+		file_path: "notes.txt", content: "hello", sandbox_permissions: "danger-full-access",
+		justification: "Save the requested notes with your approval.",
+	});
+	const decision = policy.evaluate(retry, readOnly, "read-only-turn");
+	assert.equal(decision.kind, "request");
+	assert.deepEqual(decision.options, ["approve_once", "reject"]);
+	assert.equal(policy.evaluate(retry, readOnly, "read-only-turn").kind, "deny");
 });
 
 test("runtime workspace_escape results authorize a matching symlink retry", () => {

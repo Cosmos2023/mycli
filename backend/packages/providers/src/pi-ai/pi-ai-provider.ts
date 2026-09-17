@@ -6,6 +6,7 @@ import type {
 	SimpleStreamOptions,
 	Usage,
 } from "@earendil-works/pi-ai";
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import type {
 	ProviderEvent,
 	ProviderRequest,
@@ -18,7 +19,7 @@ import {
 	type ProviderAttemptEvidence,
 } from "./instrumented-fetch.ts";
 import { serializeJsonObject } from "./json-object.ts";
-import type { ModelProvider, ProviderStreamOptions, ProviderStreamPhase } from "../model-provider.ts";
+import type { ModelProvider, ProviderCapabilities, ProviderStreamOptions, ProviderStreamPhase } from "../model-provider.ts";
 import { toPiAiContext } from "./pi-ai-context.ts";
 import {
 	classifyPiAiThrownFailure,
@@ -68,9 +69,16 @@ export class PiAiProvider implements ModelProvider {
 		this.#streamFactory = options.streamFactory;
 	}
 
-	async resolveCapabilities(): Promise<Readonly<{ supportsImages: boolean }>> {
+	async resolveCapabilities(): Promise<ProviderCapabilities> {
 		const snapshot = await this.#resolveSnapshot();
-		return Object.freeze({ supportsImages: snapshot.model.input.includes("image") });
+		return Object.freeze({
+			supportsImages: snapshot.model.input.includes("image"),
+			maxOutputTokens: snapshot.model.maxTokens,
+			contextWindowTokens: snapshot.model.contextWindow,
+			...(snapshot.catalogued ? { reasoningEfforts: Object.freeze(
+				getSupportedThinkingLevels(snapshot.model).map((level) => level === "off" ? "none" as const : level),
+			) } : {}),
+		});
 	}
 
 	async *stream(
@@ -183,29 +191,44 @@ export class PiAiProvider implements ModelProvider {
 				}
 			}
 			if (options.signal.aborted) throw interruptedFailure();
-			if (evidence.authFailure) throw evidence.authFailure;
-			if (evidence.responseStreamFailure) throw evidence.responseStreamFailure;
-			if (evidence.httpResponseFailure) throw evidence.httpResponseFailure;
-			if (!terminal) {
-				throw new ProviderFailure({
-					code: "response_stream_error",
-					message: "pi-ai stream ended without a terminal event",
-					retryable: true,
-				});
-			}
-			if (terminal.type === "error") {
-				throw piAiFailure(
-					terminal.error.errorMessage,
-					evidence,
-					options.signal,
-					sawOutput,
+
+			let completionEvents: readonly ProviderEvent[];
+			try {
+				if (evidence.authFailure) throw evidence.authFailure;
+				if (evidence.responseStreamFailure) throw evidence.responseStreamFailure;
+				if (evidence.httpResponseFailure) throw evidence.httpResponseFailure;
+				if (!terminal) {
+					throw new ProviderFailure({
+						code: "response_stream_error",
+						message: "pi-ai stream ended without a terminal event",
+						retryable: true,
+					});
+				}
+				if (terminal.type === "error") {
+					throw piAiFailure(
+						terminal.error.errorMessage,
+						evidence,
+						options.signal,
+						sawOutput,
+					);
+				}
+				completionEvents = completedEvents(
+					request,
+					terminal.message,
+					replayTransport,
+					requestModel.model.maxTokens,
 				);
+			} catch (error) {
+				// Validation must not discard billable usage from a truncated response.
+				const message = terminal?.type === "done" ? terminal.message : terminal?.error;
+				if (message && !options.signal.aborted) {
+					const usage = canonicalUsage(request.protocol, message.usage);
+					if (Object.values(usage).some((count) => count !== 0)) yield { type: "usage", usage };
+					else if (terminal?.type === "done") yield { type: "usage", usage: {} };
+				}
+				throw error;
 			}
-			for (const event of completedEvents(
-				request,
-				terminal.message,
-				replayTransport,
-			)) yield event;
+			for (const event of completionEvents) yield event;
 		} catch (error) {
 			if (options.signal.aborted) throw interruptedFailure();
 			throw classifyPiAiThrownFailure(error, evidence, options.signal, sawOutput);
@@ -243,11 +266,15 @@ function completedEvents(
 	request: ProviderRequest,
 	message: AssistantMessage,
 	replayTransport: ReturnType<typeof piAiReplayTransportIdentity>,
+	maxOutputTokens: number,
 ): readonly ProviderEvent[] {
 	if (message.stopReason === "length") {
 		throw new ProviderFailure({
 			code: "provider_error",
 			message: "provider output token limit reached",
+			publicDetail: "Output token limit reached before the response completed.",
+			errorReason: { reason: "provider.output_limit", details: { finish_reason: "length",
+				max_output_tokens: maxOutputTokens } },
 		});
 	}
 	if (message.stopReason === "pending" || message.stopReason === "deferred") {
@@ -272,6 +299,8 @@ function completedEvents(
 		throw new ProviderFailure({
 			code: "provider_error",
 			message: "provider returned an empty successful response",
+			publicDetail: "The provider returned no answer or tool call.",
+			errorReason: { reason: "provider.empty_response", details: { finish_reason: message.stopReason } },
 		});
 	}
 	const events: ProviderEvent[] = [];

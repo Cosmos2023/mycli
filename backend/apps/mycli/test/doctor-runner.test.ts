@@ -1143,7 +1143,7 @@ test("storage doctor accepts a reconstructable persisted provider step", async (
 	assert.equal(ledger?.status, "ok");
 	assert.match(ledger?.message ?? "", /manifests=1 issues=0/u);
 	assert.equal(sessions?.status, "ok", sessions?.detail ?? sessions?.message);
-	assert.match(sessions?.message ?? "", /schema_version=14 integrity=ok/u);
+	assert.match(sessions?.message ?? "", /schema_version=15 integrity=ok/u);
 	assert.equal((await stat(databasePath)).mtimeMs, before.mtimeMs);
 });
 

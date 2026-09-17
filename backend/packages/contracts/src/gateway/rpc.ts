@@ -24,6 +24,7 @@ ajv.addSchema(JSON.parse(readFileSync(new URL("../../schemas/gateway-tool-record
 ajv.addSchema(JSON.parse(readFileSync(new URL("../../schemas/runtime-turn.schema.json", import.meta.url), "utf8")) as object);
 ajv.addSchema(JSON.parse(readFileSync(new URL("../../schemas/provider-attempt.schema.json", import.meta.url), "utf8")) as object,
 	"https://mycli.local/contracts/provider-attempt.schema.json");
+ajv.addSchema(JSON.parse(readFileSync(new URL("../../schemas/session-goal.schema.json", import.meta.url), "utf8")) as object);
 ajv.addSchema(schema);
 ajv.addSchema(JSON.parse(readFileSync(new URL("../../schemas/mcp-elicitation.schema.json", import.meta.url), "utf8")) as object);
 export const GATEWAY_RPC_METHODS: readonly GatewayMethod[] = Object.freeze(Object.keys(schema.properties) as GatewayMethod[]);

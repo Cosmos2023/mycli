@@ -41,6 +41,7 @@ export { parsePackageVersion } from "./package-version.ts";
 export type { PackageVersionManifest } from "./package-version.ts";
 export {
 	isModelSelectionScope,
+	modelSelectionNotice,
 	MODEL_SELECTION_SCOPES,
 } from "./gateway/model-selection.ts";
 export type { ModelSelectionScope } from "./gateway/model-selection.ts";
@@ -80,6 +81,9 @@ export type {
 } from "./gateway/runtime-errors.ts";
 export {
 	TURN_INTERRUPTED_NOTICE,
+	turnInterruptionNotice,
+	isTurnInterruptionReason,
+	type TurnInterruptionReason,
 	turnCompletedDurationId,
 	turnInterruptedNoticeId,
 } from "./gateway/transcript-messages.ts";
@@ -101,6 +105,8 @@ export type { JsonRpcMessage } from "./generated/json-rpc-message.ts";
 export type { PluginV2Manifest } from "./generated/plugin-v2-manifest.ts";
 export type { PluginV2ProtocolMessage } from "./generated/plugin-v2-protocol.ts";
 export type { RuntimeStateRecord } from "./generated/runtime-state-record.ts";
+export type { SessionGoal } from "./generated/session-goal.ts";
+export { parseSessionGoal } from "./validation.ts";
 export type {
 	RuntimeErrorCode,
 	RuntimeTurnRecord,

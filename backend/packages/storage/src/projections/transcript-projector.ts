@@ -32,6 +32,7 @@ const SNAPSHOT_TYPES = new Map<string, TranscriptItemType>([
 	["error", "error"],
 	["warning", "warning"],
 	["compaction", "status"],
+	["status", "status"],
 	["file_change", "file_change"],
 	["plan_update", "plan_update"],
 	["web_search", "web_search"],
@@ -261,11 +262,12 @@ export function sanitizeTranscriptItem(value: unknown): TranscriptItem | undefin
 				? visibleErrorMetadata(recordValue(raw.metadata))
 				: raw.type === "web_search"
 					? visibleWebSearchMetadata(recordValue(raw.metadata))
-					: visibleMetadata(recordValue(raw.metadata));
+					: visibleMetadata(recordValue(raw.metadata), raw.type === "tool" ? toolName : undefined);
 	const omitted = Math.max(
 		text?.omitted ?? 0,
 		output?.omitted ?? 0,
 		command?.omitted ?? 0,
+		metadataOmittedChars(metadata),
 		safeInteger(raw.omitted_chars) ?? 0,
 	);
 	return freezeItem({
@@ -281,7 +283,7 @@ export function sanitizeTranscriptItem(value: unknown): TranscriptItem | undefin
 		...(output?.value ? { output: output.value } : {}),
 		...(exitCode === undefined ? {} : { exit_code: exitCode }),
 		...(durationMs === undefined ? {} : { duration_ms: durationMs }),
-		...(raw.truncated === true || omitted > 0
+		...(raw.truncated === true || omitted > 0 || hasTruncatedMetadata(metadata)
 			? { truncated: true, ...(omitted > 0 ? { omitted_chars: omitted } : {}) }
 			: {}),
 		...(Object.keys(metadata).length > 0 ? { metadata } : {}),
@@ -380,6 +382,7 @@ function visibleItem(item: ParsedHistoryItem): TranscriptItem | undefined {
 			: item.type === "error" || item.type === "warning"
 				? visibleErrorMetadata(item.metadata)
 				: visibleMetadata(item.metadata);
+	const omitted = Math.max(bounded.omitted, metadataOmittedChars(metadata));
 	return freezeItem({
 		id: item.id,
 		type: snapshotType,
@@ -387,7 +390,8 @@ function visibleItem(item: ParsedHistoryItem): TranscriptItem | undefined {
 		...(stringValue(item.metadata.created_at)
 			? { created_at: stringValue(item.metadata.created_at) }
 			: {}),
-		...(bounded.omitted > 0 ? { truncated: true, omitted_chars: bounded.omitted } : {}),
+		...(omitted > 0 || hasTruncatedMetadata(metadata)
+			? { truncated: true, ...(omitted > 0 ? { omitted_chars: omitted } : {}) } : {}),
 		...(Object.keys(metadata).length > 0 ? { metadata } : {}),
 	});
 }
@@ -414,14 +418,18 @@ function webSearchItem(item: ParsedHistoryItem): TranscriptItem | undefined {
 function toolCallItem(item: ParsedHistoryItem): TranscriptItem {
 	const metadata = visibleToolMetadata(item);
 	const command = toolCommand(item.metadata);
+	const text = boundedHeadTail(item.text);
+	const omitted = Math.max(text.omitted, command?.omitted ?? 0, metadataOmittedChars(metadata));
 	return freezeItem({
 		id: item.id,
 		type: "tool",
-		...(item.text ? { text: boundedHeadTail(item.text).value } : {}),
+		...(text.value ? { text: text.value } : {}),
 		...(item.toolName ? { tool_name: item.toolName } : {}),
 		...(item.callId ? { call_id: item.callId } : {}),
-		...(command ? { command } : {}),
+		...(command ? { command: command.value } : {}),
 		status: stringValue(item.metadata.status) ?? "running",
+		...(omitted > 0 || hasTruncatedMetadata(metadata)
+			? { truncated: true, ...(omitted > 0 ? { omitted_chars: omitted } : {}) } : {}),
 		...(Object.keys(metadata).length > 0 ? { metadata } : {}),
 	});
 }
@@ -456,7 +464,7 @@ function legacyToolPreambleItem(item: ParsedHistoryItem): TranscriptItem {
 }
 
 function visibleToolMetadata(item: ParsedHistoryItem): Readonly<Record<string, unknown>> {
-	const visible = { ...visibleMetadata(item.metadata) };
+	const visible = { ...visibleMetadata(item.metadata, item.toolName) };
 	const argumentsValue = recordValue(item.metadata.arguments);
 	const normalizedName = normalizedToolName(item.toolName);
 	if (normalizedName === "skill") {
@@ -482,14 +490,15 @@ function toolResultItem(item: ParsedHistoryItem): TranscriptItem {
 		?? stringValue(item.metadata.output_preview)
 		?? item.text;
 	const bounded = boundedHeadTail(rawOutput);
-	const metadata = visibleMetadata(item.metadata);
+	const metadata = visibleMetadata(item.metadata, item.toolName);
 	const command = toolCommand(item.metadata);
+	const omitted = Math.max(bounded.omitted, command?.omitted ?? 0, metadataOmittedChars(metadata));
 	return freezeItem({
 		id: item.id,
 		type: "tool",
 		...(item.toolName ? { tool_name: item.toolName } : {}),
 		...(item.callId ? { call_id: item.callId } : {}),
-		...(command ? { command } : {}),
+		...(command ? { command: command.value } : {}),
 		status: "completed",
 		...(bounded.value ? { output: bounded.value } : {}),
 		...(safeInteger(item.metadata.exit_code) !== undefined
@@ -498,7 +507,8 @@ function toolResultItem(item: ParsedHistoryItem): TranscriptItem {
 		...(safeInteger(item.metadata.duration_ms) !== undefined
 			? { duration_ms: safeInteger(item.metadata.duration_ms) }
 			: {}),
-		...(bounded.omitted > 0 ? { truncated: true, omitted_chars: bounded.omitted } : {}),
+		...(omitted > 0 || hasTruncatedMetadata(metadata)
+			? { truncated: true, ...(omitted > 0 ? { omitted_chars: omitted } : {}) } : {}),
 		...(Object.keys(metadata).length > 0 ? { metadata } : {}),
 	});
 }
@@ -507,20 +517,23 @@ function shellSessionItem(item: ParsedHistoryItem): TranscriptItem {
 	const terminalState = stringValue(item.metadata.terminal_state);
 	const rawOutput = stringValue(item.metadata.output) ?? "";
 	const bounded = boundedHeadTail(rawOutput);
+	const command = boundedOptionalText(item.metadata.command_preview);
 	const historicalState = terminalState ? stringValue(item.metadata.process_state) : "stale";
 	const metadata = visibleMetadata({
 		...item.metadata,
 		process_state: historicalState,
-	});
-	const omitted = bounded.omitted + (safeInteger(item.metadata.omitted_output_chars) ?? 0);
+	}, item.toolName ?? "Shell");
+	const omitted = Math.max(
+		bounded.omitted + Math.max(0, safeInteger(item.metadata.omitted_output_chars) ?? 0),
+		command?.omitted ?? 0,
+		metadataOmittedChars(metadata),
+	);
 	return freezeItem({
 		id: item.id,
 		type: "tool",
 		tool_name: item.toolName ?? "Shell",
 		...(item.callId ? { call_id: item.callId } : {}),
-		...(stringValue(item.metadata.command_preview)
-			? { command: stringValue(item.metadata.command_preview) }
-			: {}),
+		...(command?.value ? { command: command.value } : {}),
 		status: terminalState ? "completed" : "stale",
 		...(bounded.value ? { output: bounded.value } : {}),
 		...(safeInteger(item.metadata.exit_code) === undefined
@@ -548,7 +561,7 @@ function mergeToolItems(start: TranscriptItem, finish: TranscriptItem): Transcri
 		...(finish.duration_ms === undefined ? {} : { duration_ms: finish.duration_ms }),
 		...(finish.truncated ? {
 			truncated: true,
-			omitted_chars: finish.omitted_chars,
+			omitted_chars: Math.max(start.omitted_chars ?? 0, finish.omitted_chars ?? 0),
 		} : {}),
 		metadata: Object.freeze({ ...(start.metadata ?? {}), ...(finish.metadata ?? {}) }),
 	});
@@ -565,14 +578,19 @@ function mergeShellItem(start: TranscriptItem, shell: TranscriptItem): Transcrip
 		...(shell.exit_code === undefined ? {} : { exit_code: shell.exit_code }),
 		...(shell.truncated ? {
 			truncated: true,
-			omitted_chars: shell.omitted_chars,
+			omitted_chars: Math.max(start.omitted_chars ?? 0, shell.omitted_chars ?? 0),
 		} : {}),
 		metadata: Object.freeze({ ...(start.metadata ?? {}), ...(shell.metadata ?? {}) }),
 	});
 }
 
-function visibleMetadata(metadata: Readonly<Record<string, unknown>>): Readonly<Record<string, unknown>> {
+function visibleMetadata(
+	metadata: Readonly<Record<string, unknown>>,
+	toolName?: string,
+): Readonly<Record<string, unknown>> {
 	const visible: Record<string, unknown> = {};
+	const input = visibleToolInput(toolName, recordValue(metadata.arguments ?? metadata.input));
+	if (Object.keys(input).length > 0) visible.input = input;
 	const errorContext = readErrorContext(metadata.error_context);
 	if (errorContext) visible.error_context = errorContext;
 	else if (metadata.error_context !== undefined || metadata.error_context_invalid === true) visible.error_context_invalid = true;
@@ -615,6 +633,69 @@ function visibleMetadata(metadata: Readonly<Record<string, unknown>>): Readonly<
 		if (typeof metadata[key] === "boolean") visible[key] = metadata[key];
 	}
 	return Object.freeze(visible);
+}
+
+function visibleToolInput(
+	toolName: string | undefined,
+	input: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> {
+	let textKeys: readonly string[];
+	let numberKeys: readonly string[] = [];
+	let booleanKeys: readonly string[] = [];
+	switch (normalizedToolName(toolName)) {
+		case "read":
+			textKeys = ["file_path", "path"];
+			numberKeys = ["offset", "limit"];
+			break;
+		case "write": case "edit": case "viewimage":
+			textKeys = ["file_path", "path"];
+			break;
+		case "grep":
+			textKeys = ["pattern", "path", "glob", "type", "output_mode"];
+			numberKeys = ["-A", "-B", "-C", "offset", "head_limit"];
+			booleanKeys = ["-i", "-n", "multiline"];
+			break;
+		case "glob": case "ls":
+			textKeys = ["pattern", "path"];
+			break;
+		case "shell": case "bash": case "runshell":
+			textKeys = ["cwd"];
+			booleanKeys = ["tty"];
+			break;
+		case "toolsearch":
+			textKeys = ["query"];
+			numberKeys = ["limit"];
+			break;
+		default:
+			return {};
+	}
+	const visible: Record<string, unknown> = {};
+	let omitted = Math.max(0, safeInteger(input.omitted_chars) ?? 0);
+	for (const key of textKeys) {
+		const bounded = boundedOptionalText(input[key]);
+		if (bounded?.value) visible[key] = bounded.value;
+		omitted = Math.max(omitted, bounded?.omitted ?? 0);
+	}
+	for (const key of numberKeys) {
+		const value = safeInteger(input[key]);
+		if (value !== undefined && value >= 0) visible[key] = value;
+	}
+	for (const key of booleanKeys) {
+		if (typeof input[key] === "boolean") visible[key] = input[key];
+	}
+	if (omitted > 0) Object.assign(visible, { truncated: true, omitted_chars: omitted });
+	return Object.freeze(visible);
+}
+
+function metadataOmittedChars(metadata: Readonly<Record<string, unknown>>): number {
+	const changes = Array.isArray(metadata.file_changes) ? metadata.file_changes : [];
+	return Math.max(0, ...[metadata.input, ...changes].map((value) =>
+		safeInteger(recordValue(value).omitted_chars) ?? 0));
+}
+
+function hasTruncatedMetadata(metadata: Readonly<Record<string, unknown>>): boolean {
+	const changes = Array.isArray(metadata.file_changes) ? metadata.file_changes : [];
+	return [metadata.input, ...changes].some((value) => recordValue(value).truncated === true);
 }
 
 function visibleWebSearchMetadata(
@@ -722,9 +803,10 @@ function projectFileChange(value: unknown): Readonly<Record<string, unknown>> | 
 	if (diff) {
 		const bounded = boundedHeadTail(diff);
 		projected.diff = bounded.value;
-		if (bounded.omitted > 0) {
+		const omitted = Math.max(bounded.omitted, safeInteger(change.omitted_chars) ?? 0);
+		if (omitted > 0 || change.truncated === true) {
 			projected.truncated = true;
-			projected.omitted_chars = bounded.omitted;
+			if (omitted > 0) projected.omitted_chars = omitted;
 		}
 	}
 	for (const key of ["added_lines", "removed_lines"] as const) {
@@ -734,14 +816,16 @@ function projectFileChange(value: unknown): Readonly<Record<string, unknown>> | 
 	return Object.freeze(projected);
 }
 
-function toolCommand(metadata: Readonly<Record<string, unknown>>): string | undefined {
+function toolCommand(
+	metadata: Readonly<Record<string, unknown>>,
+): { readonly value: string; readonly omitted: number } | undefined {
 	const direct = stringValue(metadata.command);
-	if (direct) return boundedHeadTail(direct).value;
+	if (direct) return boundedHeadTail(direct);
 	const argumentsValue = recordValue(metadata.arguments);
 	const command = stringValue(argumentsValue.command);
-	if (command) return boundedHeadTail(command).value;
+	if (command) return boundedHeadTail(command);
 	const path = stringValue(argumentsValue.path) ?? stringValue(argumentsValue.file_path);
-	return path ? boundedHeadTail(path).value : undefined;
+	return path ? boundedHeadTail(path) : undefined;
 }
 
 function boundedHeadTail(value: string): { readonly value: string; readonly omitted: number } {

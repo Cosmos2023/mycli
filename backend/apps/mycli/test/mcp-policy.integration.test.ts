@@ -90,7 +90,8 @@ for (const parallel of [false, true]) {
 			backend = await startTestNodeBackend({ cwd: workspace, args: ["--session", "mcp-policy", "--model", "gpt-test"],
 				env: { ...process.env, HOME: homeDir, USERPROFILE: homeDir, MYCLI_API_KEY: "fixture", MYCLI_BASE_URL: `${url}/v1`,
 					MYCLI_PROVIDER: "openai", MYCLI_PROTOCOL: "responses", MYCLI_THINKING_ENABLED: "false", MYCLI_REQUEST_MAX_RETRIES: "0",
-					MYCLI_STREAM_MAX_RETRIES: "0", MYCLI_CACHE_RETENTION: "none", MYCLI_MEMORY_ENABLED: "false" } });
+					MYCLI_STREAM_MAX_RETRIES: "0", MYCLI_CACHE_RETENTION: "none", MYCLI_MEMORY_ENABLED: "false",
+					MYCLI_MAX_PROMPT_TOKENS: "100000" } });
 			createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => { messages.push(JSON.parse(line) as Message); });
 			await until(() => messages.find((message) => message.method === "runtime.ready"));
 		};

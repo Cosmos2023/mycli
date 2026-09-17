@@ -233,6 +233,17 @@ interface EditorHistoryEntry {
 	readonly localImages: readonly EditorImageAttachment[];
 }
 
+export interface EditorDraft {
+	readonly text: string;
+	readonly pastes: readonly (readonly [number, string])[];
+	readonly cursor: { readonly line: number; readonly col: number };
+}
+
+export function expandEditorDraft(draft: EditorDraft): string {
+	const pastes = new Map(draft.pastes);
+	return draft.text.replace(PASTE_MARKER_REGEX, (marker, id: string) => pastes.get(Number(id)) ?? marker);
+}
+
 interface EditorSnapshot {
 	readonly state: EditorState;
 	readonly localImages: readonly EditorImageAttachment[];
@@ -386,7 +397,7 @@ export class Editor implements Component, Focusable {
 	private readonly captureLocalImages?: EditorOptions["captureLocalImages"];
 	private readonly restoreLocalImages?: EditorOptions["restoreLocalImages"];
 
-	public onSubmit?: (text: string) => void;
+	public onSubmit?: (text: string, draft?: EditorDraft) => void;
 	public onChange?: (text: string) => void;
 	public disableSubmit: boolean = false;
 
@@ -501,6 +512,7 @@ export class Editor implements Component, Focusable {
 		}
 
 		this.historyIndex = newIndex;
+		this.pastes.clear();
 
 		if (this.historyIndex === -1) {
 			// Returned to "current" state - clear editor
@@ -1049,12 +1061,32 @@ export class Editor implements Component, Focusable {
 	}
 
 	private expandPasteMarkers(text: string): string {
-		let result = text;
-		for (const [pasteId, pasteContent] of this.pastes) {
-			const markerRegex = new RegExp(`\\[paste #${pasteId}( (\\+\\d+ lines|\\d+ chars))?\\]`, "g");
-			result = result.replace(markerRegex, () => pasteContent);
-		}
-		return result;
+		// Only expand the editor buffer once; marker-like text inside a paste is literal.
+		return text.replace(PASTE_MARKER_REGEX, (marker, id: string) => this.pastes.get(Number(id)) ?? marker);
+	}
+
+	getDraft(): EditorDraft {
+		const text = this.getText();
+		const ids = new Set([...text.matchAll(PASTE_MARKER_REGEX)].map((match) => Number(match[1])));
+		return {
+			text,
+			pastes: [...this.pastes].filter(([id]) => ids.has(id)),
+			cursor: this.getCursor(),
+		};
+	}
+
+	restoreDraft(draft: EditorDraft, localImages: readonly EditorImageAttachment[] = []): void {
+		this.cancelAutocomplete();
+		this.clearUndoHistory();
+		this.historyIndex = -1;
+		this.pastes = new Map(draft.pastes);
+		for (const id of this.pastes.keys()) this.pasteCounter = Math.max(this.pasteCounter, id);
+		this.restoreLocalImages?.(localImages.map((image) => ({ ...image })));
+		const lines = this.normalizeText(draft.text).split("\n");
+		const cursorLine = Math.max(0, Math.min(draft.cursor.line, lines.length - 1));
+		this.state = { lines, cursorLine, cursorCol: Math.max(0, Math.min(draft.cursor.col, lines[cursorLine]!.length)) };
+		this.scrollOffset = 0;
+		this.notifyChange();
 	}
 
 	/**
@@ -1083,6 +1115,8 @@ export class Editor implements Component, Focusable {
 			this.pushUndoSnapshot();
 		}
 		if (localImages) this.restoreLocalImages?.(localImages.map((image) => ({ ...image })));
+		// This API accepts full text. Folded buffers must use restoreDraft with their bindings.
+		this.pastes.clear();
 		this.setTextInternal(normalized);
 	}
 
@@ -1272,10 +1306,14 @@ export class Editor implements Component, Focusable {
 		const pastedLines = filteredText.split("\n");
 
 		// Check if this is a large paste (> 10 lines or > 1000 characters)
-		const totalChars = filteredText.length;
+		const totalChars = Array.from(filteredText).length;
 		if (pastedLines.length > 10 || totalChars > 1000) {
 			// Store the paste and insert a marker
-			this.pasteCounter++;
+			const reservedIds = new Set([
+				...this.getText().matchAll(PASTE_MARKER_REGEX),
+				...filteredText.matchAll(PASTE_MARKER_REGEX),
+			].map((match) => Number(match[1])));
+			do { this.pasteCounter++; } while (reservedIds.has(this.pasteCounter));
 			const pasteId = this.pasteCounter;
 			this.pastes.set(pasteId, filteredText);
 
@@ -1334,6 +1372,7 @@ export class Editor implements Component, Focusable {
 
 	private submitValue(): void {
 		this.cancelAutocomplete();
+		const draft = this.getDraft();
 		const result = this.expandPasteMarkers(this.state.lines.join("\n")).trim();
 
 		this.state = { lines: [""], cursorLine: 0, cursorCol: 0 };
@@ -1344,7 +1383,7 @@ export class Editor implements Component, Focusable {
 		this.undoStack.clear();
 		this.lastAction = null;
 
-		if (this.onSubmit) this.onSubmit(result);
+		if (this.onSubmit) this.onSubmit(result, draft);
 		this.notifyChange();
 	}
 

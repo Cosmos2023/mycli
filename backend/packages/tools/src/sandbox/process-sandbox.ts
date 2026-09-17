@@ -1,3 +1,6 @@
+import { ProcessSandboxError } from "./process-sandbox-error.ts";
+export { ProcessSandboxError } from "./process-sandbox-error.ts";
+import { hasDeniedReads } from "../policy/denied-read-policy.ts";
 import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -50,16 +53,6 @@ export interface ProcessNetworkProxy {
 	readonly port: number;
 }
 
-export class ProcessSandboxError extends Error {
-	constructor(
-		readonly kind: "sandbox_unavailable" | "network_proxy_unavailable",
-		message = "Required process sandbox is unavailable.",
-	) {
-		super(message);
-		this.name = "ProcessSandboxError";
-	}
-}
-
 export function prepareSandboxedProcess(
 	argv: readonly string[],
 	profile: SandboxProfile,
@@ -68,13 +61,23 @@ export function prepareSandboxedProcess(
 ): SandboxedProcessLaunch {
 	validateArgv(argv);
 	const platform = probes.platform ?? process.platform;
-	if (networkProxy && (platform !== "darwin" || profile.network !== "enabled"
+	if (platform === "win32" && profile.readableRoots !== undefined) {
+		throw new ProcessSandboxError("sandbox_unavailable", "Windows process read allowlists cannot be enforced.");
+	}
+	if (networkProxy && ((platform !== "darwin" && platform !== "win32") || profile.network !== "enabled"
 		|| profile.networkDomains === undefined || profile.networkDomains.length === 0
 		|| !Number.isSafeInteger(networkProxy.port) || networkProxy.port < 1 || networkProxy.port > 65_535)) {
 		throw new ProcessSandboxError("network_proxy_unavailable", "The process network proxy cannot enforce this policy.");
 	}
+	if (hasDeniedReads(profile) && (platform !== "win32" || hasUnrestrictedFilesystem(profile))) {
+		throw new ProcessSandboxError("sandbox_unavailable", "Denied-read rules require the Windows restricted filesystem sandbox.");
+	}
 	if (profile.mode === "danger-full-access" && hasUnrestrictedNetwork(profile)) {
 		return hostLaunch(argv);
+	}
+	if (platform === "win32" && hasUnrestrictedFilesystem(profile)) {
+		throw new ProcessSandboxError("sandbox_unavailable",
+			"Windows network-restricted processes require a read-only or workspace-write filesystem policy.");
 	}
 	const resolvedProfile = resolveProfile(profile);
 	const isExecutable = probes.isExecutable ?? sandboxExecutableExists;
@@ -111,14 +114,16 @@ export function prepareSandboxedProcess(
 	if (platform === "win32") {
 		const helper = probes.windowsHelperPath ?? packagedWindowsSandboxHelper();
 		if (!isExecutable(helper)) throw unavailable();
-		return windowsRestrictedTokenLaunch(helper, argv, resolvedProfile);
+		return windowsRestrictedTokenLaunch(helper, argv, resolvedProfile, networkProxy);
 	}
 	throw unavailable();
 }
 
 function resolveProfile(profile: SandboxProfile): SandboxProfile {
-	const workspaceRoot = realpathSync(profile.workspaceRoot);
-	const cwd = realpathSync(profile.cwd);
+	// Match fs.promises.realpath used by Shell cwd resolution. On Windows the
+	// JS fallback can retain 8.3 names while the native API expands them.
+	const workspaceRoot = realpathSync.native(profile.workspaceRoot);
+	const cwd = realpathSync.native(profile.cwd);
 	if (!hasUnrestrictedFilesystem(profile) && isOutside(workspaceRoot, cwd)) {
 		throw new ProcessSandboxError("sandbox_unavailable", "Sandbox cwd is outside the workspace.");
 	}
@@ -126,7 +131,7 @@ function resolveProfile(profile: SandboxProfile): SandboxProfile {
 		...profile,
 		workspaceRoot,
 		cwd,
-		writableRoots: Object.freeze(profile.writableRoots.map((root) => realpathSync(root))),
+		writableRoots: Object.freeze(profile.writableRoots.map((root) => realpathSync.native(root))),
 	});
 }
 

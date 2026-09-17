@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { TrainingExportError } from "../src/node-runtime/session-training-export.ts";
 import { createInterface } from "node:readline";
 import test from "node:test";
 import {
@@ -172,6 +173,7 @@ test("an uncommitted storage failure reports uncertainty without publishing a te
 });
 
 const TUI_BUILTIN_COMMAND_NAMES = [
+	"/goal",
 	"/model",
 	"/plan",
 	"/permissions",
@@ -180,6 +182,7 @@ const TUI_BUILTIN_COMMAND_NAMES = [
 	"/resume",
 	"/fork",
 	"/status",
+	"/export",
 	"/update",
 	"/usage",
 	"/compact",
@@ -306,6 +309,7 @@ function permissionPayload(
 }
 
 function gatewayHarness(options: {
+	exportTraining?: NonNullable<CreateNodeGatewayOptions["sessionCommands"]>["exportTraining"];
 	validateSelectedSkills?: CreateNodeGatewayOptions["validateSelectedSkills"];
 	workspaceCommands?: CreateNodeGatewayOptions["workspaceCommands"];
 	conversation?: readonly { role: "user" | "assistant"; content: string }[];
@@ -732,6 +736,7 @@ function gatewayHarness(options: {
 		...(options.loadShellOutput ? { loadShellOutput: options.loadShellOutput } : {}),
 		loadTurnRollouts: () => options.turnRollouts ?? [],
 		sessionCommands: {
+			...(options.exportTraining ? { exportTraining: options.exportTraining } : {}),
 			...(options.sessionService?.list ? {
 				list: (query: SessionQuery) => {
 					sessionCommandCalls.push({ kind: "list", query });
@@ -5245,6 +5250,7 @@ test("projects compaction lifecycle events with the canonical bounded payload", 
 	});
 	harness.emit({
 		type: "compaction_started",
+		operationId: "compaction-test",
 		clientTurnId: "client-turn",
 		source: "mid_turn",
 		beforeTokens: 95_000,
@@ -5252,6 +5258,7 @@ test("projects compaction lifecycle events with the canonical bounded payload", 
 	});
 	harness.emit({
 		type: "compaction_completed",
+		operationId: "compaction-test",
 		clientTurnId: "client-turn",
 		source: "mid_turn",
 		status: "compressed",
@@ -5273,6 +5280,7 @@ test("projects compaction lifecycle events with the canonical bounded payload", 
 	]);
 	assert.deepEqual("method" in direct[0]! ? direct[0].params : {}, {
 		client_turn_id: "client-turn",
+		checkpoint_id: "compaction-test",
 		session_id: "session-node",
 		generation: 1,
 		turn_id: "turn-node",
@@ -5282,6 +5290,7 @@ test("projects compaction lifecycle events with the canonical bounded payload", 
 	});
 	assert.deepEqual("method" in direct[1]! ? direct[1].params : {}, {
 		client_turn_id: "client-turn",
+		checkpoint_id: "compaction-test",
 		session_id: "session-node",
 		generation: 1,
 		turn_id: "turn-node",
@@ -5302,6 +5311,7 @@ test("projects compaction lifecycle events with the canonical bounded payload", 
 
 	harness.emit({
 		type: "compaction_completed",
+		operationId: "compaction-test",
 		clientTurnId: "client-turn",
 		source: "context_overflow",
 		status: "failed",
@@ -5315,6 +5325,7 @@ test("projects compaction lifecycle events with the canonical bounded payload", 
 	parseGatewayEvent(failed);
 	assert.deepEqual(failed.params, {
 		client_turn_id: "client-turn",
+		checkpoint_id: "compaction-test",
 		session_id: "session-node",
 		generation: 1,
 		turn_id: "turn-node",
@@ -6222,4 +6233,145 @@ test("diff reads use session ownership and session transitions cancel pending wo
  const created = await harness.send("session.new"); assert.ok("result" in created);
  assert.equal(activeSignal.aborted, true); pending.resolve();
  const cancelled = await loading; assert.ok("error" in cancelled); assert.equal(cancelled.error.code, "interrupted");
+});
+
+test("bare export uses the current session, accepts an explicit legacy path, and returns only a report", async (t) => {
+	const calls: unknown[] = [];
+	const harness = gatewayHarness({ sessions: {}, exportTraining: async (sessionId, settings) => {
+		calls.push({ sessionId, settings });
+		return { output_path: `/repo/${settings.outputPath ?? "session-auto.jsonl"}`, report: { schema_version: 3, turns: 3, messages: 12,
+			tool_calls: 2, tool_results: 2, reasoning_blocks: 1, images: 0, warnings: [], redactions: 4, bytes_written: 120 } };
+	} });
+	t.after(() => harness.gateway.close());
+	for (const args of ["--training", "--output data.jsonl", "--training --output", '--training --output "unfinished',
+		"--training --output data.jsonl --json", "--training --output data.jsonl --output other.jsonl",
+		"--training --output data.jsonl --max-sample-bytes 0", "other-session --training --output data.jsonl"]) {
+		const response = await harness.send("command.run", { command: `/export ${args}`, surface: "tui" });
+		assert.ok("result" in response);
+		assert.match(JSON.stringify(response.result), /Use \/export/);
+		assert.equal(calls.length, 0);
+	}
+	const stale = await harness.send("command.run", { command: "/export", surface: "tui", session_id: "stale" });
+	assert.ok("error" in stale && stale.error.code === "session_changed");
+	const automatic = await harness.send("command.run", { command: "/export", surface: "tui" });
+	assert.ok("result" in automatic);
+	assert.match(JSON.stringify(automatic.result), /session-auto\.jsonl/);
+	assert.deepEqual(calls, [{ sessionId: "session-node", settings: {} }]);
+	const exported = await harness.send("command.run", {
+		command: '/export --training --output "training  data $(literal).jsonl"', surface: "tui",
+	});
+	assert.ok("result" in exported);
+	assert.match(JSON.stringify(exported.result), /Conversation exported/);
+	assert.match(JSON.stringify(exported.result), /Messages/);
+	assert.match(JSON.stringify(exported.result), /Tool calls/);
+	assert.deepEqual(calls, [{ sessionId: "session-node", settings: {} }, { sessionId: "session-node", settings: {
+		outputPath: "training  data $(literal).jsonl",
+	} }]);
+	assert.equal(harness.submissions.length, 0);
+	assert.ok("result" in await harness.send("session.new"));
+});
+
+test("training export errors are actionable, sanitize unexpected failures, and release session control", async (t) => {
+	let attempt = 0;
+	const harness = gatewayHarness({ sessions: {}, exportTraining: async () => {
+		if (attempt++ === 0) throw new TrainingExportError("training_export_exists");
+		throw new Error("private-storage-and-credential-sentinel");
+	} });
+	t.after(() => harness.gateway.close());
+	for (const expected of [/Output already exists/, /Training export failed/]) {
+		const response = await harness.send("command.run", { command: "/export --training --output data.jsonl", surface: "tui" });
+		assert.ok("result" in response);
+		assert.match(JSON.stringify(response.result), expected);
+		assert.doesNotMatch(JSON.stringify(response), /private-storage-and-credential-sentinel/);
+	}
+	assert.ok("result" in await harness.send("session.new"));
+	const unavailable = gatewayHarness();
+	t.after(() => unavailable.gateway.close());
+	const catalog = await unavailable.send("command.list", { surface: "tui" });
+	assert.ok("result" in catalog);
+	const row = (catalog.result.commands as { name: string; available: boolean }[]).find((command) => command.name === "/export");
+	assert.equal(row?.available, false);
+});
+
+test("training export owns session control and gateway close aborts and drains it before storage cleanup", async (t) => {
+	const cleanup = Promise.withResolvers<void>();
+	let exportSignal: AbortSignal | undefined;
+	let calls = 0;
+	const harness = gatewayHarness({ sessions: {}, exportTraining: async (_sessionId, _settings, signal) => {
+		calls += 1;
+		exportSignal = signal;
+		await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+		await cleanup.promise;
+		signal.throwIfAborted();
+		throw new Error("expected cancellation");
+	} });
+	t.after(async () => { cleanup.resolve(); await harness.gateway.close(); });
+	const command = harness.send("command.run", { command: "/export", surface: "tui" });
+	await waitFor(() => exportSignal);
+	for (const [method, params] of [["session.new", {}], ["command.run", { command: "/export", surface: "tui" }]] as const) {
+		const blocked = await harness.send(method, params);
+		assert.ok("error" in blocked && blocked.error.code === "turn_in_progress");
+	}
+	assert.equal(calls, 1);
+	const closing = harness.gateway.close();
+	assert.equal(exportSignal!.aborted, true);
+	assert.equal(harness.closeCalls(), 0);
+	cleanup.resolve();
+	await closing;
+	await command;
+	assert.equal(harness.closeCalls(), 1);
+	assert.equal(harness.submissions.length, 0);
+});
+
+test("manual compaction owns session control and can be interrupted by operation id", async () => {
+	let compactSignal: AbortSignal | undefined;
+	const harness = gatewayHarness({ compact: async ({ signal, emit, operationId }) => {
+		compactSignal = signal;
+		emit({ type: "compaction_started", operationId, clientTurnId: operationId,
+			source: "user_requested", beforeTokens: 900, maxTokens: 1000 });
+		await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+		emit({ type: "compaction_completed", operationId, clientTurnId: operationId,
+			source: "user_requested", status: "interrupted", beforeTokens: 900, afterTokens: 900, maxTokens: 1000, durationSeconds: 1 });
+		return { status: "interrupted", beforeTokens: 900, afterTokens: 900 };
+	} });
+	try {
+		const command = harness.send("command.run", { command: "/compact", surface: "tui", operation_id: "manual-one" });
+		await waitFor(() => compactSignal);
+		const concurrent = await harness.send("command.run", { command: "/compact", surface: "tui", operation_id: "manual-two" });
+		assert.ok("error" in concurrent);
+		const stale = await harness.send("turn.interrupt", { operation_id: "manual-other" });
+		assert.ok("result" in stale && stale.result.accepted === false);
+		assert.equal(compactSignal!.aborted, false);
+		const cancelled = await harness.send("turn.interrupt", { operation_id: "manual-one" });
+		assert.ok("result" in cancelled && cancelled.result.accepted === true);
+		assert.equal(compactSignal!.aborted, true);
+		const result = await command;
+		assert.ok("result" in result && result.result.lifecycle_started === true);
+		assert.equal(notifications(harness.messages, "compaction.started")[0]?.params.checkpoint_id, "manual-one");
+		assert.equal(notifications(harness.messages, "compaction.completed")[0]?.params.status, "interrupted");
+	} finally { await harness.gateway.close(); }
+});
+
+test("manual compaction cancelled before lifecycle start reports cancellation and releases session control", async (t) => {
+	let compactSignal: AbortSignal | undefined;
+	const harness = gatewayHarness({ sessions: {}, compact: async ({ signal }) => {
+		compactSignal = signal;
+		await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+		signal.throwIfAborted();
+		throw new Error("Expected cancellation before compaction starts");
+	} });
+	t.after(() => harness.gateway.close());
+	const command = harness.send("command.run", { command: "/compact", surface: "tui", operation_id: "compact-preparing" });
+	await waitFor(() => compactSignal);
+	const cancelled = await harness.send("turn.interrupt", { operation_id: "compact-preparing" });
+	assert.ok("result" in cancelled && cancelled.result.accepted === true);
+	const response = await command;
+	assert.ok("result" in response);
+	assert.equal(response.result.compaction_status, "interrupted");
+	assert.equal(response.result.lifecycle_started, false);
+	assert.match(JSON.stringify(response.result), /Context compaction cancelled\./u);
+	assert.equal(response.result.tokens, undefined);
+	assert.equal(notifications(harness.messages, "compaction.started").length, 0);
+	assert.equal(notifications(harness.messages, "gateway.error").length, 0);
+	assert.ok("result" in await harness.send("session.new"));
 });

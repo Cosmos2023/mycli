@@ -1,3 +1,4 @@
+import type { SessionTrainingExportSettings } from "../node-runtime/session-training-export-options.ts";
 import type { ConfigPathScope } from "@mycli/config/paths";
 import type { PluginPackageRequest } from "@mycli/integrations";
 import type { HeadlessCommand } from "../headless/types.ts";
@@ -107,7 +108,7 @@ export type SandboxManagementCommand =
 	}
 	| {
 		readonly kind: "sandbox";
-		readonly action: "setup" | "reset";
+		readonly action: "setup" | "reset" | "repair" | "uninstall";
 		readonly confirmed: boolean;
 		readonly json: boolean;
 	};
@@ -136,6 +137,7 @@ type UpdateManagementCommand =
 		readonly version: string;
 		readonly json: boolean;
 	};
+
 
 export type SessionManagementCommand =
 	| {
@@ -185,6 +187,7 @@ export type SessionManagementCommand =
 		readonly action: "export";
 		readonly sessionId: string;
 		readonly json: boolean;
+		readonly training?: SessionTrainingExportSettings;
 	};
 
 export interface SetupManagementCommand {

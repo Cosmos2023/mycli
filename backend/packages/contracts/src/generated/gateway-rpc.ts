@@ -76,6 +76,8 @@ export type ErrorReasonDetails =
       reason:
         | "provider.invalid_request"
         | "provider.context_limit"
+        | "provider.output_limit"
+        | "provider.empty_response"
         | "provider.rate_limited"
         | "provider.quota_exceeded"
         | "provider.overloaded"
@@ -151,6 +153,7 @@ export type ErrorReasonDetails =
         | "runtime.retry_exhausted"
         | "runtime.tool_budget_exceeded"
         | "runtime.continuation_unavailable"
+        | "runtime.compaction_summary_too_long"
         | "runtime.effect_outcome_unknown"
         | "runtime.internal_error";
       details?: RuntimeErrorDetails;
@@ -226,6 +229,7 @@ export type QueueImages = (
     }
 )[];
 export type InterruptParams = OwnerParams & {
+  operation_id?: string;
   turn_id?: string;
   client_turn_id?: string;
   rollback_user_input?: boolean;
@@ -267,6 +271,36 @@ export type SettingsMutation1 =
     };
 
 export interface GatewayRpcMethods {
+  "goal.get": {
+    params: {
+      [k: string]: unknown;
+    };
+    result: {
+      session_id: string;
+      generation?: number;
+      goal: SessionGoal | null;
+      [k: string]: unknown;
+    };
+    [k: string]: unknown;
+  };
+  "goal.update": {
+    params: {
+      action: "create" | "edit" | "pause" | "resume" | "clear";
+      session_id?: string;
+      generation?: number;
+      expected_goal_id?: string;
+      expected_revision?: number;
+      objective?: string;
+      token_budget?: number | null;
+    };
+    result: {
+      session_id: string;
+      generation?: number;
+      goal: SessionGoal | null;
+      [k: string]: unknown;
+    };
+    [k: string]: unknown;
+  };
   "plugin.inspect": {
     params: {
       session_id: string;
@@ -570,6 +604,7 @@ export interface GatewayRpcMethods {
   };
   "command.run": {
     params: {
+      operation_id?: string;
       command: string;
       surface?: string;
       [k: string]: unknown;
@@ -701,6 +736,21 @@ export interface GatewayRpcMethods {
     [k: string]: unknown;
   };
 }
+export interface SessionGoal {
+  goal_id: string;
+  revision: number;
+  objective: string;
+  status: "active" | "paused" | "blocked" | "usage_limited" | "budget_limited" | "complete";
+  token_budget: number | null;
+  tokens_used: number;
+  elapsed_ms: number;
+  rounds_started: number;
+  audit_turns: number;
+  created_at: string;
+  updated_at: string;
+  stop_reason: string | null;
+  usage_incomplete: boolean;
+}
 export interface PluginDetail {
   plugin: PluginCatalogEntry;
   /**
@@ -810,6 +860,7 @@ export interface Bootstrap {
   [k: string]: unknown;
 }
 export interface Status {
+  goal?: SessionGoal | null;
   session_id?: string;
   generation?: number;
   turn_running?: boolean;
@@ -999,6 +1050,8 @@ export interface ProviderErrorDetails {
   provider_code?: string;
   provider_type?: string;
   retry_after_seconds?: number;
+  finish_reason?: "length" | "stop" | "toolUse" | "error" | "aborted";
+  max_output_tokens?: number;
 }
 export interface CapabilityErrorDetails {
   provider?: string;
@@ -1050,6 +1103,8 @@ export interface RuntimeErrorDetails {
   request_retries?: number;
   stream_retries?: number;
   omitted_causes?: number;
+  summary_tokens?: number;
+  summary_max_tokens?: number;
   exit_code?: number;
   signal?: string;
 }
@@ -1244,6 +1299,7 @@ export interface SurfaceParams {
   [k: string]: unknown;
 }
 export interface CommandResult {
+  goal?: SessionGoal | null;
   execution?: string;
   command_id?: string;
   client_action?: string;

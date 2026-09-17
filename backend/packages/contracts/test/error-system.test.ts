@@ -24,7 +24,7 @@ test("the error reason catalog matches its canonical schema and has complete def
 	const reasons = schema.$defs.reason_details.oneOf.flatMap((branch) => branch.properties.reason.enum);
 	assert.equal(new Set(reasons).size, reasons.length);
 	assert.deepEqual([...reasons].sort(), [...ERROR_REASONS].sort());
-	assert.equal(reasons.length, 66);
+	assert.equal(reasons.length, 69);
 	for (const reason of reasons) {
 		const definition = errorDefinition(reason);
 		assert.equal(isDiagnosticCategory(definition.category), true);

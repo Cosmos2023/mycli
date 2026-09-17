@@ -1,4 +1,9 @@
 export { NodeTurnRuntime } from "./turns/node-turn-runtime.ts";
+export { SessionGoalUsageTracker } from "./sessions/session-goal-usage.ts";
+export { exportSessionTrainingData } from "./sessions/training/export.ts";
+export type { SessionTrainingExportOptions, TrainingExportStore } from "./sessions/training/export.ts";
+export type { SessionTrainingConversation, SessionTrainingExportReport } from "./sessions/training/types.ts";
+export { isTrainingSecretKey } from "./sessions/training/redaction.ts";
 export { resolveErrorRecovery, providerAttemptRetryAllowed } from "./errors/recovery.ts";
 export type { RecoveryState } from "./errors/recovery.ts";
 export { AgentBudgetTracker } from "./agents/agent-budget-tracker.ts";
@@ -474,3 +479,7 @@ export type {
 	CommitRuntimeProviderStepInput,
 } from "./context/model-input-pipeline.ts";
 export { UserTurnCancellation } from "./abort.ts";
+
+export { SessionGoalService, type SessionGoalServiceOptions } from "./sessions/session-goal-service.ts";
+
+export { sessionGoalContext, goalContinuationMessage } from "./sessions/session-goal-context.ts";

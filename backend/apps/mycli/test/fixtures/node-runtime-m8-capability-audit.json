@@ -2,8 +2,8 @@
   "schema_version": 1,
   "baseline": "python-m7-final",
   "gateway": {
-	"rpc_count": 57,
-    "event_count": 47,
+	"rpc_count": 59,
+    "event_count": 49,
     "required_rpc": [
       "session.bootstrap",
 	  "session.new",
@@ -29,7 +29,9 @@
 	  "provider.list",
 	  "provider.attempts.load",
 	  "settings.keymap.reset",
-      "shutdown"
+      "shutdown",
+      "goal.get",
+      "goal.update"
     ],
     "required_events": [
       "runtime.ready",
@@ -46,13 +48,15 @@
       "subagent.updated",
       "turn.completed",
       "turn.status",
-      "provider.attempt.updated"
+      "provider.attempt.updated",
+      "hook.started",
+      "hook.completed"
     ]
   },
   "slash_commands": {
-	"command_count": 42,
+	"command_count": 44,
 	"retired_command_count": 39,
-	"sha256": "5d6e2229fde8417e8dc017826546d79761a7ea24b67fb592370bfe7a90ac718a"
+    "sha256": "4655da16c262aa5ee0ce336eda45ecee4fd00121efcdb8131a091d23c9c09238"
   },
   "tools": {
     "retained": [
@@ -60,7 +64,10 @@
       "Edit",
       "Patch",
       "Write",
-      "AskUserQuestion"
+      "AskUserQuestion",
+      "create_goal",
+      "get_goal",
+      "update_goal"
     ],
     "explicitly_retired": [
       "LS",

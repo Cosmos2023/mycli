@@ -1,3 +1,4 @@
+import type { TurnInterruptionReason } from "@mycli/contracts";
 import type { SkillReference } from "@mycli/contracts";
 import {
 	canonicalTurnFailureMessage,
@@ -48,7 +49,7 @@ export interface ReserveTurnInput {
 	readonly skillReferences?: readonly SkillReference[];
 	readonly imagePaths?: readonly string[];
 	readonly images?: readonly CanonicalImage[];
-	readonly source?: "user" | "agent_mailbox";
+	readonly source?: "user" | "agent_mailbox" | "goal";
 	readonly startedAt: string;
 }
 
@@ -69,6 +70,7 @@ export interface CompleteStoredTurnInput {
 }
 
 export interface FailStoredTurnInput {
+	readonly interruptionReason?: TurnInterruptionReason;
 	readonly sessionId: string;
 	readonly clientTurnId: string;
 	readonly code: RuntimeErrorCode;
@@ -170,6 +172,7 @@ export interface ProjectedMutationMetadata {
 }
 
 export type RuntimeStateKey =
+	| "session_goal"
 	| "input_queue"
 	| "session_metadata"
 	| "session_preferences"

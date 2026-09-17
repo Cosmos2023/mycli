@@ -907,6 +907,7 @@ test("loads compaction defaults with memory disabled", async (t) => {
 
 	const resolved = await resolveConfig({ homeDir, workspaceRoot, env: {} });
 
+	assert.equal(resolved.model, "gpt-5.5");
 	assert.equal(resolved.memoryEnabled, false);
 	assert.equal(resolved.requestPermissionsToolEnabled, false);
 	assert.equal(resolved.updatesCheckOnStartup, true);
@@ -914,7 +915,7 @@ test("loads compaction defaults with memory disabled", async (t) => {
 	assert.equal(resolved.compactionTokenLimit, 9_600);
 	assert.equal(resolved.compactionReservedOutputTokens, 13_000);
 	assert.equal(resolved.compactionTailTurns, 2);
-	assert.equal(resolved.compactionTailMaxTokens, 8_000);
+	assert.equal(resolved.compactionTailMaxTokens, 20_000);
 	assert.equal(resolved.compactionTriggerRatio, 0.9);
 	assert.equal(resolved.compactionBufferTokens, 13_000);
 	assert.equal(resolved.compactionMinSavingsRatio, undefined);

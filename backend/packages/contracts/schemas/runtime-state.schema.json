@@ -227,6 +227,31 @@
         }
       }
     },
+    "compaction_message": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["role", "content"],
+      "properties": {
+        "role": {
+          "type": "string",
+          "enum": ["system", "developer", "user", "assistant", "tool"]
+        },
+        "content": {"type": "string"},
+        "tool_call_id": {"$ref": "#/$defs/nullable_identifier"},
+        "response_id": {"$ref": "#/$defs/nullable_identifier"},
+        "metadata": {"type": "object"},
+        "blocks": {
+          "type": "array",
+          "maxItems": 512,
+          "items": {"type": "object"}
+        },
+        "tool_calls": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {"type": "object"}
+        }
+      }
+    },
     "pending_approval": {
       "type": "object",
       "additionalProperties": true,
@@ -509,7 +534,7 @@
         "replacement_messages": {
           "type": "array",
           "maxItems": 4096,
-          "items": {"$ref": "#/$defs/message"}
+          "items": {"$ref": "#/$defs/compaction_message"}
         }
       }
     },

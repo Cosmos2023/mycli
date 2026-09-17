@@ -72,7 +72,7 @@ test("session management shares list visibility, deterministic rendering, and sa
 		status: "active",
 		limit: 20,
 	};
-	const listed = service.execute(list);
+	const listed = await service.execute(list);
 	assert.equal(listed.ok, true);
 	assert.deepEqual(listed.sessions?.map((session) => session.id), ["session-a"]);
 	assert.equal(
@@ -84,20 +84,20 @@ test("session management shares list visibility, deterministic rendering, and sa
 	);
 	const jsonList = { ...list, json: true } as const;
 	assert.deepEqual(
-		JSON.parse(renderManagementResponse(jsonList, service.execute(jsonList))),
-		service.execute(jsonList),
+		JSON.parse(renderManagementResponse(jsonList, await service.execute(jsonList))),
+		await service.execute(jsonList),
 	);
 
-	const archive = service.execute({
+	const archive = await service.execute({
 		kind: "session",
 		action: "archive",
 		sessionId: "session-a",
 		json: false,
 	});
 	assert.equal(archive.session?.lifecycleStatus, "archived");
-	assert.deepEqual(service.execute(list).sessions, []);
+	assert.deepEqual((await service.execute(list)).sessions, []);
 	assert.deepEqual(
-		service.execute({ ...list, all: true, status: undefined }).sessions?.map((session) => session.id),
+		(await service.execute({ ...list, all: true, status: undefined })).sessions?.map((session) => session.id),
 		["session-a"],
 	);
 
@@ -108,18 +108,18 @@ test("session management shares list visibility, deterministic rendering, and sa
 		force: false,
 		json: false,
 	};
-	const rejected = service.execute(protectedDelete);
+	const rejected = await service.execute(protectedDelete);
 	assert.equal(rejected.ok, false);
 	assert.deepEqual(rejected.issues, ["confirmation_required"]);
 	assert.equal(sessions.load("session-a").lifecycleStatus, "archived");
 
-	service.execute({
+	await service.execute({
 		kind: "session",
 		action: "unarchive",
 		sessionId: "session-a",
 		json: false,
 	});
-	const exported = service.execute({
+	const exported = await service.execute({
 		kind: "session",
 		action: "export",
 		sessionId: "session-a",
@@ -131,7 +131,7 @@ test("session management shares list visibility, deterministic rendering, and sa
 	]);
 	assert.equal(JSON.stringify(exported).includes("private-account"), false);
 
-	const deleted = service.execute({ ...protectedDelete, force: true });
+	const deleted = await service.execute({ ...protectedDelete, force: true });
 	assert.equal(deleted.session?.lifecycleStatus, "deleted");
-	assert.deepEqual(service.execute(list).sessions, []);
+	assert.deepEqual((await service.execute(list)).sessions, []);
 });

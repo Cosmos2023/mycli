@@ -62,6 +62,7 @@ export class ExactReplaceTool implements ToolAdapter {
 					replaceAll: argumentsValue.replace_all === true,
 					allowOutsideWorkspace: sandbox.allowOutsideWorkspace,
 					allowedWritableRoots: sandbox.allowedWritableRoots,
+					deniedReadPolicy: sandbox.deniedReadPolicy,
 					signal: options.signal,
 				});
 				return Object.freeze({
@@ -114,6 +115,7 @@ export class ExactReplaceTool implements ToolAdapter {
 				replaceAll: argumentsValue.replace_all === true,
 				allowOutsideWorkspace: sandbox.allowOutsideWorkspace,
 				allowedWritableRoots: sandbox.allowedWritableRoots,
+				deniedReadPolicy: sandbox.deniedReadPolicy,
 				history: {
 					turnId: options.ownerTurnId ?? options.callId,
 					toolName: this.#toolName,
