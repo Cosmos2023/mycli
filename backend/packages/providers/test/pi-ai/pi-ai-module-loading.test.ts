@@ -30,7 +30,11 @@ test("complete provider directory remains lazy until directory demand", async ()
 
 test("snapshot selection loads only the selected catalog provider", async () => {
 	const imported = await loadedPiAiModules(`await import(${JSON.stringify(SOURCE_URL)});`);
-	assert.deepEqual(providerModules(imported.loaded), ["faux"]);
+	// The pi-ai root re-exports its model catalog and typebox schemas, so the
+	// model module must stay clear of it until a snapshot is created.
+	assert.deepEqual(providerModules(imported.loaded), []);
+	assert.deepEqual(piAiRootModules(imported.loaded), []);
+	assert.deepEqual(typeboxModules(imported.loaded), []);
 
 	const selected = await loadedPiAiModules(`
 		const { createPiAiSnapshot } = await import(${JSON.stringify(SOURCE_URL)});
@@ -48,6 +52,8 @@ test("snapshot selection loads only the selected catalog provider", async () => 
 	assert.deepEqual(JSON.parse(selected.stdout), { "NVCF-POLL-SECONDS": "3600" });
 	const loadedProviders = providerModules(selected.loaded);
 	assert.deepEqual(loadedProviders, ["faux", "nvidia", "nvidia.models"]);
+	assert.equal(piAiRootModules(selected.loaded).length, 1);
+	assert(typeboxModules(selected.loaded).length > 0);
 	assert(!selected.loaded.some((url) => /\/auth\/oauth\/(?!load\.js)/u.test(url)));
 });
 
@@ -112,7 +118,7 @@ async function loadedPiAiModules(script: string): Promise<{
 }> {
 	const hook = dataUrl(`
 		export async function load(url, context, nextLoad) {
-			if (url.includes("/node_modules/@earendil-works/pi-ai/")) {
+			if (url.includes("/node_modules/@earendil-works/pi-ai/") || url.includes("/node_modules/typebox/")) {
 				process.stderr.write("MYCLI_LOADED " + url + "\\n");
 			}
 			return nextLoad(url, context);
@@ -149,6 +155,14 @@ function providerModules(urls: readonly string[]): readonly string[] {
 		const match = PROVIDER_MODULE_PATTERN.exec(url);
 		return match?.[1] ? [match[1]] : [];
 	}).sort();
+}
+
+function piAiRootModules(urls: readonly string[]): readonly string[] {
+	return urls.filter((url) => url.includes("/node_modules/@earendil-works/pi-ai/dist/index.js"));
+}
+
+function typeboxModules(urls: readonly string[]): readonly string[] {
+	return urls.filter((url) => url.includes("/node_modules/typebox/"));
 }
 
 function dataUrl(source: string): string {

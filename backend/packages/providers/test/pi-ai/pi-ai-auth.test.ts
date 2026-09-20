@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
-import { createProvider, type OAuthCredential, type Provider } from "@earendil-works/pi-ai";
+import { createModels, createProvider, type OAuthCredential, type Provider } from "@earendil-works/pi-ai";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { deleteApiKey, modifyProviderCredential, readProviderCredential, resolveConfig } from "@mycli/config";
 import { parseProviderRouteId, type ProviderRequest } from "@mycli/core";
@@ -12,6 +12,8 @@ import { PiAiProvider } from "../../src/pi-ai/pi-ai-provider.ts";
 import { ProviderFailure, providerFailureToRuntimeFailure } from "../../src/errors.ts";
 import { providerStreamFixture } from "../support/provider-stream-fixtures.ts";
 import { loadPiAiBuiltinProvider } from "../../src/registry/provider-directory.ts";
+
+const piAi = { createModels };
 import { resolveProviderNativeTransport } from "../../src/registry/provider-native-transport.ts";
 
 test("actual native API-key environment auth is isolated and explicit missing references do not fall back", async (t) => {
@@ -100,12 +102,12 @@ test("OAuth refresh is serialized across independent Models instances and surviv
 		return { ...credential, access: "rotated-access", refresh: "rotated-refresh", expires: Date.now() + 3_600_000 };
 	});
 	const config = { provider: "fixture", homeDir, authRef: "fixture", allowAmbientAuth: false };
-	const first = createPiAiRequestModels(provider, config, () => assert.fail("unexpected auth failure"));
-	const second = createPiAiRequestModels(provider, config, () => assert.fail("unexpected auth failure"));
+	const first = createPiAiRequestModels(piAi, provider, config, () => assert.fail("unexpected auth failure"));
+	const second = createPiAiRequestModels(piAi, provider, config, () => assert.fail("unexpected auth failure"));
 	const results = await Promise.all([first.getAuth("fixture"), second.getAuth("fixture")]);
 	assert.equal(refreshes, 1);
 	assert(results.every((result) => result?.auth.apiKey === "rotated-access"));
-	const reopened = createPiAiRequestModels(provider, config, () => assert.fail("unexpected auth failure"));
+	const reopened = createPiAiRequestModels(piAi, provider, config, () => assert.fail("unexpected auth failure"));
 	assert.equal((await reopened.getAuth("fixture"))?.auth.apiKey, "rotated-access");
 	assert.equal(refreshes, 1);
 	const stored = await readProviderCredential({ homeDir, authRef: "fixture" });
@@ -153,7 +155,7 @@ test("logout serializes with OAuth refresh and a failed refresh never replaces t
 		return { ...credential, access: "rotated-access", expires: Date.now() + 3_600_000 };
 	});
 	const config = { provider: "fixture", homeDir, authRef: "fixture", allowAmbientAuth: false };
-	const pending = createPiAiRequestModels(provider, config, () => undefined).getAuth("fixture");
+	const pending = createPiAiRequestModels(piAi, provider, config, () => undefined).getAuth("fixture");
 	await entered.promise;
 	const logout = deleteApiKey({ homeDir, authRef: "fixture" });
 	release.resolve();
@@ -163,7 +165,7 @@ test("logout serializes with OAuth refresh and a failed refresh never replaces t
 	await seedExpired(homeDir);
 	const before = await readFile(join(homeDir, ".mycli", "auth.json"), "utf8");
 	let failed = false;
-	const failureModels = createPiAiRequestModels(authProvider(async () => { throw new Error("private refresh payload"); }), config, () => { failed = true; });
+	const failureModels = createPiAiRequestModels(piAi, authProvider(async () => { throw new Error("private refresh payload"); }), config, () => { failed = true; });
 	await assert.rejects(failureModels.getAuth("fixture"));
 	assert.equal(failed, true);
 	assert.equal(await readFile(join(homeDir, ".mycli", "auth.json"), "utf8"), before);

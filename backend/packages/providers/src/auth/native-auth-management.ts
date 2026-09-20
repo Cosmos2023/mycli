@@ -1,10 +1,10 @@
-import { createModels } from "@earendil-works/pi-ai";
 import type { AuthEvent, AuthPrompt, Provider } from "@earendil-works/pi-ai";
 import { parseProviderRouteId, type ProviderRouteId } from "@mycli/core";
 import { sanitizeRuntimeErrorDetail } from "@mycli/contracts";
 import { readProviderCredential } from "@mycli/config";
 import { ProviderFailure } from "../errors.ts";
 import { createPiAiModelsAuth } from "../pi-ai/pi-ai-auth.ts";
+import { loadPiAiRoot, type PiAiRoot } from "../pi-ai/pi-ai-module.ts";
 import { loadPiAiBuiltinProvider, loadPiAiProviderEntry } from "../registry/provider-directory.ts";
 
 export type NativeAuthPrompt = {
@@ -54,8 +54,12 @@ export async function inspectNativeProviderAuth(input: NativeAuthTarget): Promis
 }
 
 // Package-internal injection boundary: SDK provider types do not cross the public exports.
-export function createNativeProviderAuthOperations(provider: Provider, input: NativeAuthTarget): NativeProviderAuthOperations {
-	const models = createModels({
+export function createNativeProviderAuthOperations(
+	piAi: Pick<PiAiRoot, "createModels">,
+	provider: Provider,
+	input: NativeAuthTarget,
+): NativeProviderAuthOperations {
+	const models = piAi.createModels({
 		...createPiAiModelsAuth({ ...input, provider: provider.id }),
 	});
 	models.setProvider({
@@ -108,7 +112,7 @@ async function operations(input: NativeAuthTarget): Promise<NativeProviderAuthOp
 	if (!entry || entry.status === "unsupported") throw unavailable();
 	const provider = await loadPiAiBuiltinProvider(id);
 	if (!provider) throw unavailable();
-	return createNativeProviderAuthOperations(provider, input);
+	return createNativeProviderAuthOperations(await loadPiAiRoot(), provider, input);
 }
 
 function normalizePrompt(prompt: AuthPrompt): NativeAuthPrompt {

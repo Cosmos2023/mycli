@@ -1,14 +1,11 @@
-import {
-	createModels,
-	createProvider,
-	getSupportedThinkingLevels,
-	type ApiKeyAuth,
-	type Model,
-	type Models,
-	type Provider,
-	type ProviderStreams,
-	type SimpleStreamOptions,
-	type ModelThinkingLevel,
+import type {
+	ApiKeyAuth,
+	Model,
+	Models,
+	ModelThinkingLevel,
+	Provider,
+	ProviderStreams,
+	SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
 import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
@@ -26,6 +23,7 @@ import {
 } from "../registry/provider-directory.ts";
 import { ProviderFailure } from "../errors.ts";
 import { createPiAiModelsAuth } from "./pi-ai-auth.ts";
+import { loadPiAiRoot, type PiAiRoot } from "./pi-ai-module.ts";
 
 export type PiAiApi = ProviderNativeApi;
 type CompatiblePiAiApi = Exclude<PiAiApi, "azure-openai-responses">;
@@ -56,6 +54,7 @@ export interface PiAiSnapshot {
 	readonly model: Model<PiAiApi>;
 	readonly models: Models;
 	readonly catalogued: boolean;
+	readonly thinkingLevels: readonly ModelThinkingLevel[];
 	readonly nativeTransport?: ProviderNativeTransportSnapshot;
 }
 
@@ -76,6 +75,7 @@ const API_FACTORIES: Readonly<Record<CompatiblePiAiApi, () => ProviderStreams>> 
 export async function createPiAiSnapshot(config: PiAiModelConfig): Promise<PiAiSnapshot> {
 	const nativeTransport = config.nativeTransport === undefined ? undefined : validatedNativeTransport(config);
 	const api = nativeTransport?.api ?? piAiApi(config.protocol);
+	const piAi = await loadPiAiRoot();
 	const builtinProvider = config.routeSource === "pi_ai_declared"
 		? undefined
 		: await loadPiAiBuiltinProvider(config.catalogProviderId ?? config.provider);
@@ -88,21 +88,21 @@ export async function createPiAiSnapshot(config: PiAiModelConfig): Promise<PiAiS
 		throw nativeConfigurationFailure();
 	}
 	if (builtinProvider !== undefined && catalogModels.length > 0) {
-		return catalogPiAiSnapshot(config, api, builtinProvider, catalogModels);
+		return catalogPiAiSnapshot(piAi, config, api, builtinProvider, catalogModels);
 	}
 	if (config.routeSource === "pi_ai_builtin" || api === "azure-openai-responses") {
 		throw nativeConfigurationFailure();
 	}
-	return genericPiAiSnapshot(config, api);
+	return genericPiAiSnapshot(piAi, config, api);
 }
 
-function genericPiAiSnapshot(config: PiAiModelConfig, api: CompatiblePiAiApi): PiAiSnapshot {
+function genericPiAiSnapshot(piAi: PiAiRoot, config: PiAiModelConfig, api: CompatiblePiAiApi): PiAiSnapshot {
 	const transportProvider = piAiTransportProvider(config);
 	const model = declaredPiAiModel(config, api, transportProvider);
-	const models = createModels(createPiAiModelsAuth({
+	const models = piAi.createModels(createPiAiModelsAuth({
 		...config, provider: transportProvider, authRef: config.authRef ?? config.provider,
 	}));
-	models.setProvider(createProvider({
+	models.setProvider(piAi.createProvider({
 		id: transportProvider,
 		name: config.provider,
 		baseUrl: config.apiBaseUrl,
@@ -115,10 +115,12 @@ function genericPiAiSnapshot(config: PiAiModelConfig, api: CompatiblePiAiApi): P
 		model,
 		models,
 		catalogued: false,
+		thinkingLevels: Object.freeze(piAi.getSupportedThinkingLevels(model)),
 	});
 }
 
 function catalogPiAiSnapshot(
+	piAi: PiAiRoot,
 	config: PiAiModelConfig,
 	api: PiAiApi,
 	provider: Provider,
@@ -143,7 +145,7 @@ function catalogPiAiSnapshot(
 		streamSimple: (requestModel, context, options) =>
 			provider.streamSimple(requestModel, context, options),
 	});
-	const models = createModels(createPiAiModelsAuth({
+	const models = piAi.createModels(createPiAiModelsAuth({
 		...config, provider: model.provider, authRef: config.authRef ?? config.provider,
 	}));
 	models.setProvider(routeProvider);
@@ -153,6 +155,7 @@ function catalogPiAiSnapshot(
 		model,
 		models,
 		catalogued: catalogued !== undefined,
+		thinkingLevels: Object.freeze(piAi.getSupportedThinkingLevels(model)),
 		...(config.nativeTransport ? { nativeTransport: validatedNativeTransport(config) } : {}),
 	});
 }
@@ -364,7 +367,7 @@ function supportsReasoningLevel(
 	snapshot: PiAiSnapshot,
 	level: ModelThinkingLevel,
 ): boolean {
-	return getSupportedThinkingLevels(snapshot.model).includes(level);
+	return snapshot.thinkingLevels.includes(level);
 }
 
 function unsupportedReasoning(effort: ReasoningEffort | undefined): ProviderFailure {

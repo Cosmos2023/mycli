@@ -1,12 +1,12 @@
 import { access } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { createModels } from "@earendil-works/pi-ai";
 import type { CreateModelsOptions, Credential, CredentialStore, Models, Provider, ProviderAuth } from "@earendil-works/pi-ai";
 import { deleteApiKey, modifyProviderCredential, parseProviderCredential, readProviderCredential } from "@mycli/config";
 import type { CredentialJsonValue, ProviderCredential } from "@mycli/config";
 import { providerNativeEndpointSha256, type ProviderNativeTransportSnapshot } from "@mycli/core";
 import { ProviderFailure } from "../errors.ts";
+import type { PiAiRoot } from "./pi-ai-module.ts";
 
 interface PiAiAuthConfig {
 	readonly provider: string;
@@ -36,6 +36,7 @@ export function createPiAiModelsAuth(
 }
 
 export function createPiAiRequestModels(
+	piAi: Pick<PiAiRoot, "createModels">,
 	provider: Provider,
 	config: PiAiAuthConfig,
 	onFailure: (failure?: ProviderFailure) => void,
@@ -44,7 +45,7 @@ export function createPiAiRequestModels(
 		...config, provider: provider.id, authRef: config.authRef ?? config.provider,
 	}, onFailure);
 	const credentials = authOptions.credentials;
-	const models = createModels({ ...authOptions, ...(credentials ? { credentials: {
+	const models = piAi.createModels({ ...authOptions, ...(credentials ? { credentials: {
 		...credentials,
 		read: async (id, operation) => {
 			const credential = await credentials.read(id, operation);

@@ -6,7 +6,6 @@ import type {
 	SimpleStreamOptions,
 	Usage,
 } from "@earendil-works/pi-ai";
-import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import type {
 	ProviderEvent,
 	ProviderRequest,
@@ -27,6 +26,7 @@ import {
 	invalidPiAiToolArguments,
 	piAiFailure,
 } from "./pi-ai-failure.ts";
+import { loadPiAiRoot } from "./pi-ai-module.ts";
 import {
 	createPiAiSnapshot,
 	piAiRequestModel,
@@ -76,7 +76,7 @@ export class PiAiProvider implements ModelProvider {
 			maxOutputTokens: snapshot.model.maxTokens,
 			contextWindowTokens: snapshot.model.contextWindow,
 			...(snapshot.catalogued ? { reasoningEfforts: Object.freeze(
-				getSupportedThinkingLevels(snapshot.model).map((level) => level === "off" ? "none" as const : level),
+				snapshot.thinkingLevels.map((level) => level === "off" ? "none" as const : level),
 			) } : {}),
 		});
 	}
@@ -145,7 +145,7 @@ export class PiAiProvider implements ModelProvider {
 				requestModel.model,
 				projection.context,
 				streamOptions,
-			) : asyncIterableFromSnapshot(snapshot, requestModel.model, projection.context,
+			) : await asyncIterableFromSnapshot(snapshot, requestModel.model, projection.context,
 				streamOptions, this.#config, (failure) => { evidence.authFailure ??= failure ?? piAiAuthFailure(); });
 			iterator = (webSearch ? webSearch.merge(events, upstreamSignal) : events)[Symbol.asyncIterator]();
 			let terminal: Extract<AssistantMessageEvent, { type: "done" | "error" }> | undefined;
@@ -249,17 +249,18 @@ export class PiAiProvider implements ModelProvider {
 	}
 }
 
-function asyncIterableFromSnapshot(
+async function asyncIterableFromSnapshot(
 	snapshot: Awaited<ReturnType<typeof createPiAiSnapshot>>,
 	model: Model<PiAiApi>,
 	context: Context,
 	options: SimpleStreamOptions,
 	config: PiAiModelConfig,
 	onAuthFailure: (failure?: ProviderFailure) => void,
-): AsyncIterable<AssistantMessageEvent> {
+): Promise<AsyncIterable<AssistantMessageEvent>> {
+	const piAi = await loadPiAiRoot();
 	const provider = snapshot.models.getProvider(model.provider);
 	if (!provider) throw new ProviderFailure({ code: "config_error", message: "pi-ai provider snapshot is unavailable" });
-	return createPiAiRequestModels(provider, config, onAuthFailure).streamSimple(model, context, options);
+	return createPiAiRequestModels(piAi, provider, config, onAuthFailure).streamSimple(model, context, options);
 }
 
 function completedEvents(

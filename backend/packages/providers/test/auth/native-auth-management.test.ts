@@ -3,11 +3,13 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
-import type { Provider } from "@earendil-works/pi-ai";
+import { createModels, type Provider } from "@earendil-works/pi-ai";
 import { readProviderCredential } from "@mycli/config";
 import { parseProviderRouteId } from "@mycli/core";
 import { createNativeProviderAuthOperations, inspectNativeProviderAuth, type NativeAuthEvent } from "../../src/auth/native-auth-management.ts";
 import { loadPiAiBuiltinProvider } from "../../src/registry/provider-directory.ts";
+
+const piAi = { createModels };
 
 test("native OAuth management uses SDK login, local status and selected-reference logout", async (t) => {
 	const homeDir = await temporaryHome(t);
@@ -28,7 +30,7 @@ test("native OAuth management uses SDK login, local status and selected-referenc
 			toAuth: async () => assert.fail("local status must not resolve OAuth"),
 		},
 	} };
-	const operations = createNativeProviderAuthOperations(provider, { provider: "anthropic", homeDir, authRef: "work" });
+	const operations = createNativeProviderAuthOperations(piAi, provider, { provider: "anthropic", homeDir, authRef: "work" });
 	assert.deepEqual(await operations.status(), { configured: false, source: "missing" });
 	assert.deepEqual(await operations.login({ prompt: async () => "offline-code", notify: (event) => events.push(event) }), {
 		configured: true, source: "stored", credentialType: "oauth",
@@ -55,7 +57,7 @@ test("cancelled native OAuth login never persists a late credential", async (t) 
 		returned.resolve();
 		return { type: "oauth", access: "late-access", refresh: "late-refresh", expires: 1 };
 	} } } };
-	const operations = createNativeProviderAuthOperations(provider, { provider: "anthropic", homeDir, authRef: "work", signal: controller.signal });
+	const operations = createNativeProviderAuthOperations(piAi, provider, { provider: "anthropic", homeDir, authRef: "work", signal: controller.signal });
 	const login = operations.login({ prompt: async () => "", notify: () => undefined });
 	const rejected = assert.rejects(login, { name: "AbortError" });
 	await entered.promise;
@@ -86,7 +88,7 @@ test("native OAuth management retains nonexpiring grants with no refresh token",
 		login: async () => ({ type: "oauth", access: "offline-access", refresh: "", expires: Number.MAX_SAFE_INTEGER }),
 	} } };
 	const target = { provider: "openrouter", homeDir, authRef: "openrouter" };
-	await createNativeProviderAuthOperations(provider, target).login({ prompt: async () => "", notify: () => undefined });
+	await createNativeProviderAuthOperations(piAi, provider, target).login({ prompt: async () => "", notify: () => undefined });
 	assert.equal((await inspectNativeProviderAuth(target)).credentialType, "oauth");
 	const credential = await readProviderCredential(target);
 	assert(credential?.type === "oauth");
