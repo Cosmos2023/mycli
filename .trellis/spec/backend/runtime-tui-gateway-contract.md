@@ -4,6 +4,10 @@
 
 ## Error Context Extension
 
+Permission readiness accepts both `windows_restricted_token` and `windows_psec` from the backend.
+Keep the TUI model, unknown-payload parser and permission selector label in sync; a ready PSEC
+sandbox must not disappear at the gateway-to-view boundary.
+
 Gateway protocol 1 negotiates `supported_error_context_versions: [1]` during
 bootstrap and selects `error_context_version: 1`. Legacy peers receive no
 optional context, including nested tool, transcript, attempt and result records.

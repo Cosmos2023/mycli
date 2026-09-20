@@ -11,6 +11,7 @@ import { parseArgs } from "node:util";
 import { parseJsonRpcMessage } from "@mycli/contracts";
 import { resolveConfig, WorkspaceTrustStore } from "@mycli/config";
 import { openRuntimeSessionStore } from "@mycli/storage";
+import { resolveShellProfile } from "@mycli/tools";
 import { startNodeBackend } from "../backend/apps/mycli/dist/node-runtime/node-backend.js";
 
 const MAX_OUTPUT_TOKENS = 64;
@@ -81,7 +82,10 @@ async function runSmoke(sourceConfig) {
 			"  process.stdout.write('stdin-complete:' + value.trim() + '\\n', () => process.exit(0));",
 			"});",
 		].join("\n"), "utf8");
-		const command = `"${process.execPath}" wait-input.cjs`;
+		const quotedCommand = `"${process.execPath}" wait-input.cjs`;
+		const command = resolveShellProfile({ env: process.env }).kind === "powershell"
+			? `& ${quotedCommand}`
+			: quotedCommand;
 		backend = await startNodeBackend({
 			cwd: workspaceRoot,
 			args: ["--session", sessionId, "--model", "gpt-5.5"],
@@ -132,7 +136,7 @@ async function runSmoke(sourceConfig) {
 			message: [
 				"Use Shell exactly once with tty=true and yield_time_ms=250 to run this command:",
 				command,
-				"When it yields a session ID, use WriteStdin exactly once with chars=hello-m6-smoke followed by a newline and yield_time_ms=3000.",
+				`When it yields a session ID, use WriteStdin exactly once with chars=${JSON.stringify(process.platform === "win32" ? "hello-m6-smoke\r\n" : "hello-m6-smoke\n")} and yield_time_ms=3000.`,
 				"After the terminal completes, give a brief final response without another tool call.",
 			].join("\n"),
 			client_turn_id: clientTurnId,
@@ -149,6 +153,10 @@ async function runSmoke(sourceConfig) {
 			await shutdown(backend);
 			backend = undefined;
 			return { summary: emptySummary("unavailable"), exitCode: SKIP_EXIT_CODE };
+		}
+		// Console echo may complete WriteStdin before the child exit reaches the gateway.
+		if (terminal.method === "message.complete") {
+			await waitFor(() => event(messages, "shell.completed"), deadlineAt);
 		}
 
 		const shellList = await request(

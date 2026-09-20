@@ -116,6 +116,9 @@ await updates.close();
 - Missing, malformed, future-dated, unreadable, offline, timed-out, oversized, and unwritable state
   is non-fatal. A failed refresh never replaces an older valid record. A delayed older concurrent
   refresh cannot overwrite a record with a later `lastCheckedAt`.
+- On Windows, cache `ENOENT` may mean that an ancestor is a file. Inspect ancestors only as
+  needed to distinguish a missing cache from an unreadable path collision; status never creates
+  directories or replaces the colliding file.
 - Dismissal is exact-version only and never disables future checks. `check_on_startup=false`
   suppresses startup notice and background network access; explicit `update check` remains allowed.
 - The gateway projects snake-case update fields. The TUI renders one transient notice only when

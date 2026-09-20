@@ -29,7 +29,7 @@ jobs:
             packed_args: ""
           - platform: win32
             os: windows-2022
-            packed_args: "--require-windows-helper"
+            packed_args: "--require-windows-helper --require-windows-ready --setup-windows-sandbox"
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:

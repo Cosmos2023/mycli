@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { chmod, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, delimiter, dirname, join } from "node:path";
+import { basename, delimiter, dirname, join, resolve } from "node:path";
 import process from "node:process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
 	RIPGREP_TARGETS,
 	ripgrepPlatformKey,
@@ -16,6 +17,11 @@ import {
 	VENDORED_WORKSPACE_PACKAGES,
 } from "./release-config.mjs";
 import { commandFailureCode } from "./smoke_release_compatibility.mjs";
+import {
+	packedSandboxOptions,
+	verifyInstalledWindowsSandbox,
+	WINDOWS_SANDBOX_SETUP_TIMEOUT_MS,
+} from "./windows-sandbox-release-checks.mjs";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const PINNED_PI_AI_VERSION = await readPinnedPiAiVersion();
@@ -27,7 +33,8 @@ const CURRENT_PLATFORM_PACKAGE = RIPGREP_TARGETS[ripgrepPlatformKey()].npmPackag
 const FLAGS = new Set(process.argv.slice(2));
 const PACK_ALL_PLATFORMS = FLAGS.has("--all-platforms");
 const APP_ONLY = FLAGS.has("--app-only");
-const REQUIRE_WINDOWS_HELPER = FLAGS.has("--require-windows-helper");
+const WINDOWS_SANDBOX = packedSandboxOptions(process.argv.slice(2));
+const REQUIRE_WINDOWS_HELPER = WINDOWS_SANDBOX.requireHelper;
 const PLATFORM_PACKAGES = APP_ONLY
 	? []
 	: (PACK_ALL_PLATFORMS
@@ -260,10 +267,13 @@ process.stdout.write("native-pty-ok\n");
 const M7_PACKAGE_SMOKE = String.raw`
 import assert from "node:assert/strict";
 import { statSync } from "node:fs";
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
 	HookAllowlistStore,
+	loadPluginManifest,
 	McpClient,
 	PluginProcessHost,
 	SkillRegistry,
@@ -283,6 +293,38 @@ const integrationsEntry = fileURLToPath(new URL(
 ));
 const workerBootstrap = join(dirname(integrationsEntry), "plugins", "worker-bootstrap.js");
 assert.equal(statSync(workerBootstrap).isFile(), true);
+if (process.env.MYCLI_PACKED_WINDOWS_PLUGIN_SANDBOX === "1") {
+	assert.equal(process.platform, "win32");
+	const root = await mkdtemp(join(tmpdir(), "mycli-packed-plugin-"));
+	let host;
+	try {
+		const pluginRoot = join(root, "sandbox");
+		await mkdir(pluginRoot);
+		const outside = join(root, "outside.txt");
+		await writeFile(outside, "private fixture");
+		await copyFile(new URL("./plugin-sandbox-fixture.mjs", import.meta.url), join(pluginRoot, "index.mjs"));
+		await writeFile(join(pluginRoot, "plugin.yaml"), ["api_version: 2", "id: sandbox", "name: Packed sandbox",
+			"entry: index.mjs", "provides:", "  tools: []", "  hooks: []", "  commands: [probe]",
+			"requires_env: []", "capabilities: [filesystem_write]"].join("\n"));
+		const loaded = await loadPluginManifest({ pluginRoot, source: "repo" });
+		assert.ok(loaded.manifest);
+		host = new PluginProcessHost({ manifest: loaded.manifest,
+			env: { ...process.env, MYCLI_API_KEY: "fixture-secret" },
+			sandboxProfile: { mode: "workspace-write", filesystem: "workspace_write", network: "disabled",
+				workspaceRoot: pluginRoot, cwd: pluginRoot, writableRoots: [pluginRoot] } });
+		assert.equal((await host.start(AbortSignal.timeout(10_000))).length, 1);
+		const result = await host.invoke("command:probe", { outside, runtime: workerBootstrap }, AbortSignal.timeout(10_000));
+		assert.equal(result.value.ok, true);
+		assert.deepEqual(result.value.metadata, { outsideReadable: false, parentListable: false,
+			runtimeWritable: false, hasSecret: false });
+		assert.equal(await readFile(join(pluginRoot, "inside.txt"), "utf8"), "allowed");
+		assert.equal(await readFile(outside, "utf8"), "private fixture");
+	} finally {
+		await host?.close();
+		// The sandboxed worker may release its cwd handles just after exit on Windows.
+		await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+	}
+}
 process.stdout.write("m7-package-ok\n");
 `;
 const PROVIDER_PROTOCOL_SMOKE = String.raw`
@@ -802,18 +844,6 @@ try {
 	if (!nativeOutput.includes("native-pty-ok")) {
 		throw new Error("packed_cli_smoke_failed: installed native PTY smoke is incomplete");
 	}
-	const m7PackageSmoke = join(installDir, "m7-package-smoke.mjs");
-	await writeFile(m7PackageSmoke, M7_PACKAGE_SMOKE, "utf8");
-	const m7PackageOutput = await runStage(
-		"integrations",
-		process.execPath,
-		[m7PackageSmoke],
-		installDir,
-		true,
-	);
-	if (!m7PackageOutput.includes("m7-package-ok")) {
-		throw new Error("packed_cli_smoke_failed: installed M7 assets are incomplete");
-	}
 	const providerProtocolSmoke = join(installDir, "provider-protocol-smoke.mjs");
 	const piAiLoadHook = join(installDir, "pi-ai-load-hook.mjs");
 	const piAiLoadRegister = join(installDir, "pi-ai-load-register.mjs");
@@ -825,7 +855,7 @@ try {
 	const providerProtocolOutput = await runStage(
 		"provider_protocols",
 		process.execPath,
-		["--import", piAiLoadRegister, providerProtocolSmoke],
+		["--import", pathToFileURL(piAiLoadRegister).href, providerProtocolSmoke],
 		installDir,
 		true,
 		{ ...process.env, MYCLI_PI_AI_LOAD_LOG: piAiLoadLog },
@@ -857,6 +887,40 @@ try {
 		MYCLI_API_KEY: "",
 		MYCLI_AUTH_REF: "",
 	};
+	let windowsSandbox;
+	if (WINDOWS_SANDBOX.requireReady) {
+		windowsSandbox = await verifyInstalledWindowsSandbox({
+			setup: WINDOWS_SANDBOX.setup,
+			runStatus: (expectReady) => run(bin, ["sandbox", "status", "--json"], installDir,
+				true, managementEnv, expectReady ? [0] : [1], 15_000),
+			runSetup: () => run(bin, ["sandbox", "setup", "--confirm", "--json"], installDir,
+				true, managementEnv, [0], WINDOWS_SANDBOX_SETUP_TIMEOUT_MS),
+		});
+		const installedHelper = join(installDir, ...INSTALLED_APPLICATION_PATH,
+			"dist/node_modules/@mycli/tools/native/windows/mycli-windows-sandbox.exe");
+		windowsSandbox.helper_sha256 = createHash("sha256")
+			.update(await readFile(installedHelper)).digest("hex");
+		windowsSandbox.candidate_sha256 = createHash("sha256")
+			.update(await readFile(packedArtifacts[0].path)).digest("hex");
+		const sourceHelperHash = createHash("sha256").update(await readFile(join(ROOT,
+			"backend/packages/tools/native/windows/mycli-windows-sandbox.exe"))).digest("hex");
+		if (windowsSandbox.helper_sha256 !== sourceHelperHash) {
+			throw new Error("packed_windows_helper_changed");
+		}
+		windowsSandbox.candidate_version = applicationEntry.version;
+		windowsSandbox.source_commit = (await run("git", ["rev-parse", "HEAD"], ROOT, true)).trim();
+		windowsSandbox.source_dirty = (await run("git", ["status", "--porcelain", "--untracked-files=no"],
+			ROOT, true)).trim().length !== 0;
+	}
+	const m7PackageSmoke = join(installDir, "m7-package-smoke.mjs");
+	await writeFile(m7PackageSmoke, M7_PACKAGE_SMOKE, "utf8");
+	await copyFile(join(ROOT, "backend/packages/integrations/test/fixtures/plugins/sandbox.mjs"),
+		join(installDir, "plugin-sandbox-fixture.mjs"));
+	const m7PackageOutput = await runStage("integrations", process.execPath, [m7PackageSmoke], installDir, true,
+		{ ...managementEnv, MYCLI_PACKED_WINDOWS_PLUGIN_SANDBOX: WINDOWS_SANDBOX.requireReady ? "1" : "0" });
+	if (!m7PackageOutput.includes("m7-package-ok")) {
+		throw new Error("packed_cli_smoke_failed: installed M7 runtime is incomplete");
+	}
 	for (const [args, action, acceptedCodes] of [
 		[["hooks", "list", "--json"], "list", [0]],
 		[["plugins", "list", "--json"], "list", [0]],
@@ -865,7 +929,8 @@ try {
 		[["config", "validate", "--json"], "validate", [0]],
 		[["session", "list", "--json"], "list", [0]],
 		[["update", "status", "--json"], "status", [0]],
-		[["sandbox", "status", "--json"], "status", [0, 1]],
+		...(!WINDOWS_SANDBOX.requireReady
+			? [[["sandbox", "status", "--json"], "status", [0, 1]]] : []),
 	]) {
 		const output = await run(bin, args, installDir, true, managementEnv, acceptedCodes, 5_000);
 		const payload = JSON.parse(output);
@@ -921,7 +986,7 @@ try {
 	const m8Output = await runStage(
 		"m8_runtime",
 		process.execPath,
-		["--import", piAiLoadRegister, m8RuntimeSmoke],
+		["--import", pathToFileURL(piAiLoadRegister).href, m8RuntimeSmoke],
 		installDir,
 		true,
 		{ ...managementEnv, MYCLI_PI_AI_LOAD_LOG: piAiLoadLog },
@@ -934,8 +999,14 @@ try {
 	if (existsSync(pythonProbe.marker)) {
 		throw new Error("packed_cli_smoke_failed: installed CLI probed for Python");
 	}
+	if (WINDOWS_SANDBOX.artifactDirectory) {
+		const destination = resolve(ROOT, WINDOWS_SANDBOX.artifactDirectory);
+		await mkdir(destination, { recursive: true });
+		await copyFile(packedArtifacts[0].path, join(destination, basename(packedArtifacts[0].path)));
+	}
 	process.stdout.write(`${JSON.stringify({
 		status: "completed",
+		...(windowsSandbox ? { windows_sandbox: windowsSandbox } : {}),
 		packed_applications: 1,
 		packed_platforms: PLATFORM_PACKAGES.length,
 		platform_scope: APP_ONLY ? "none" : PACK_ALL_PLATFORMS ? "all" : "current",

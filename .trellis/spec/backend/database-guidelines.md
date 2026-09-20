@@ -32,6 +32,16 @@ Questions to answer:
 
 ## Query Patterns
 
+- Constructors that open SQLite own the connection even when initialization fails. Close the
+  opened connection before propagating a schema or migration failure; no caller receives an
+  object it could close. The failed-migration regression immediately renames the database on
+  Windows to prove the handle is released, then verifies rollback and successful retry.
+- SQLite fixtures close primary, reopened and inspection connections in per-test hooks before
+  deleting their directories. `test/fixtures/directory-cleanup.ts` queues test-owned directories
+  for the enclosing file's final hook; runtime and app SQLite fixtures reuse this test-only helper.
+  Cleanup failures remain test failures; do not use retries
+  to conceal an open database or delete leftover directories from unrelated test runs.
+
 - `SQLiteSessionStore` is the canonical store for local session runtime state under
   `~/.mycli/sessions.db`.
 - Writes must go through the store's write-transaction helper rather than opening

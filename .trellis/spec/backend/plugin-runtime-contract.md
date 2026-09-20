@@ -40,6 +40,11 @@ enable/disable. OpenAI-hosted Apps, ACP, provider plugins, and an LLM facade are
 - Installation copies data only, with no ESM import, MCP start, hook execution, lifecycle script,
   or submodule execution. Bound entry/byte counts, reject escaping symlinks and cycles, and disable
   Git user config/templates/hooks. Cancellation/timeout terminates Git's process tree.
+- Bundle hook commands interpolate `CODEX_PLUGIN_ROOT` and `CLAUDE_PLUGIN_ROOT` before the shell
+  runs, so `${VAR}`, `$VAR`, `$env:VAR`, and `%VAR%` all work in POSIX shells, PowerShell, and
+  CMD. PowerShell receives the call operator for a command that starts with a quoted executable.
+  A Windows hook environment must keep `PATHEXT`, `COMSPEC`, `SystemDrive`, `TEMP`, and `TMP`:
+  without `PATHEXT` PowerShell hooks can exit 0 while the child never actually runs.
 - `~/.mycli/plugin-registry.json` is private, locked and atomically replaced. New immutable cache
   snapshots commit only after validation and an expected previous-cache check. On failure or
   cancellation remove only the uncommitted stage. Prior snapshots survive update/remove for
@@ -353,3 +358,74 @@ const host = new PluginProcessHost({ manifest, sandboxProfile });
 const registrations = await host.start(signal);
 // Invoke only validated registration tokens over Plugin API v2.
 ```
+
+## Scenario: Windows Plugin Worker Runtime Reads
+
+### 1. Scope / Trigger
+
+Changes to the default plugin worker's source/compiled startup or Windows runtime grants.
+
+### 2. Signatures
+
+`pluginWorkerSandboxProfile(profile, workerPath, source, platform?) -> SandboxProfile` is internal
+to integrations. `PluginProcessHost` applies it before preparing its default worker launch.
+Custom worker paths keep the caller's profile; non-Windows and Full Access profiles are unchanged.
+
+### 3. Contracts
+
+- Windows grants the fixed worker, integrations package metadata, contracts runtime, and their
+  installed dependency closure. Source workers additionally require tsx and its dependencies.
+  Traverse only host-owned package manifests, with a 128-package and 64-ancestor bound.
+- Node checks `node_modules` before opening a package. Its existing resolution containers need
+  read access as well as resolved package targets, including workspace-link targets. Container
+  access includes other installed dependencies in that tree; it never grants the repository or
+  home root. Containers must not overlap any requested writable root in either direction.
+- Runtime files/packages are readonly. Preserve existing denied reads, readonly masks, network,
+  environment filtering and write scope. Explicit readable roots are an upper bound: if they
+  do not contain all required runtime reads, startup fails instead of enlarging that bound.
+- Missing or invalid runtime manifests, excessive dependency traversal and unsafe write overlap
+  become the existing bounded `sandbox_unavailable` host error. Native denied-read rejection
+  may instead end the worker; do not expose its raw stderr or retry without isolation.
+- Hook/plugin test fixtures must carry their own scripts/modules inside their authorized roots.
+  Do not grant a repository tree to make external fixture imports work.
+- A project plugin with filesystem_write remains a long-lived writer of its plugin directory.
+  A concurrent workspace-wide Hook/Shell writer advertises a different scope, and both run because
+  PSEC carries one kernel policy per command (Codex parity). Do not expand the plugin's write
+  access or silently run the hook on the host to achieve that. The legacy ACL backend still
+  rejects the pair because it edits shared host ACEs. Observed on this host: PSEC denies new
+  cross-boundary link creation, but an existing alias renamed into the plugin directory after its
+  launch scan stays writable, which remains a documented snapshot boundary. M7's combined
+  project-plugin/hook journeys pass 6/6 with this model.
+
+### 4. Validation & Error Matrix
+
+| Condition | Result |
+| --- | --- |
+| Runtime outside explicit readable roots | `plugin_runtime_read_denied`, mapped to `sandbox_unavailable` |
+| Dependency container overlaps writable roots | `plugin_runtime_write_overlap`, mapped to `sandbox_unavailable` |
+| Missing/invalid package or traversal bound | Fail before spawn; no unrestricted fallback |
+| Explicitly denied worker | Worker cannot start, despite generated runtime read grants |
+| Active plugin plus independent workspace writer | Both may execute under their own grants |
+| Active plugin plus overlapping divergent writer | PSEC runs both with separate kernel policies; the legacy ACL backend still rejects the new command before its effects |
+
+### 5. Good/Base/Bad Cases
+
+Good: load source and compiled workers in a temporary plugin root and invoke a command there.
+Base: Full Access preserves the existing launcher. Bad: add the entire repository to reads,
+discard explicit denied roots, or change default plugin permissions to make M7 pass.
+
+### 6. Tests Required
+
+- `worker-sandbox.test.ts`: managed read bounds, denial preservation, immutable input, independent
+  platform behavior and write/container overlap rejection.
+- `plugin-sandbox.platform.test.ts`: real source and compiled initialization/invocation, own-root
+  writes, sibling reads and parent listing denied, runtime writes denied, secret environment
+  excluded, explicit worker denial and independent/overlapping concurrent writers.
+- The strict installed Windows package smoke runs the compiled plugin after fresh setup/status;
+  finding `worker-bootstrap.js` alone is insufficient acceptance.
+
+### 7. Wrong vs Correct
+
+Wrong: authorize only the plugin root, or grant the entire repository after a module-not-found
+error. Correct: resolve the fixed worker's installed runtime dependencies, preserve managed
+bounds, and prove successful invocation together with actual denied access attempts.

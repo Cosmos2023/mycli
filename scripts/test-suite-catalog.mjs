@@ -48,6 +48,7 @@ export const TEST_TARGETS = Object.freeze([
 		root: "backend/packages/tools",
 		testRoot: "test",
 		defaultSuite: "unit",
+		platformTestConcurrency: 1,
 	},
 	{
 		id: "gateway",
@@ -83,6 +84,9 @@ export const TEST_TARGETS = Object.freeze([
 		root: "backend/packages/runtime",
 		testRoot: "test",
 		defaultSuite: "unit",
+		// Worker lease tests poll real Worker processes with bounded waits; keep the
+		// parallel fan-out below the default to avoid load-dependent flakes.
+		testConcurrency: 4,
 	},
 	{
 		id: "tui",
@@ -90,6 +94,9 @@ export const TEST_TARGETS = Object.freeze([
 		root: "tui/mycli-shell",
 		testRoot: "test",
 		defaultSuite: "unit",
+		// Rendering tests flush with fixed short delays; the default fan-out starves
+		// them on machines with many cores.
+		testConcurrency: 4,
 	},
 	{
 		id: "app",
@@ -130,6 +137,7 @@ export const TEST_SUITE_OVERRIDES = Object.freeze({
 	"backend/packages/tools/test/shell/pipe-transport.integration.test.ts": "platform",
 	"backend/packages/tools/test/shell/shell-environment.integration.test.ts": "platform",
 	"scripts/test/release-scripts.test.mjs": "release",
+	"scripts/test/windows-sandbox-release.test.mjs": "release",
 });
 
 const TEST_FILE_PATTERN = /\.test\.(?:[cm]?[jt]sx?)$/u;

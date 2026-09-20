@@ -69,6 +69,15 @@ Questions to answer:
   subprocesses, SQLite concurrency, or extension hosts. Platform tests exercise real PTY, shell,
   process transport, sandbox, or native behavior. Each test owns cleanup for every resource it
   starts.
+- Tools platform test files run serially because Windows setup/repair/uninstall and PSEC
+  workloads share host sandbox state. This does not serialize independent workloads inside
+  a concurrency test or change unit/integration test scheduling.
+- Windows fixture cleanup must run after every database connection and child process
+  closes. Per-test after hooks run in registration order; an early directory-removal
+  failure can prevent later close hooks and hang the test process. Reuse the test-only
+  `removeFixtureDirectoryAfterTests` helper for fixtures with separately registered
+  close hooks. Keep real boundary checks on Windows using directory junctions where
+  symlink privileges are unavailable; do not silently skip failed assertions.
 - Smoke journeys are executable scripts, not ordinary test modules. Real provider traffic is never
   part of `npm test` and remains explicit, credential-gated, bounded, and redacted.
 - Root tests resolve current TypeScript through `mycli-source`. Tests that intentionally inspect

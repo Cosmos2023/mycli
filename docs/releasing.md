@@ -25,6 +25,7 @@ Start from a clean, current `main` checkout. Do not release from a feature workt
 ```bash
 npm ci
 npm run release:version -- 0.2.0
+npm install --package-lock-only --ignore-scripts
 npm run release:verify
 npm run release:compatibility
 npm run contracts:check
@@ -48,7 +49,10 @@ Rows without credentials remain `skipped`; only `passed` rows may be described a
 See [providers.md](providers.md) for single-provider launch-scoped key usage and evidence fields.
 
 `release:version` updates all coordinated manifests, internal dependency specifications, and the
-workspace lockfile. `release:verify` fails when the root is publishable, a public package is private,
+workspace lockfile. Refresh registry resolution with `npm install --package-lock-only --ignore-scripts`
+after a version change, then verify `npm ci` succeeds. Existing ripgrep lock entries must match the
+coordinated version; stale platform package entries fail `release:verify`.
+`release:verify` also fails when the root is publishable, a public package is private,
 a vendored workspace is public, the app dependency closure is incomplete, versions drift, or
 publish access is invalid.
 
@@ -82,19 +86,49 @@ failures. A tag release repeats this journey strictly and does not waive an exte
 
 The release workflow then:
 
-1. builds the Windows sandbox helper on Windows;
+1. builds the Windows sandbox helper and requires native tests plus all 13 Windows platform tests
+   without skips (and all six feature-parity tests when PSEC is selected), then installs the packed candidate on a separate fresh Windows runner, completes
+   setup and independently verifies `sandbox status` is `ready`;
 2. verifies the tagged commit belongs to `main` and validates the tag and coordinated metadata;
 3. runs contract, lint, categorized test, typecheck, compatibility-policy, M8 smoke, packed-artifact, and real
    predecessor upgrade/downgrade gates;
-4. publishes the six platform packages followed by the application package;
+4. publishes the six platform packages followed by the exact application tarball tested on Windows;
 5. publishes stable versions under `latest` and prereleases under `next`;
 6. creates a GitHub Release only after npm publication succeeds.
 
 The publisher pins the public npm registry and uses provenance. Real publication requires both the
 `--publish` mode embedded in `release:publish` and an explicit `--confirm X.Y.Z` matching the app
-manifest. A rerun checks each exact package version first, skips versions already published, and
+manifest, plus `--candidate <app.tgz> --windows-evidence <windows-packed.json>`.
+Before registry lookups or publication, the evidence must report fresh setup and `ready`, match
+the current Git commit and version, originate from a clean tracked worktree, and match SHA-256
+hashes of the candidate tarball and tested helper. Missing, stale or mismatched evidence fails closed.
+A rerun checks each exact package version first, skips versions already published, and
 continues from the first missing package. Authentication, connectivity, and other non-404 registry
 errors stop the release instead of being treated as missing packages.
+
+The same installed-package gate can run locally without starting GitHub CI. First complete the
+[native and 13-test acceptance](../backend/packages/tools/native/windows/README.md), then use a
+fresh Windows VM or dedicated test machine with that same checkout and helper:
+
+```powershell
+$ErrorActionPreference = "Stop"
+npm ci
+if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed" }
+npm run build
+if ($LASTEXITCODE -ne 0) { throw "Build failed" }
+New-Item -ItemType Directory -Force release-evidence | Out-Null
+node scripts/smoke_packed_cli.mjs --require-windows-ready --setup-windows-sandbox --artifacts-dir release-evidence |
+    Out-File -Encoding utf8 release-evidence/windows-packed.json
+if ($LASTEXITCODE -ne 0) { throw "Installed Windows sandbox gate failed" }
+```
+
+PowerShell 5.1 writes a UTF-8 BOM with this command; the evidence reader accepts it.
+Keep the JSON and retained application `.tgz` together. `--require-windows-ready` implies helper
+inclusion and rejects unavailable status. `--setup-windows-sandbox` also requires no existing
+managed state before setup; it must not be used to reset a daily-use machine. A temporary npm
+directory is not a clean OS. Testing existing ready state without this setup flag is useful locally
+but does not produce fresh-install evidence accepted by the publisher. The ordinary
+`--require-windows-helper` smoke checks packaging and still permits unavailable sandbox status.
 
 ## Failed Or Partial Release
 

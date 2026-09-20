@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { parse as parseYaml } from "yaml";
@@ -30,6 +31,7 @@ import {
 } from "../publish-release.mjs";
 import {
 	validateApplicationDependencyClosure,
+	validatePlatformLockfile,
 	validatePublishableManifest,
 	validateVendoredManifest,
 	validateWindowsHelper,
@@ -333,9 +335,12 @@ test("publisher defaults to dry-run and guards real publication", () => {
 		/confirmation_without_publish/u,
 	);
 	assert.deepEqual(
-		parsePublishArguments(["--publish", "--confirm", "0.1.0", "--provenance", "--tag", "next"]),
-		{ publish: true, confirm: "0.1.0", provenance: true, tag: "next" },
+		parsePublishArguments(["--publish", "--confirm", "0.1.0", "--provenance", "--tag", "next",
+			"--candidate", "candidate.tgz", "--windows-evidence", "windows.json"]),
+		{ publish: true, confirm: "0.1.0", provenance: true, tag: "next",
+			candidate: resolve("candidate.tgz"), windowsEvidence: resolve("windows.json") },
 	);
+	assert.throws(() => parsePublishArguments(["--publish", "--confirm", "0.1.0"]), /evidence_required/u);
 });
 
 test("publish invocations preserve dependency order and registry boundary", () => {
@@ -348,7 +353,7 @@ test("publish invocations preserve dependency order and registry boundary", () =
 	}, "/repo");
 	assert.deepEqual(platform.args, [
 		"publish", "--access", "public", "--tag", "latest",
-		"--registry", "https://registry.npmjs.org/", "--cache", "/repo/.npm-cache/release",
+		"--registry", "https://registry.npmjs.org/", "--cache", join("/repo", ".npm-cache", "release"),
 		"--dry-run",
 	]);
 	const app = publishInvocation(RELEASE_PACKAGES.at(-1), {
@@ -358,11 +363,16 @@ test("publish invocations preserve dependency order and registry boundary", () =
 	}, "/repo");
 	assert.deepEqual(app.args, [
 		"publish", "--workspace", "@cosmos2023/mycli", "--access", "public", "--tag", "latest",
-		"--registry", "https://registry.npmjs.org/", "--cache", "/repo/.npm-cache/release",
+		"--registry", "https://registry.npmjs.org/", "--cache", join("/repo", ".npm-cache", "release"),
 		"--provenance",
 	]);
 	assert.equal(isMissingRegistryVersion("npm error code E404"), true);
 	assert.equal(isMissingRegistryVersion("npm error code E401"), false);
+	const verified = publishInvocation(RELEASE_PACKAGES.at(-1), {
+		publish: true, provenance: true, tag: "latest", candidate: resolve("candidate.tgz"),
+	});
+	assert.equal(verified.args[1], resolve("candidate.tgz"));
+	assert.equal(verified.args.includes("--workspace"), false);
 });
 
 test("registry checks distinguish existing, missing, and failed lookups", async () => {
@@ -491,19 +501,44 @@ test("release compatibility smoke classifies only bounded network failures as ex
 	assert.equal(isExternalBlockerCode("command_failed"), false);
 });
 
-test("Windows release helper must be a non-empty PE executable", async () => {
+test("Windows release helper must be a hashed x64 PE executable", async () => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-release-helper-"));
 	try {
 		await assert.rejects(validateWindowsHelper(root), /release_windows_sandbox_helper_missing/u);
 		const helper = join(root, "backend/packages/tools/native/windows/mycli-windows-sandbox.exe");
+		const manifest = join(root, "backend/packages/tools/native/windows/mycli-windows-sandbox.sha256");
 		await mkdir(dirname(helper), { recursive: true });
 		await writeFile(helper, "not-a-pe", "utf8");
 		await assert.rejects(validateWindowsHelper(root), /release_windows_sandbox_helper_invalid/u);
 		await writeFile(helper, Buffer.from([0x4d, 0x5a, 0x00]));
+		await assert.rejects(validateWindowsHelper(root), /release_windows_sandbox_helper_invalid/u);
+		const bytes = Buffer.alloc(70);
+		bytes.write("MZ", 0, "ascii");
+		bytes.writeUInt32LE(0x40, 0x3c);
+		bytes.write("PE\0\0", 0x40, "binary");
+		bytes.writeUInt16LE(0x8664, 0x44);
+		await writeFile(helper, bytes);
+		await assert.rejects(validateWindowsHelper(root), /release_windows_sandbox_helper_manifest_missing/u);
+		await writeFile(manifest, "not-a-hash\n", "utf8");
+		await assert.rejects(validateWindowsHelper(root), /release_windows_sandbox_helper_manifest_invalid/u);
+		const hash = createHash("sha256").update(bytes).digest("hex");
+		await writeFile(manifest, `${hash}\n`, "utf8");
 		await assert.doesNotReject(validateWindowsHelper(root));
+		await writeFile(manifest, `${createHash("sha256").update("other").digest("hex")}\n`, "utf8");
+		await assert.rejects(validateWindowsHelper(root), /release_windows_sandbox_helper_hash_mismatch/u);
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}
+});
+
+test("release verification rejects stale registry platform packages in the lockfile", () => {
+	const path = `node_modules/${RELEASE_PACKAGES[0].name}`;
+	assert.throws(() => validatePlatformLockfile({ packages: {
+		[path]: { version: "0.1.0", resolved: "https://registry.npmjs.org/old.tgz" },
+	} }, "0.1.1"), /release_platform_lockfile_drift/u);
+	assert.doesNotThrow(() => validatePlatformLockfile({ packages: {
+		[path]: { version: "0.1.1" },
+	} }, "0.1.1"));
 });
 
 test("release workflow keeps publication behind the release gates", async () => {
@@ -547,13 +582,31 @@ test("independent release compatibility workflow covers three installed-artifact
 
 test("Windows release artifacts require native, Shell, and maintenance verification", async () => {
 	const release = parseYaml(await readFile(new URL("../../.github/workflows/release.yml", import.meta.url), "utf8"));
-	assert.equal(release.jobs.publish.needs, "windows-sandbox-helper");
+	assert.deepEqual(release.jobs.publish.needs, ["windows-sandbox-helper", "windows-sandbox-package"]);
+	const installed = release.jobs["windows-sandbox-package"];
+	assert.equal(installed.needs, "windows-sandbox-helper");
+	assert.equal(installed["runs-on"], "windows-2022");
+	assert.notEqual(installed["continue-on-error"], true);
+	const installedGate = installed.steps.find((step) => step.run?.includes("--require-windows-ready"));
+	assert.ok(installedGate);
+	assert.match(installedGate.run, /--setup-windows-sandbox/u);
+	assert.match(installedGate.run, /\$LASTEXITCODE -ne 0/u);
+	assert.notEqual(installedGate["continue-on-error"], true);
+	assert.equal(installedGate.if ?? "success()", "success()");
+	assert.match(installedGate.run, /--artifacts-dir release-evidence/u);
+	assert.ok(installed.steps.some((step) => step.with?.path?.includes("release-evidence/*.tgz")));
+	const publishSteps = release.jobs.publish.steps;
+	assert.ok(publishSteps.some((step) => step.uses?.startsWith("actions/download-artifact@")
+		&& step.with?.name === "windows-sandbox-package-evidence"));
+	const publication = publishSteps.find((step) => step.name === "Publish npm packages");
+	assert.match(publication.run, /--candidate .*\.tgz/u);
+	assert.match(publication.run, /--windows-evidence release-evidence\/windows-packed\.json/u);
 	const workflow = parseYaml(await readFile(new URL("../../.github/workflows/windows-sandbox.yml", import.meta.url), "utf8"));
 	const job = workflow.jobs.verify;
 	assert.notEqual(job["continue-on-error"], true);
 	const steps = job.steps;
 	const native = steps.findIndex((step) => step.run?.includes("ctest --test-dir"));
-	const integration = steps.findIndex((step) => step.run?.includes("windows-sandbox.platform.test.ts"));
+	const integration = steps.findIndex((step) => step.run?.includes("test:windows-sandbox"));
 	const artifact = steps.findIndex((step) => step.uses?.startsWith("actions/upload-artifact@"));
 	assert.ok(native >= 0 && integration > native && artifact > integration);
 	assert.equal(steps[integration].env.MYCLI_WINDOWS_SANDBOX_SETUP_TESTS, "1");

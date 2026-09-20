@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 
+import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import {
 	APPLICATION_RELEASE_PACKAGE,
+	PLATFORM_RELEASE_PACKAGES,
 	RELEASE_PACKAGES,
 	RELEASE_ROOT,
 	VERSIONED_PACKAGE_NAMES,
@@ -149,6 +151,7 @@ export async function verifyReleaseState({
 } = {}) {
 	const version = await currentReleaseVersion(root);
 	await synchronizeReleaseVersion({ root, version, check: true });
+	validatePlatformLockfile(await readJson(join(root, "package-lock.json")), version);
 	const rootManifest = await readJson(join(root, "package.json"));
 	validateRootManifest(rootManifest);
 
@@ -183,14 +186,43 @@ export async function verifyReleaseState({
 	};
 }
 
+export function validatePlatformLockfile(lockfile, version) {
+	for (const { name } of PLATFORM_RELEASE_PACKAGES) {
+		const entry = lockfile.packages?.[`node_modules/${name}`];
+		if (entry && (entry.version !== version || entry.link === true)) {
+			throw new Error(`release_platform_lockfile_drift: ${name}`);
+		}
+	}
+}
+
 export async function validateWindowsHelper(root) {
-	const helper = join(root, "backend/packages/tools/native/windows/mycli-windows-sandbox.exe");
+	const directory = join(root, "backend/packages/tools/native/windows");
+	const helper = join(directory, "mycli-windows-sandbox.exe");
+	const manifestPath = join(directory, "mycli-windows-sandbox.sha256");
 	const metadata = await stat(helper).catch(() => undefined);
-	if (!metadata?.isFile() || metadata.size < 2) {
+	if (!metadata?.isFile() || metadata.size === 0) {
 		throw new Error("release_windows_sandbox_helper_missing");
 	}
-	const header = (await readFile(helper)).subarray(0, 2).toString("ascii");
-	if (header !== "MZ") throw new Error("release_windows_sandbox_helper_invalid");
+	const bytes = await readFile(helper);
+	if (bytes.length < 0x40) throw new Error("release_windows_sandbox_helper_invalid");
+	if (bytes.subarray(0, 2).toString("ascii") !== "MZ") {
+		throw new Error("release_windows_sandbox_helper_invalid");
+	}
+	const peOffset = bytes.readUInt32LE(0x3c);
+	if (peOffset < 0x40 || peOffset + 6 > bytes.length
+		|| bytes.subarray(peOffset, peOffset + 4).toString("binary") !== "PE\0\0"
+		|| bytes.readUInt16LE(peOffset + 4) !== 0x8664) {
+		throw new Error("release_windows_sandbox_helper_invalid");
+	}
+	const manifest = await readFile(manifestPath, "utf8").catch(() => undefined);
+	if (manifest === undefined) throw new Error("release_windows_sandbox_helper_manifest_missing");
+	const expected = manifest.trim().toLowerCase();
+	if (!/^[0-9a-f]{64}$/u.test(expected)) {
+		throw new Error("release_windows_sandbox_helper_manifest_invalid");
+	}
+	if (createHash("sha256").update(bytes).digest("hex") !== expected) {
+		throw new Error("release_windows_sandbox_helper_hash_mismatch");
+	}
 }
 
 async function readJson(path) {

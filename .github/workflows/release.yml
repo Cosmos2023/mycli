@@ -12,8 +12,40 @@ jobs:
   windows-sandbox-helper:
     uses: ./.github/workflows/windows-sandbox.yml
 
-  publish:
+  windows-sandbox-package:
     needs: windows-sandbox-helper
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.x"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-sandbox-helper
+          path: backend/packages/tools/native/windows
+      - run: npm run build
+      - name: Require a fresh installed Windows sandbox to be ready
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release-evidence | Out-Null
+          npm run --silent smoke:package -- --require-windows-helper --require-windows-ready --setup-windows-sandbox --artifacts-dir release-evidence > release-evidence/windows-packed.json
+          if ($LASTEXITCODE -ne 0) { throw "Installed Windows sandbox gate failed" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-sandbox-package-evidence
+          path: |
+            release-evidence/windows-packed.json
+            release-evidence/*.tgz
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    needs: [windows-sandbox-helper, windows-sandbox-package]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     environment: npm
@@ -43,6 +75,10 @@ jobs:
         with:
           name: windows-sandbox-helper
           path: backend/packages/tools/native/windows
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-sandbox-package-evidence
+          path: release-evidence
       - name: Verify tagged commit belongs to main
         run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
       - name: Verify release metadata and tag
@@ -84,7 +120,7 @@ jobs:
           if [[ "$version" == *-* ]]; then
             dist_tag="next"
           fi
-          npm run release:publish -- --confirm "$version" --tag "$dist_tag" --provenance
+          npm run release:publish -- --confirm "$version" --tag "$dist_tag" --provenance --candidate "release-evidence/cosmos2023-mycli-$version.tgz" --windows-evidence release-evidence/windows-packed.json
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}

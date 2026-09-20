@@ -26,6 +26,7 @@ mycli 对 16 个组件统一版本，但只发布 `@cosmos2023/mycli` 和六个�
 ```bash
 npm ci
 npm run release:version -- 0.2.0
+npm install --package-lock-only --ignore-scripts
 npm run release:verify
 npm run release:compatibility
 npm run contracts:check
@@ -46,7 +47,7 @@ npm run smoke:providers -- --evidence release-evidence/providers-live.json
 
 没有凭据的行保持 `skipped`，只有 `passed` 行可称为经过真实服务验证。单 provider 启动级密钥用法和证据字段见 [providers.md](providers.md)。
 
-`release:version` 更新所有统一版本的清单、内部依赖声明和工作区锁文件。以下情况会让 `release:verify` 失败：根目录可发布、公开包为私有、内置工作区为公开、应用依赖闭包不完整、版本不一致或发布权限无效。
+`release:version` 更新所有统一版本的清单、内部依赖声明和工作区锁文件。修改版本后运行 `npm install --package-lock-only --ignore-scripts` 刷新注册表解析，并确认 `npm ci` 成功。已有 ripgrep 平台包锁条目必须与统一版本匹配。以下情况会让 `release:verify` 失败：根目录可发布、公开包为私有、内置工作区为公开、应用依赖闭包不完整、版本不一致、平台包锁条目过期或发布权限无效。
 
 创建标签前审查并提交版本修改。也可预览本地包发布：
 
@@ -71,14 +72,30 @@ git push origin v0.2.0
 
 随后发布流程会：
 
-1. 在 Windows 上构建 Windows 沙箱辅助程序。
+1. 在 Windows 上构建沙箱 helper，通过原生测试和全部 13 项平台测试；使用 PSEC 时还必须通过新增 6 项测试，均为零跳过。再在另一台干净 Windows runner 安装候选包，完成 setup，并独立确认 `sandbox status` 为 `ready`。
 2. 确认标签提交属于 `main`，验证标签和统一元数据。
 3. 运行契约、lint、分类测试、类型检查、兼容性策略、M8 冒烟、打包产物和真实前身版本升级/降级检查。
-4. 先发布六个平台包，再发布应用包。
+4. 先发布六个平台包，再发布 Windows 上实际验收过的同一个应用 tarball。
 5. 稳定版本使用 `latest`，预发布版本使用 `next`。
 6. 仅在 npm 发布成功后创建 GitHub Release。
 
-发布器固定使用公开 npm 注册表，并附带 provenance。真正发布同时要求 `release:publish` 内的 `--publish` 模式，以及与应用清单匹配的明确 `--confirm X.Y.Z`。重跑时先检查每个包的精确版本，跳过已发布版本，从首个缺失包继续。认证、连接和其他非 404 注册表错误会停止发布，不会被当作包不存在。
+发布器固定使用公开 npm 注册表，并附带 provenance。真正发布要求 `release:publish` 内的 `--publish` 模式、与应用清单匹配的 `--confirm X.Y.Z`，以及 `--candidate <app.tgz> --windows-evidence <windows-packed.json>`。证据必须记录全新安装后 `ready`、干净的受跟踪源码状态、相同 Git 提交和版本，以及候选包和 helper 的 SHA-256；缺失或不匹配会在查询注册表和发布前失败。重跑时先检查每个包的精确版本，跳过已发布版本，从首个缺失包继续。认证、连接和其他非 404 注册表错误会停止发布，不会被当作包不存在。
+
+同一门槛可以本地运行，不触发 GitHub CI。先完成[原生测试与 13 项平台验收](../../backend/packages/tools/native/windows/README.md)，再在干净 Windows 虚拟机或专用测试机使用相同源码和 helper：
+
+```powershell
+$ErrorActionPreference = "Stop"
+npm ci
+if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed" }
+npm run build
+if ($LASTEXITCODE -ne 0) { throw "Build failed" }
+New-Item -ItemType Directory -Force release-evidence | Out-Null
+node scripts/smoke_packed_cli.mjs --require-windows-ready --setup-windows-sandbox --artifacts-dir release-evidence |
+    Out-File -Encoding utf8 release-evidence/windows-packed.json
+if ($LASTEXITCODE -ne 0) { throw "Installed Windows sandbox gate failed" }
+```
+
+证据读取器支持 PowerShell 5.1 写出的 UTF-8 BOM。保留 JSON 和本次测试的应用 `.tgz`。`--require-windows-ready` 隐含 helper 检查并拒绝不可用状态；`--setup-windows-sandbox` 还要求安装前不存在受管状态，不会自动重置日常使用中的机器。临时 npm 目录不是干净操作系统。省略 setup 参数可以验证现有就绪状态，但不能作为发布器接受的全新安装证据。普通 `--require-windows-helper` 仅检查打包完整性，仍允许状态不可用。
 
 <a id="failed-or-partial-release"></a>
 

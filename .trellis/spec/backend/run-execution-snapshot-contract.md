@@ -49,6 +49,15 @@
   deferred definitions, optional rendered skill catalog, and a deterministic SHA-256 fingerprint.
 - Snapshot construction validates and copies all nested values. Callers cannot mutate policy roots,
   tool arrays, definitions, schemas, or skill text after the snapshot is created.
+- Execution policy copies and durable child spawn configs retain readable, writable, readonly and
+  denied roots, denied globs, `allowLocalBinding` and `writableTemp`. Validate arrays/booleans on
+  restoration and freeze them; never drop restrictions during SQLite round trips. Child narrowing
+  rejects removed readonly/denied masks and broader loopback or managed temporary authority.
+- Durable child environment snapshots retain only their explicit non-secret allowlist.
+  Windows additionally needs LOCALAPPDATA, SYSTEMROOT, WINDIR, COMSPEC and PATHEXT
+  for PSEC and shell startup. Match input names case-insensitively on Windows and
+  persist canonical uppercase names; keep API keys and provider bindings out of the
+  snapshot. Verify real child Shell execution and the persisted environment together.
 - Await the optional run lifecycle preparation before snapshot/catalog capture. The app uses it
   to refresh integrations and retain the session's content owner; runtime does not depend on the
   integrations implementation. Terminal cleanup releases ownership even after preparation failure

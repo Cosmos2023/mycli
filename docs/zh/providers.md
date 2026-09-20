@@ -182,6 +182,31 @@ printf '%s\n' "$OPENROUTER_API_KEY" | \
 
 不支持的 pi-ai 协议、不使用 API Key 认证的 provider 和空目录仍为 `unserviceable`。仅保存密钥不会启用路由。
 
+### 原生 OpenAI Responses
+
+pi-ai 的 `openai` provider 只提供 Responses（`openAIChatCompletions` 不适用于它）。想让请求走原生传输而不是 mycli 内置客户端，需要显式声明一条路由：
+
+```json
+{
+  "version": 2,
+  "providers": {
+    "openai": {
+      "source": "pi_ai_builtin",
+      "catalog_provider": "openai",
+      "protocol": "responses",
+      "base_url": "https://gateway.example/v1"
+    }
+  }
+}
+```
+
+- `protocol` 必须是 `responses`。把它配成 `chat_completions` 会在启动前失败并报 `native model API does not match configured protocol`。
+- 不写 `base_url` 就用 pi-ai 的默认值（`https://api.openai.com/v1`）。对于当前选中的路由，`config.toml` 的 `[model] api_base_url` 或 `MYCLI_BASE_URL` 优先于声明里的 `base_url`，后者优先于 pi-ai 默认值。端点必须是绝对的 `http`/`https` URL，不能带凭据、query 或 fragment。
+- 不在 pi-ai 目录里的模型需要显式 `model_policy: "subset"` 并在 `models` 中列出，否则会报 `native provider model or API is unsupported`。
+- 启用环境认证时，pi-ai 的 OpenAI provider 读取 `OPENAI_API_KEY`。mycli 自己的凭据仍然有效：`mycli login --with-api-key --provider openai` 会把密钥写在该路由的 `auth_ref` 下，`MYCLI_API_KEY` 也仍是显式来源。
+
+同样的写法适用于其它 Responses provider：`openai-codex` 对应 Codex 后端，`azure-openai-responses` 配合 `AZURE_OPENAI_BASE_URL` 或 `AZURE_OPENAI_RESOURCE_NAME`、`AZURE_OPENAI_API_VERSION` 以及可选的 `AZURE_OPENAI_DEPLOYMENT_NAME_MAP`。
+
 <a id="compatible-endpoints"></a>
 
 ## 兼容端点

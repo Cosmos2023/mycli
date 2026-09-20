@@ -18,8 +18,10 @@ npm run release:verify -- [--tag v<semver>] [--require-windows-helper]
 npm run release:compatibility
 npm run release:dry-run
 npm run smoke:package -- [--all-platforms] [--require-windows-helper]
+npm run smoke:package -- --require-windows-ready [--setup-windows-sandbox] [--artifacts-dir <directory>]
+npm run test:windows-sandbox
 npm run smoke:release-compatibility -- [--allow-external-blocker] [--evidence <path>]
-npm run release:publish -- --confirm <semver> [--tag <dist-tag>] [--provenance]
+npm run release:publish -- --confirm <semver> --candidate <app.tgz> --windows-evidence <evidence.json> [--tag <dist-tag>] [--provenance]
 ```
 
 `scripts/release-config.mjs` is the canonical inventory for both versioned and published packages.
@@ -61,6 +63,30 @@ the registry.
   both `MYCLI_WINDOWS_SANDBOX_SETUP_TESTS=1` and `MYCLI_WINDOWS_SANDBOX_MAINTENANCE_TESTS=1`.
   A skipped repair/uninstall suite does not satisfy release acceptance. Local disposable Windows
   machines may run the same gate; cross compilation alone is insufficient.
+* `test:windows-sandbox` requires Windows and both maintenance opt-ins before test discovery.
+  The original `node:test` summary must contain exactly 13 passes, zero failures/skips/cancellations/todo.
+  A ready PSEC handshake additionally selects the seven-test parity suite, also with zero skips. Pin
+  the selected backend through the final handshake; do not force PSEC tests on the legacy backend.
+* Installed Windows readiness uses bounded management JSON (16 KiB): `ok=true`, `exitCode=0`,
+  `platform=win32`, `isolation=windows_restricted_token|windows_psec`, state/code `ready`, and true
+  `helperCompatible`, `setupComplete`, `sandboxReady`. Setup must report completed/setup_completed.
+  A separate status after setup is mandatory. Ordinary smoke retains its status 0/1 allowance.
+* The installed integrations journey runs after that readiness check. With
+  `--require-windows-ready`, it must initialize and invoke the compiled plugin worker, verify
+  own-root writes, denied sibling reads/parent listing/runtime writes, and exclusion of an
+  undeclared API key. Keep the existing ten-journey count; this strengthens the integrations
+  journey. A worker file existing in the tarball is not execution evidence.
+* Fresh setup additionally requires setup_required/setup_incomplete, `exitCode=1`, `ok=false`,
+  a compatible helper, false setupComplete/sandboxReady/managedStatePresent before mutation.
+  Existing ready state cannot satisfy fresh-install acceptance. Setup timeout is 330 seconds.
+* Publish depends on both source-helper and fresh installed-package Windows jobs. The Windows job
+  retains the actual tested app tarball. Evidence has `status=completed`, and `windows_sandbox`
+  contains state/isolation/fresh_setup, source_commit/source_dirty, candidate_version,
+  candidate_sha256/helper_sha256. Publish requires fresh_setup=true, source_dirty=false and exact
+  commit/version/hash matches before registry operations. It publishes that tarball, never repacks
+  the app for publication. JSON is bounded to 16 KiB and accepts PowerShell's UTF-8 BOM.
+* Existing registry ripgrep lock entries must match coordinated versions. Version bumps require
+  lock resolution refresh with `npm install --package-lock-only --ignore-scripts` before `npm ci`.
 * Stable versions publish under `latest`; prereleases publish under `next`.
 * Evidence: `.github/workflows/release-compatibility.yml` runs one installed-artifact job each on
   macOS, Ubuntu, and Windows. Every job owns separate bounded `*-packed.json` and `*-upgrade.json`
@@ -78,6 +104,13 @@ the registry.
 |---|---|
 | Invalid semantic version | `invalid_release_version` |
 | Manifest or lockfile drift | `release_version_drift` |
+| Existing platform lock entry has a stale version or is a link | `release_platform_lockfile_drift` |
+| Installed status is unavailable or incomplete | `windows_sandbox_not_ready` |
+| Setup flag without readiness flag, or readiness off Windows | `windows_setup_requires_readiness_gate` / `windows_readiness_requires_windows` |
+| Fresh setup requested with existing or ambiguous managed state | `windows_sandbox_clean_setup_required` |
+| Windows suite skips or does not pass all 13 tests | `windows_sandbox_suite_incomplete` |
+| Selected PSEC backend skips or does not pass all seven parity tests | `windows_sandbox_suite_incomplete` |
+| Publish evidence absent, stale, malformed or mismatched | `release_windows_package_evidence_required` / `release_windows_package_evidence_invalid` |
 | Root is publishable | `release_root_must_remain_private` |
 | Application or platform manifest has the wrong package name | `release_package_name_mismatch` |
 | Published package is private or not public | `release_package_is_private` / `release_package_access_invalid` |
@@ -101,6 +134,9 @@ the registry.
 * Good: each platform matrix job uploads separate packed and predecessor-upgrade evidence; an npm
   outage is visibly `blocked_external` without being reported as a product pass.
 * Base: run `release:dry-run`; all packages are packed in dependency order and nothing is published.
+* Good: clean Windows job tests an installed candidate, retains its tarball and matching evidence;
+  the publisher checks both hashes and publishes those exact app bytes.
+* Bad: treating helper inclusion or an existing ready installation as fresh Windows acceptance.
 * Bad: publish a private runtime workspace or remove it from the app artifact. This exposes an
   implementation package or creates an incomplete CLI installation.
 * Bad: use `--allow-external-blocker` in the tag workflow, treat a zero-byte evidence file as a
@@ -110,6 +146,9 @@ the registry.
 
 * Unit: semantic version parsing, manifest/lockfile transformation, publisher argument gates,
   registry 404 classification, credential redaction, and Windows PE validation.
+* Windows gate: unavailable/malformed status, setup cancellation, existing state, final status
+  regression, every incomplete test counter and missing opt-ins fail closed. Evidence integration
+  uses real temporary files and Git HEAD, accepts BOM and rejects replaced/oversized artifacts.
 * Repository contract: seven release manifests are public, nine vendored manifests are private,
   all are coordinated, the application package and `mycli` bin identities are exact, and release
   workflow gates occur before publication.
@@ -143,11 +182,14 @@ npm publish --workspace mycli-shell-tui
 ```
 
 This leaks private implementation packages and bypasses the app artifact and platform gates.
+Likewise, `smoke:package -- --require-windows-helper` alone is not a Windows readiness gate;
+use `--require-windows-ready --setup-windows-sandbox` on a fresh Windows machine for release evidence.
 
 #### Correct
 
 ```bash
 npm run release:version -- 0.2.0
+npm install --package-lock-only --ignore-scripts
 npm run release:verify
 npm run release:compatibility
 npm run release:dry-run

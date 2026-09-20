@@ -121,8 +121,10 @@ async function runTarget(target, rows, forwarded, suite) {
 	if (target.sourceCondition !== false) args.push("--conditions=mycli-source");
 	if (target.typescript !== false) args.push("--import", "tsx");
 	args.push("--test");
-	if (target.testConcurrency !== undefined) {
-		args.push(`--test-concurrency=${target.testConcurrency}`);
+	const testConcurrency = (suite === "platform" ? target.platformTestConcurrency : undefined)
+		?? target.testConcurrency;
+	if (testConcurrency !== undefined) {
+		args.push(`--test-concurrency=${testConcurrency}`);
 	}
 	if (!forwarded.some((argument) => argument.startsWith("--test-reporter"))) {
 		args.push("--test-reporter=dot");
@@ -133,7 +135,15 @@ async function runTarget(target, rows, forwarded, suite) {
 	return await new Promise((resolveExit) => {
 		const child = spawn(process.execPath, args, {
 			cwd,
-			env: { ...process.env, MYCLI_TEST_SUITE: suite },
+			env: {
+				...process.env,
+				MYCLI_TEST_SUITE: suite,
+				// TUI fixtures assert Unicode glyphs. A dumb or missing TERM otherwise
+				// flips the default glyph mode to ASCII and fails them on hosts that
+				// are not running an interactive terminal.
+				TERM: process.env.TERM && process.env.TERM !== "dumb" ? process.env.TERM : "xterm-256color",
+				MYCLI_TUI_ASCII: process.env.MYCLI_TUI_ASCII ?? "0",
+			},
 			stdio: "inherit",
 		});
 		child.once("error", (error) => {

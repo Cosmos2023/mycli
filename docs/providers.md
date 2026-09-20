@@ -244,6 +244,41 @@ route alias. This keeps one protocol and endpoint bound to one route identity:
 Unsupported pi-ai protocols, providers without API-key auth, and empty catalogs remain
 `unserviceable`. Merely storing a key does not activate a route.
 
+### Native OpenAI Responses
+
+pi-ai's `openai` provider is Responses-only (`openAIChatCompletions` is not exposed for it), so it
+needs an explicit route when you want the native transport instead of mycli's built-in client:
+
+```json
+{
+  "version": 2,
+  "providers": {
+    "openai": {
+      "source": "pi_ai_builtin",
+      "catalog_provider": "openai",
+      "protocol": "responses",
+      "base_url": "https://gateway.example/v1"
+    }
+  }
+}
+```
+
+- `protocol` must be `responses`. Configuring `chat_completions` for this provider fails before
+  launch with `native model API does not match configured protocol`.
+- Omitting `base_url` uses pi-ai's default (`https://api.openai.com/v1`). For the route that is
+  currently selected, `config.toml`'s `[model] api_base_url` or `MYCLI_BASE_URL` wins over the
+  declaration, which itself wins over the pi-ai default. The endpoint must be an absolute `http` or
+  `https` URL without credentials, query, or fragment.
+- A model that is absent from pi-ai's catalog needs `model_policy: "subset"` with an explicit
+  `models` entry, otherwise the route reports `native provider model or API is unsupported`.
+- pi-ai's OpenAI provider reads `OPENAI_API_KEY` from the environment when ambient authentication
+  is enabled. Stored mycli credentials keep working: `mycli login --with-api-key --provider openai`
+  writes the key under the route's `auth_ref`, and `MYCLI_API_KEY` remains an explicit source.
+
+The same shape serves the other Responses providers: `openai-codex` for the Codex backend, and
+`azure-openai-responses` with `AZURE_OPENAI_BASE_URL` or `AZURE_OPENAI_RESOURCE_NAME`,
+`AZURE_OPENAI_API_VERSION`, and the optional `AZURE_OPENAI_DEPLOYMENT_NAME_MAP`.
+
 ## Compatible Endpoints
 
 Use `compatible` for an OpenAI-compatible service that is not in the first-class set. Configure its

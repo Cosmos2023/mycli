@@ -42,7 +42,8 @@ export async function verifyReleaseCompatibility(root = RELEASE_ROOT) {
 		policy.platforms.supported.map(({ id, runner }) => ({
 			platform: id,
 			os: runner,
-			packed_args: id === "win32" ? "--require-windows-helper" : "",
+			packed_args: id === "win32"
+				? "--require-windows-helper --require-windows-ready --setup-windows-sandbox" : "",
 		})),
 		"compatibility_platform_matrix",
 	);

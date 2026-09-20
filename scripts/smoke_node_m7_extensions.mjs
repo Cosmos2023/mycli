@@ -2,13 +2,13 @@
 
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import process from "node:process";
 import { createInterface } from "node:readline";
 import { parseArgs } from "node:util";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { resolveConfig, WorkspaceTrustStore } from "@mycli/config";
 import { parseJsonRpcMessage } from "@mycli/contracts";
 import {
@@ -249,6 +249,8 @@ async function writeExtensionFixtures(options) {
 		mkdir(join(mycli, "skills"), { recursive: true }),
 		mkdir(join(pluginRoot, "dist"), { recursive: true }),
 	]);
+	await copyFile(HOOK_FIXTURE, join(mycli, "hook-command.mjs"));
+	await copyFile(PROCESS_MARKER_FIXTURE, join(pluginRoot, "dist", "process-marker.mjs"));
 	await writeFile(join(mycli, "skills", "review.md"), [
 		"---",
 		"name: review",
@@ -268,7 +270,7 @@ async function writeExtensionFixtures(options) {
 		hooks: [{
 			id: "m7-marker",
 			hook_point: "pre_tool_use",
-			command: [process.execPath, HOOK_FIXTURE, "marker", options.hookMarker],
+			command: [process.execPath, join(mycli, "hook-command.mjs"), "marker", options.hookMarker],
 			timeout_seconds: 3,
 		}],
 	}), "utf8");
@@ -292,7 +294,7 @@ async function writeExtensionFixtures(options) {
 	].join("\n"), "utf8");
 	await writeFile(join(pluginRoot, "dist", "index.js"), [
 		'import { writeFile } from "node:fs/promises";',
-		`import { writeProcessMarker } from ${JSON.stringify(pathToFileURL(PROCESS_MARKER_FIXTURE).href)};`,
+		'import { writeProcessMarker } from "./process-marker.mjs";',
 		"export async function register(context) {",
 		"  await writeProcessMarker(process.env.PLUGIN_PID_FILE);",
 		"  context.registerTool({",
