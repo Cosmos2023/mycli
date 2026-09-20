@@ -103,6 +103,8 @@ Observer 可引导、查看状态/设置/清单、列出会话/资源、读取�
 
 `backend/packages/contracts/schemas/gateway-rpc.schema.json` 是已实现方法（含兼容入口）的权威来源。修改后运行 `npm run contracts:generate`，CI 使用 `contracts:check`。公开 gateway 导出 `GatewayMethod`、`GatewayParams<M>`、`GatewayResult<M>` 和 `GatewayTranscriptItem`。
 
+生成器还会把独立的 Ajv 校验器输出到 `backend/packages/contracts/src/generated/validators/`。运行时模块直接 import 这些函数，不再在每次 import 时编译 JSON Schema，这为 CLI、shell TUI 和后端 worker 的启动各节省约 350 ms。Ajv 只保留用于校验插件在运行时提供的 JSON Schema。因此修改 schema 后必须重新生成并提交校验器文件，两者不一致时 `contracts:check` 会失败。
+
 已知请求在 controller 分发前验证。权限、工作区信任、generation 隔离和持久预留仍归控制器/运行时。无效参数产生 `invalid_params`，格式错误的后端结果产生 `internal_error`，不暴露内容。客户端在结果到达消费者前拒绝无效结果。
 
 协议版本 1 保留可扩展字段和历史对话元数据。`transcript.load` 的工具项，以及 `tool.start`、`tool.complete`、`tool.failed` 通知（含 `runtime.event` 镜像）包含 `tool_record`。标准 schema 为 `gateway-tool-record.schema.json`，公开导出包括 `GatewayToolRecord`、`GatewayShellRecord`、`parseGatewayToolRecord`。

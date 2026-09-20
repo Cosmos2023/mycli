@@ -1,8 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { Ajv2020 } from "ajv/dist/2020.js";
-import type { ValidateFunction } from "ajv";
 import { ContractValidationError } from "../contract-validation-error.ts";
+import type { ContractValidator } from "../contract-validator.ts";
+import {
+	errorContextDetailValidators,
+	validateErrorContext as validateContext,
+} from "../generated/validators/error-context.ts";
 import { sanitizeRuntimeErrorDetail } from "../gateway/runtime-errors.ts";
 import type { ErrorContextV1, ErrorOccurrenceV1, ErrorReasonDetails, FailureOutcome, FailureScope, FailureSource } from "../generated/error-context.ts";
 import { errorDefinition, isErrorReason, type ErrorReason } from "./catalog.ts";
@@ -29,37 +32,15 @@ export type ErrorContextInput = ErrorIdentityInput & (ErrorReasonDetails | {
 	readonly details?: never;
 });
 
-interface ContextSchema {
-	readonly $id: string;
-	readonly $defs: {
-		readonly reason_details: {
-			readonly oneOf: readonly {
-				readonly properties: {
-					readonly reason: { readonly enum: readonly ErrorReason[] };
-					readonly details: { readonly $ref: string };
-				};
-			}[];
-		};
-		readonly [key: string]: unknown;
-	};
-}
-
 export const errorContextSchema: object = JSON.parse(readFileSync(
 	new URL("../../schemas/error-context.schema.json", import.meta.url), "utf8",
 )) as object;
-const schema = errorContextSchema as ContextSchema;
-const ajv = new Ajv2020({ strict: true, strictRequired: false, allErrors: false });
-const validateContext = ajv.compile<ErrorContextV1>(schema);
-const detailFields = new Map<ErrorReason, ReadonlyMap<string, ValidateFunction>>();
-for (const branch of schema.$defs.reason_details.oneOf) {
-	const ref = branch.properties.details.$ref;
-	const name = ref.slice("#/$defs/".length);
-	const definition = schema.$defs[name] as { readonly properties: Readonly<Record<string, object>> };
-	const fields = new Map(Object.keys(definition.properties).map((key) => [
-		key, ajv.compile({ $ref: `${schema.$id}${ref}/properties/${key}` }),
-	] as const));
-	for (const reason of branch.properties.reason.enum) detailFields.set(reason, fields);
-}
+const detailFields = new Map<ErrorReason, ReadonlyMap<string, ContractValidator>>(
+	Object.entries(errorContextDetailValidators).map(([reason, fields]) => [
+		reason as ErrorReason,
+		new Map(Object.entries(fields)),
+	]),
+);
 
 export function createErrorContext(input: ErrorContextInput): ErrorContext {
 	const { causes: suppliedCauses = [], outcome, details, id, ...identity } = input;

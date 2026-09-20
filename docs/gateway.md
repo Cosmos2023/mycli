@@ -162,6 +162,14 @@ Run `npm run contracts:generate` after editing it; CI uses `contracts:check`.
 `GatewayMethod`, `GatewayParams<M>`, `GatewayResult<M>`, and `GatewayTranscriptItem`
 are available through the public gateway export.
 
+The generator also emits standalone Ajv validators into
+`backend/packages/contracts/src/generated/validators/`. Runtime modules import those
+functions instead of compiling the JSON Schemas on every import, which kept roughly
+350 ms out of the CLI, shell TUI, and backend worker startup. Ajv remains only for
+validating JSON Schemas that plugins supply at runtime. Schema edits therefore need a
+regenerated and committed validator module, and `contracts:check` fails when the two
+drift apart.
+
 Known request shapes are validated before controller dispatch. Permission checks,
 workspace trust, generation fencing, and durable reservations remain controller
 and runtime responsibilities. Invalid parameters produce `invalid_params`; a

@@ -1,7 +1,10 @@
+import { readFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { compileFromFile } from "json-schema-to-typescript";
+import { Ajv2020 } from "ajv/dist/2020.js";
+import standaloneCode from "ajv/dist/standalone/index.js";
 
 const scriptRoot = dirname(fileURLToPath(import.meta.url));
 const contractRoot = resolve(scriptRoot, "..");
@@ -49,3 +52,188 @@ for (const [schemaName, outputName] of targets) {
 	});
 	await writeOrCheck(resolve(generatedRoot, outputName), banner + generated, check);
 }
+
+// Runtime validation used to compile these JSON Schemas with Ajv on every import,
+// which cost roughly 350 ms per isolate in the CLI, the shell TUI and the backend
+// worker. The generated modules below hold the same validators as standalone code
+// so import only parses functions instead of running the Ajv compiler.
+const schema = (name) => JSON.parse(readFileSync(resolve(schemaRoot, name), "utf8"));
+
+function generator(options) {
+	return new Ajv2020({
+		...options,
+		code: { esm: true, source: true, optimize: true },
+	});
+}
+
+function toEsmModule(standalone) {
+	// Ajv emits `require("ajv/dist/runtime/...")` for the few helpers its
+	// generated code shares. Keep those references working in an ES module
+	// instead of rewriting the helper calls Ajv owns.
+	const header = standalone.includes("require(")
+		? 'import { createRequire } from "node:module";\nconst require = createRequire(import.meta.url);\n'
+		: "";
+	return `${header}${standalone}`;
+}
+
+function standaloneModule(ajv, exports, label) {
+	const code = standaloneCode(ajv, exports);
+	// Ajv redeclares a shared validator when two exports resolve to the same
+	// schema, which produces a module that only fails when it is loaded.
+	const declared = new Set();
+	for (const match of code.matchAll(/function (validate\d+)/gu)) {
+		if (declared.has(match[1])) {
+			throw new Error(`Generated standalone validators for ${label} redeclare ${match[1]}.`);
+		}
+		declared.add(match[1]);
+	}
+	return toEsmModule(code);
+}
+
+const validatorRoot = resolve(generatedRoot, "validators");
+const validatorBanner = `${banner}// @ts-nocheck -- Ajv standalone validators declare their functions dynamically.\n`;
+
+// Options mirror src/validation.ts: `allErrors` shapes the generated code.
+const contractValidation = generator({
+	allErrors: true,
+	allowUnionTypes: true,
+	strict: true,
+	strictRequired: false,
+});
+contractValidation.addKeyword({ keyword: "name", schemaType: "string", valid: true });
+contractValidation.addSchema(schema("error-context.schema.json"), "https://mycli.local/contracts/error-context.schema.json");
+contractValidation.addSchema(schema("mcp-elicitation.schema.json"));
+contractValidation.addSchema(schema("catalog.schema.json"));
+contractValidation.addSchema(schema("session-goal.schema.json"));
+contractValidation.addSchema(schema("gateway-tool-record.schema.json"));
+contractValidation.addSchema(schema("runtime-turn.schema.json"));
+contractValidation.addSchema(schema("provider-attempt.schema.json"), "https://mycli.local/contracts/provider-attempt.schema.json");
+contractValidation.addSchema(schema("gateway-events.schema.json"));
+contractValidation.addSchema(schema("json-rpc.schema.json"));
+contractValidation.addSchema(schema("plugin-v2-manifest.schema.json"));
+contractValidation.addSchema(schema("plugin-v2-protocol.schema.json"));
+contractValidation.addSchema(schema("runtime-state.schema.json"));
+await writeOrCheck(
+	resolve(validatorRoot, "contract-validation.ts"),
+	validatorBanner + standaloneModule(contractValidation, {
+		validateCatalog: "https://mycli.local/contracts/catalog.schema.json",
+		validateSessionGoal: "https://mycli.local/contracts/session-goal.schema.json",
+		validateGatewayToolRecord: "https://mycli.local/contracts/gateway-tool-record.schema.json",
+		validateRuntimeTurnRecord: "https://mycli.local/schemas/runtime-turn.schema.json",
+		validateGatewayEvent: "https://mycli.local/contracts/gateway-events.schema.json",
+		validateGatewayErrorCode: "https://mycli.local/contracts/gateway-events.schema.json#/$defs/gateway.error/properties/code",
+		validateJsonRpcMessage: "https://mycli.local/contracts/json-rpc.schema.json",
+		validatePluginV2Manifest: "https://mycli.local/contracts/plugin-v2-manifest.schema.json",
+		validatePluginV2ProtocolMessage: "https://mycli.local/contracts/plugin-v2-protocol.schema.json",
+		validateRuntimeState: "https://mycli.local/schemas/runtime-state.schema.json",
+	}, "contract-validation"),
+	check,
+);
+
+// Options mirror src/provider-attempt.ts.
+const providerAttempt = generator({
+	strict: true,
+	strictRequired: false,
+	allErrors: false,
+});
+providerAttempt.addSchema(schema("error-context.schema.json"));
+providerAttempt.addSchema(schema("runtime-turn.schema.json"));
+providerAttempt.addSchema(schema("provider-attempt.schema.json"));
+await writeOrCheck(
+	resolve(validatorRoot, "provider-attempt.ts"),
+	validatorBanner + standaloneModule(providerAttempt, {
+		validateProviderAttemptUpdate: "https://mycli.local/schemas/provider-attempt.schema.json#/$defs/update",
+		validateProviderAttemptRecord: "https://mycli.local/schemas/provider-attempt.schema.json#/$defs/record",
+		validateProviderAttemptFailure: "https://mycli.local/schemas/provider-attempt.schema.json#/$defs/failure",
+	}, "provider-attempt"),
+	check,
+);
+
+// Options mirror src/errors/error-context.ts. Its detail validators are keyed by
+// reason so the runtime does not compile one validator per reason field.
+const errorContext = generator({
+	strict: true,
+	strictRequired: false,
+	allErrors: false,
+});
+const contextSchema = schema("error-context.schema.json");
+errorContext.addSchema(contextSchema);
+const detailExports = {};
+const detailNames = new Map();
+const detailGroups = [];
+let detailIndex = 0;
+for (const branch of contextSchema.$defs.reason_details.oneOf) {
+	const ref = branch.properties.details.$ref;
+	const definition = contextSchema.$defs[ref.slice("#/$defs/".length)];
+	if (!definition?.properties) throw new Error(`error-context schema is missing ${ref}.`);
+	const fields = {};
+	for (const field of Object.keys(definition.properties)) {
+		// Several reasons share one details definition, so every field is
+		// exported once and referenced by each reason that declares it.
+		const pointer = `${ref}/properties/${field}`;
+		let exportName = detailNames.get(pointer);
+		if (!exportName) {
+			exportName = `detailField${detailIndex}`;
+			detailIndex += 1;
+			detailNames.set(pointer, exportName);
+			detailExports[exportName] = `${contextSchema.$id}${pointer}`;
+		}
+		fields[field] = exportName;
+	}
+	for (const reason of branch.properties.reason.enum) detailGroups.push([reason, fields]);
+}
+const detailMapping = `\nexport const errorContextDetailValidators = {\n${detailGroups
+	.map(([reason, fields]) => `\t${JSON.stringify(reason)}: { ${Object.entries(fields)
+		.map(([field, exportName]) => `${JSON.stringify(field)}: ${exportName}`)
+		.join(", ")} },`)
+	.join("\n")}\n};\n`;
+await writeOrCheck(
+	resolve(validatorRoot, "error-context.ts"),
+	validatorBanner + standaloneModule(errorContext, {
+		validateErrorContext: contextSchema.$id,
+		...detailExports,
+	}, "error-context") + detailMapping,
+	check,
+);
+
+// Options mirror src/gateway/rpc.ts. Gateway methods share parameter and result
+// definitions, so each referenced subschema is generated once.
+const gatewayRpc = generator({
+	strict: true,
+	strictRequired: false,
+	allowUnionTypes: true,
+});
+gatewayRpc.addSchema(schema("error-context.schema.json"), "https://mycli.local/contracts/error-context.schema.json");
+gatewayRpc.addSchema(schema("gateway-tool-record.schema.json"));
+gatewayRpc.addSchema(schema("runtime-turn.schema.json"));
+gatewayRpc.addSchema(schema("provider-attempt.schema.json"), "https://mycli.local/contracts/provider-attempt.schema.json");
+gatewayRpc.addSchema(schema("session-goal.schema.json"));
+const rpcSchema = schema("gateway-rpc.schema.json");
+gatewayRpc.addSchema(rpcSchema);
+gatewayRpc.addSchema(schema("mcp-elicitation.schema.json"));
+const rpcExports = {};
+const rpcNames = new Map();
+const rpcMapping = [];
+let rpcIndex = 0;
+for (const method of Object.keys(rpcSchema.properties)) {
+	const root = rpcSchema.properties[method].$ref ?? `#/properties/${method}`;
+	for (const part of ["params", "result"]) {
+		const pointer = `${root}/properties/${part}`;
+		let exportName = rpcNames.get(pointer);
+		if (!exportName) {
+			exportName = `rpcValidator${rpcIndex}`;
+			rpcIndex += 1;
+			rpcNames.set(pointer, exportName);
+			rpcExports[exportName] = `${rpcSchema.$id}${pointer}`;
+		}
+		rpcMapping.push([`${method}/${part}`, exportName]);
+	}
+}
+const rpcRecord = `\nexport const gatewayRpcValidators = {\n${rpcMapping
+	.map(([key, exportName]) => `\t${JSON.stringify(key)}: ${exportName},`)
+	.join("\n")}\n};\n`;
+await writeOrCheck(
+	resolve(validatorRoot, "gateway-rpc.ts"),
+	validatorBanner + standaloneModule(gatewayRpc, rpcExports, "gateway-rpc") + rpcRecord,
+	check,
+);

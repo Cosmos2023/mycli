@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
-import type { ValidateFunction } from "ajv";
-import { Ajv2020 } from "ajv/dist/2020.js";
+import { createRequire } from "node:module";
+import type { Ajv2020 as AjvCompiler } from "ajv/dist/2020.js";
 import type { GatewayContractCatalog } from "./generated/catalog.ts";
 import type { GatewayEventNotification } from "./generated/gateway-event-notification.ts";
 import type { GatewayToolRecord } from "./generated/gateway-tool-record.ts";
@@ -14,39 +14,53 @@ import { parseProviderAttemptRecord } from "./provider-attempt.ts";
 import { ContractValidationError } from "./contract-validation-error.ts";
 import { errorContextSchema } from "./errors/error-context.ts";
 import { projectGatewayErrorData, projectGatewayErrorPayload } from "./gateway/error-context-projection.ts";
+import type { ContractValidator } from "./contract-validator.ts";
+import {
+	validateCatalog,
+	validateGatewayErrorCode,
+	validateGatewayEvent,
+	validateGatewayToolRecord,
+	validateJsonRpcMessage,
+	validatePluginV2Manifest,
+	validatePluginV2ProtocolMessage,
+	validateRuntimeState,
+	validateRuntimeTurnRecord,
+	validateSessionGoal,
+} from "./generated/validators/contract-validation.ts";
 export { ContractValidationError } from "./contract-validation-error.ts";
 
-const ajv = new Ajv2020({
-	allErrors: true,
-	allowUnionTypes: true,
-	strict: true,
-	strictRequired: false,
-});
-ajv.addKeyword({ keyword: "name", schemaType: "string", valid: true });
-ajv.addSchema(errorContextSchema, "https://mycli.local/contracts/error-context.schema.json");
-ajv.addSchema(JSON.parse(readFileSync(new URL("../schemas/mcp-elicitation.schema.json", import.meta.url), "utf8")) as object);
+const contractRequire = createRequire(import.meta.url);
+let pluginSchemaCompiler: AjvCompiler | undefined;
 
-function compile(name: string): ValidateFunction {
-	const url = new URL(`../schemas/${name}`, import.meta.url);
-	return ajv.compile(JSON.parse(readFileSync(url, "utf8")) as object);
+type AjvCompilerConstructor = new (options: {
+	readonly allErrors: boolean;
+	readonly allowUnionTypes: boolean;
+	readonly strict: boolean;
+	readonly strictRequired: boolean;
+}) => AjvCompiler;
+
+/**
+ * Ajv is only needed for the JSON Schemas that plugins register at runtime, so
+ * the compiler loads on the first registration instead of on contract import.
+ * Every other validator is generated at build time by scripts/generate.mjs.
+ */
+function pluginSchemaAjv(): AjvCompiler {
+	if (pluginSchemaCompiler) return pluginSchemaCompiler;
+	const { Ajv2020 } = contractRequire("ajv/dist/2020.js") as { readonly Ajv2020: AjvCompilerConstructor };
+	const ajv = new Ajv2020({
+		allErrors: true,
+		allowUnionTypes: true,
+		strict: true,
+		strictRequired: false,
+	});
+	ajv.addKeyword({ keyword: "name", schemaType: "string", valid: true });
+	ajv.addSchema(errorContextSchema, "https://mycli.local/contracts/error-context.schema.json");
+	ajv.addSchema(JSON.parse(readFileSync(new URL("../schemas/mcp-elicitation.schema.json", import.meta.url), "utf8")) as object);
+	pluginSchemaCompiler = ajv;
+	return ajv;
 }
 
-const validateCatalog = compile("catalog.schema.json");
-const validateSessionGoal = compile("session-goal.schema.json");
-const validateGatewayToolRecord = compile("gateway-tool-record.schema.json");
-const validateRuntimeTurnRecord = compile("runtime-turn.schema.json");
-ajv.addSchema(JSON.parse(readFileSync(new URL("../schemas/provider-attempt.schema.json", import.meta.url), "utf8")) as object,
-	"https://mycli.local/contracts/provider-attempt.schema.json");
-const validateGatewayEvent = compile("gateway-events.schema.json");
-const validateGatewayErrorCode = ajv.compile({
-	$ref: "https://mycli.local/contracts/gateway-events.schema.json#/$defs/gateway.error/properties/code",
-});
-const validateJsonRpcMessage = compile("json-rpc.schema.json");
-const validatePluginV2Manifest = compile("plugin-v2-manifest.schema.json");
-const validatePluginV2ProtocolMessage = compile("plugin-v2-protocol.schema.json");
-const validateRuntimeState = compile("runtime-state.schema.json");
-
-function parse<T>(value: unknown, validator: ValidateFunction, label: string): T {
+function parse<T>(value: unknown, validator: ContractValidator, label: string): T {
 	if (!validator(value)) {
 		throw new ContractValidationError(`Invalid ${label}.`, validator.errors ?? []);
 	}
@@ -116,6 +130,7 @@ export function parsePluginV2ProtocolMessage(value: unknown): PluginV2ProtocolMe
 		"Plugin API v2 protocol message",
 	);
 	if (message.type === "registered") {
+		const ajv = pluginSchemaAjv();
 		for (const registration of message.registrations) {
 			let valid = false;
 			try {

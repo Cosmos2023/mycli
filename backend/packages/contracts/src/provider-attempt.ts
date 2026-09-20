@@ -1,7 +1,10 @@
-import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { Ajv2020 } from "ajv/dist/2020.js";
-import type { ValidateFunction } from "ajv";
+import type { ContractValidator } from "./contract-validator.ts";
+import {
+	validateProviderAttemptFailure as validateFailure,
+	validateProviderAttemptRecord as validateRecord,
+	validateProviderAttemptUpdate as validateUpdate,
+} from "./generated/validators/provider-attempt.ts";
 import {
 	canonicalRuntimeFailureMessage,
 	isRuntimeErrorCode,
@@ -10,7 +13,7 @@ import {
 import type { RuntimeFailure, RuntimeFailureDiagnosticValue } from "./gateway/runtime-errors.ts";
 import type { ProviderAttemptFields } from "./generated/provider-attempt.ts";
 import { ContractValidationError } from "./contract-validation-error.ts";
-import { errorContextSchema, readErrorContext } from "./errors/error-context.ts";
+import { readErrorContext } from "./errors/error-context.ts";
 
 export interface ProviderAttemptPolicy {
 	readonly requestMaxRetries: number;
@@ -51,18 +54,6 @@ export interface ProviderAttemptRecord extends ProviderAttemptUpdate {
 	readonly committedAt: string;
 }
 
-const schema = JSON.parse(readFileSync(
-	new URL("../schemas/provider-attempt.schema.json", import.meta.url), "utf8",
-)) as object;
-const ajv = new Ajv2020({ strict: true, strictRequired: false, allErrors: false });
-ajv.addSchema(errorContextSchema);
-ajv.addSchema(JSON.parse(readFileSync(
-	new URL("../schemas/runtime-turn.schema.json", import.meta.url), "utf8",
-)) as object);
-ajv.addSchema(schema);
-const validateUpdate = ajv.compile({ $ref: "https://mycli.local/schemas/provider-attempt.schema.json#/$defs/update" });
-const validateRecord = ajv.compile({ $ref: "https://mycli.local/schemas/provider-attempt.schema.json#/$defs/record" });
-const validateFailure = ajv.compile({ $ref: "https://mycli.local/schemas/provider-attempt.schema.json#/$defs/failure" });
 const MAX_BYTES = 64 * 1024;
 const SAFE_DIAGNOSTICS = new Set([
 	"status", "upstream_code", "upstream_type", "upstream_reason", "request_id",
@@ -176,7 +167,7 @@ function timestamp(value: string): void {
 		!== value.replace(".000Z", "Z")) throw invalid();
 }
 
-function validate(value: unknown, validator: ValidateFunction): void {
+function validate(value: unknown, validator: ContractValidator): void {
 	try {
 		const json = JSON.stringify(value);
 		if (json === undefined || Buffer.byteLength(json) > MAX_BYTES || !validator(value)) throw invalid();

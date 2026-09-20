@@ -1,10 +1,9 @@
 import { readFileSync } from "node:fs";
-import { Ajv2020 } from "ajv/dist/2020.js";
-import type { ValidateFunction } from "ajv";
 import type { GatewayRpcMethods } from "../generated/gateway-rpc.ts";
+import { gatewayRpcValidators } from "../generated/validators/gateway-rpc.ts";
 import { ContractValidationError } from "../validation.ts";
 import { parseProviderAttemptRecord } from "../provider-attempt.ts";
-import { errorContextSchema } from "../errors/error-context.ts";
+import type { ContractValidator } from "../contract-validator.ts";
 import { projectGatewayErrorPayload } from "./error-context-projection.ts";
 
 export type GatewayMethod = keyof GatewayRpcMethods;
@@ -13,23 +12,13 @@ export type GatewayResult<M extends GatewayMethod> = GatewayRpcMethods[M]["resul
 export type GatewayTranscriptItem = GatewayResult<"transcript.load">["items"][number];
 
 interface RpcSchema {
-	readonly $id: string;
-	readonly properties: Readonly<Record<string, { readonly $ref?: string }>>;
+	readonly properties: Readonly<Record<string, unknown>>;
 }
 
 const schema = JSON.parse(readFileSync(new URL("../../schemas/gateway-rpc.schema.json", import.meta.url), "utf8")) as RpcSchema;
-const ajv = new Ajv2020({ strict: true, strictRequired: false, allowUnionTypes: true });
-ajv.addSchema(errorContextSchema, "https://mycli.local/contracts/error-context.schema.json");
-ajv.addSchema(JSON.parse(readFileSync(new URL("../../schemas/gateway-tool-record.schema.json", import.meta.url), "utf8")) as object);
-ajv.addSchema(JSON.parse(readFileSync(new URL("../../schemas/runtime-turn.schema.json", import.meta.url), "utf8")) as object);
-ajv.addSchema(JSON.parse(readFileSync(new URL("../../schemas/provider-attempt.schema.json", import.meta.url), "utf8")) as object,
-	"https://mycli.local/contracts/provider-attempt.schema.json");
-ajv.addSchema(JSON.parse(readFileSync(new URL("../../schemas/session-goal.schema.json", import.meta.url), "utf8")) as object);
-ajv.addSchema(schema);
-ajv.addSchema(JSON.parse(readFileSync(new URL("../../schemas/mcp-elicitation.schema.json", import.meta.url), "utf8")) as object);
 export const GATEWAY_RPC_METHODS: readonly GatewayMethod[] = Object.freeze(Object.keys(schema.properties) as GatewayMethod[]);
 const methods: ReadonlySet<string> = new Set(GATEWAY_RPC_METHODS);
-const validators = new Map<string, ValidateFunction>();
+const validators: ReadonlyMap<string, ContractValidator> = new Map(Object.entries(gatewayRpcValidators));
 
 export class GatewayRpcValidationError extends ContractValidationError {
 	readonly code: "invalid_params" | "internal_error";
@@ -70,12 +59,7 @@ export function parseGatewayResult<M extends GatewayMethod>(method: M, value: un
 
 function validate(method: GatewayMethod, part: "params" | "result", value: unknown): void {
 	if (!isGatewayMethod(method)) throw new TypeError("Unknown gateway method.");
-	const key = `${method}/${part}`;
-	let validator = validators.get(key);
-	if (!validator) {
-		const root = schema.properties[method]!.$ref ?? `#/properties/${method}`;
-		validator = ajv.compile({ $ref: `${schema.$id}${root}/properties/${part}` });
-		validators.set(key, validator);
-	}
+	const validator = validators.get(`${method}/${part}`);
+	if (!validator) throw new TypeError(`Missing generated gateway validator for ${method} ${part}.`);
 	if (!validator(value)) throw new GatewayRpcValidationError(method, part);
 }
