@@ -120,6 +120,16 @@ test("parses and classifies PowerShell and CMD with shell-specific escaping", ()
 	assert.equal(classifyShellCommand("cd src && dir | findstr py", {
 		shellKind: "cmd",
 	}).decision, "safe");
+	// PowerShell needs the call operator before a quoted executable path; that is
+	// a plain invocation, while a bare operator is still unreviewable syntax.
+	const invoked = classifyShellCommand(
+		'& "C:\\Program Files\\nodejs\\node.exe" script.cjs',
+		{ shellKind: "powershell" },
+	);
+	assert.equal(invoked.decision, "unknown");
+	assert.deepEqual(invoked.segments[0]?.words,
+		["C:\\Program Files\\nodejs\\node.exe", "script.cjs"]);
+	assert.notEqual(classifyShellCommand("&", { shellKind: "powershell" }).decision, "unknown");
 	for (const command of ["echo %PATH%", "dir > files.txt", "dir & del /q output.txt"]) {
 		assert.notEqual(classifyShellCommand(command, { shellKind: "cmd" }).decision, "safe", command);
 	}

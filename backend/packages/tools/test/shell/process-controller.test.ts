@@ -87,6 +87,21 @@ test("Windows cleanup invokes fixed taskkill arguments without a shell", async (
 	}]);
 });
 
+test("Windows unsupported interrupt goes directly to owned process-tree termination", async () => {
+	const requests: WindowsTaskkillRequest[] = [];
+	const waits: number[] = [];
+	const controller = createProcessController({ ...fakeProcess(), kill: () => false }, {
+		platform: "win32",
+		isProcessTreeAlive: () => true,
+		waitForTreeExit: async (milliseconds) => { waits.push(milliseconds); return true; },
+		runTaskkill: async (request) => { requests.push(request); return 0; },
+	});
+	assert.deepEqual(await controller.interrupt(), { state: "terminated", signal: "SIGKILL" });
+	assert.equal(requests.length, 1);
+	assert.deepEqual(requests[0]?.args, ["/PID", "1234", "/T", "/F"]);
+	assert.equal(waits.length, 1);
+});
+
 function fakeProcess(options: {
 	readonly exitCode?: number | null;
 	readonly signalCode?: NodeJS.Signals | null;

@@ -10,6 +10,7 @@ import { openRuntimeSessionStore } from "@mycli/storage";
 import type { NodeBackend } from "../src/node-runtime/node-backend.ts";
 import { startTestNodeBackend } from "./support/offline-update-fetch.ts";
 import { writeResponsesText, writeResponsesTool } from "./support/responses-sse.ts";
+import { shellCommand } from "./support/shell-command.ts";
 
 type Json = Record<string, unknown>;
 
@@ -21,7 +22,7 @@ test("Shell hides its legacy description and preserves a larger output budget ac
 	await mkdir(workspace);
 	await writeFile(join(workspace, "output.cjs"), 'process.stdout.write("output-start\\n" + "x".repeat(20000) + "\\noutput-end\\n");\n');
 	await new WorkspaceTrustStore({ homeDir: home }).save(workspace, "trusted");
-	const command = `"${process.execPath}" output.cjs`;
+	const command = shellCommand(process.execPath, ["output.cjs"], process.env);
 	const description = "Legacy command summary";
 	const bodies: Json[] = [];
 	const server = createServer((request, response) => {

@@ -240,6 +240,13 @@ export class ShellTool implements ToolAdapter {
 				deniedReadGlobs: [...new Set([...(policy.deniedReadGlobs ?? []), ...(options.executionPolicy.deniedReadGlobs ?? [])])],
 			};
 		}
+		policy = { ...policy,
+			...(options.executionPolicy.readOnlyRoots === undefined ? {} : { readOnlyRoots: Object.freeze([
+				...new Set([...(policy.readOnlyRoots ?? []), ...options.executionPolicy.readOnlyRoots]),
+			]) }),
+			...(options.executionPolicy.allowLocalBinding === undefined ? {} : { allowLocalBinding: options.executionPolicy.allowLocalBinding }),
+			...(options.executionPolicy.writableTemp === undefined ? {} : { writableTemp: options.executionPolicy.writableTemp }),
+		};
 		const effectivePolicy = policy.networkDomains === undefined ? policy : {
 			...policy, networkDomains: Object.freeze([...policy.networkDomains]),
 		};
@@ -299,7 +306,7 @@ export class ShellTool implements ToolAdapter {
 			executable: launch.executable,
 			args: launch.args,
 			cwd,
-			env: networkProxy ? Object.freeze({ ...environment.env, ...networkProxy.env }) : environment.env,
+			env: Object.freeze({ ...environment.env, ...networkProxy?.env, ...launch.env }),
 			...(networkProxy ? { processResource: networkProxy } : {}),
 			platform: this.#platform,
 			tty: invocation.tty,

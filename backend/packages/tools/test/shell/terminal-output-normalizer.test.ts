@@ -10,6 +10,16 @@ test("split UTF-8 bytes decode one character without replacement", () => {
 	assert.deepEqual(output.finish(), { text: "", replacementCount: 0 });
 });
 
+test("Windows console code page output falls back instead of mojibake", () => {
+	const output = new TerminalOutputNormalizer({ fallbackEncoding: "gbk" });
+	const bytes = Uint8Array.from([0xbe, 0xdc, 0xbe, 0xf8, 0xb7, 0xc3, 0xce, 0xca, 0xa1, 0xa3]);
+	const chunk = output.push(bytes);
+	assert.equal(chunk.text, "拒绝访问。");
+	assert.equal(chunk.replacementCount, 0);
+	assert.equal(chunk.encoding, "fallback");
+	assert.deepEqual(output.finish(), { text: "", replacementCount: 0, encoding: "fallback" });
+});
+
 test("carriage-return progress becomes append-only lines", () => {
 	const output = new TerminalOutputNormalizer();
 	assert.deepEqual(output.push("step 1\rstep 2\r\nfinished"), {

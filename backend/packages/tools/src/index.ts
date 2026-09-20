@@ -59,6 +59,7 @@ export { planToolExposure } from "./registry/exposure-planner.ts";
 export type { ToolExposureCapabilities } from "./registry/exposure-planner.ts";
 export {
 	executionPolicy,
+	freezeNetworkEgress,
 	hasUnrestrictedFilesystem,
 	hasUnrestrictedNetwork,
 	networkDomainAllowed,
@@ -67,12 +68,18 @@ export {
 export type {
 	ExecutionPolicy,
 	FilesystemPolicy,
+	NetworkDestination,
+	NetworkEgressPolicy,
+	NetworkEgressRule,
 	NetworkPolicy,
+	NetworkPortRule,
+	NetworkRuleProtocol,
 	PermissionProfile,
 	SandboxMode,
 	SandboxProfile,
 } from "./policy/execution-policy.ts";
 export { createShellEnvironment } from "./shell/shell-environment.ts";
+export { windowsConsoleFallbackEncoding } from "./shell/console-encoding.ts";
 export type {
 	ShellEnvironmentDiagnostics,
 	ShellEnvironmentInput,
@@ -208,9 +215,14 @@ export type {
 	ShellSessionSnapshot,
 	ShellStartRequest,
 } from "./shell/shell-session-manager.ts";
-export { resolveShellProfile } from "./shell/shell-profile.ts";
+export {
+	SHELL_PATH_ENV_KEY,
+	resolveShellProfile,
+	windowsCmdVerbatimArguments,
+} from "./shell/shell-profile.ts";
 export type {
 	ResolveShellProfileOptions,
+	ShellDialect,
 	ShellProfile,
 	ShellProfileName,
 } from "./shell/shell-profile.ts";
@@ -219,6 +231,7 @@ export type {
 	ShellStartManager,
 	ShellToolOptions,
 } from "./shell/shell-tool.ts";
+export { shellDialectGuidance } from "./shell/shell-dialect-guidance.ts";
 export {
 	parseShellSandboxPermissions,
 	shellCallRequestsSandboxOverride,

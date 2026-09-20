@@ -482,6 +482,23 @@ test("Shell sanitizes environment and applies the frozen sandbox before manager 
 	assert.equal(JSON.stringify(manager.starts[0]?.env).includes("must-not-reach-child"), false);
 });
 
+test("Shell preserves the large Windows helper carrier after environment sanitization", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-shell-carrier-"));
+	t.after(() => import("node:fs/promises").then(({ rm }) => rm(root, { recursive: true, force: true })));
+	const manager = new StartManager(completedSnapshot());
+	const tool = new ShellTool({ workspaceRoot: root, manager, platform: "win32",
+		profile: resolveShellProfile({ platform: "win32", shellPath: "C:\\Windows\\System32\\cmd.exe" }),
+		env: { MYCLI_SANDBOX_REQUEST_COUNT: "invalid", MYCLI_SANDBOX_REQUEST_0: "untrusted" },
+		processSandboxProbes: { platform: "win32", isExecutable: () => true, windowsHelperPath: "helper.exe" } });
+	const result = await tool.execute({ command: "echo ready" }, { ...executionOptions(root),
+		executionPolicy: { ...executionPolicy("workspace", root), readableRoots: Array.from({ length: 900 }, () => root) } });
+	assert.equal(result.success, true);
+	const request = manager.starts[0]!;
+	assert.deepEqual(request.args, ["--request-env"]);
+	const encoded = Array.from({ length: Number(request.env.MYCLI_SANDBOX_REQUEST_COUNT) }, (_, i) => request.env[`MYCLI_SANDBOX_REQUEST_${i}`]).join("");
+	assert.equal(JSON.parse(Buffer.from(encoded, "base64").toString("utf8")).readable_roots.length, 900);
+});
+
 test("Shell fails before manager start when a restricted sandbox is unavailable", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-shell-tool-"));
 	t.after(() => import("node:fs/promises").then(({ rm }) => rm(root, { recursive: true, force: true })));

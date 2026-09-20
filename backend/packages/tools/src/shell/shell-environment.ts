@@ -7,6 +7,7 @@ const CORE_ENVIRONMENT_KEYS = new Set([
 	"LANG",
 	"LC_ALL",
 	"LC_CTYPE",
+	"LOCALAPPDATA",
 	"PATH",
 	"PATHEXT",
 	"PWD",
@@ -21,6 +22,13 @@ const CORE_ENVIRONMENT_KEYS = new Set([
 	"WINDIR",
 ]);
 const SECRET_LIKE_NAME = /(?:key|secret|token)/iu;
+
+// Windows runtime essentials a command needs to launch native programs at all.
+// PowerShell resolves executables through `PATHEXT` and the loader needs
+// `SystemRoot`; without them a shell can exit 0 while the child never ran. They
+// are filled from the host environment when a caller supplies a partial
+// environment, and they carry no secrets or user data.
+const WINDOWS_RUNTIME_KEYS = ["SYSTEMROOT", "WINDIR", "SYSTEMDRIVE", "PATHEXT", "COMSPEC"] as const;
 
 export interface ShellEnvironmentInput {
 	readonly cwd: string;
@@ -59,6 +67,18 @@ export function createShellEnvironment(input: ShellEnvironmentInput): ShellEnvir
 	}
 	env.PWD = realpathSync(input.cwd);
 	env.MYCLI_CI = "1";
+	if ((input.platform ?? process.platform) === "win32") {
+		// Keep Python and similar runtimes on UTF-8 instead of the console code page.
+		env.PYTHONUTF8 = "1";
+		env.PYTHONIOENCODING = "utf-8";
+		for (const key of WINDOWS_RUNTIME_KEYS) {
+			if (env[key] !== undefined) continue;
+			// Prefer what the caller supplied, then fall back to the host runtime
+			// plumbing so a partially sanitized environment still launches programs.
+			const value = environmentValue(source, key) ?? environmentValue(process.env, key);
+			if (value) env[key] = value;
+		}
+	}
 	const ripgrep = prependRipgrepToPath({
 		platform: input.platform ?? process.platform,
 		architecture: input.architecture ?? process.arch,
@@ -80,4 +100,15 @@ export function createShellEnvironment(input: ShellEnvironmentInput): ShellEnvir
 			removedCount,
 		}),
 	});
+}
+
+function environmentValue(
+	environment: Readonly<NodeJS.ProcessEnv>,
+	key: string,
+): string | undefined {
+	const normalized = key.toLowerCase();
+	for (const [name, value] of Object.entries(environment)) {
+		if (name.toLowerCase() === normalized) return value;
+	}
+	return undefined;
 }

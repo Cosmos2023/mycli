@@ -6,6 +6,7 @@ import {
 	type ShellLifecycleKind,
 } from "@mycli/core";
 import { startPipeTransport } from "./pipe-transport.ts";
+import { windowsConsoleFallbackEncoding } from "./console-encoding.ts";
 import { ShellOutputBuffer } from "./shell-output-buffer.ts";
 import {
 	ShellTransportError,
@@ -785,6 +786,7 @@ function createSession(
 		resolveCompletion = resolve;
 	});
 	const startedTimeMs = Date.now();
+	const consoleFallbackEncoding = windowsConsoleFallbackEncoding();
 	return {
 		shellId,
 		...(request.processResource ? { processResource: request.processResource } : {}),
@@ -799,9 +801,9 @@ function createSession(
 		stdout: new ShellOutputBuffer({ maxChars: outputMaxChars }),
 		stderr: new ShellOutputBuffer({ maxChars: outputMaxChars }),
 		normalizers: {
-			stdout: new TerminalOutputNormalizer(),
-			stderr: new TerminalOutputNormalizer(),
-			terminal: new TerminalOutputNormalizer(),
+			stdout: new TerminalOutputNormalizer({ fallbackEncoding: consoleFallbackEncoding }),
+			stderr: new TerminalOutputNormalizer({ fallbackEncoding: consoleFallbackEncoding }),
+			terminal: new TerminalOutputNormalizer({ fallbackEncoding: consoleFallbackEncoding }),
 		},
 		startedAt: new Date(startedTimeMs).toISOString(),
 		startedTimeMs,

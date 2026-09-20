@@ -62,7 +62,28 @@ test("pipe labels both streams and exits only after output drains", async () => 
 	}
 });
 
-test("pipe interrupt stops a live process without escalating", async () => {
+test("Windows cmd pipe preserves quoted executable and shell arguments", {
+	skip: process.platform !== "win32",
+}, async () => {
+	const transport = await startPipeTransport({
+		executable: process.env.ComSpec ?? "cmd.exe",
+		args: ["/d", "/s", "/c",
+			`"${process.execPath}" -e "process.stdout.write(process.argv[1])" "quoted & value"`],
+		cwd: process.cwd(), env: { ...process.env }, platform: "win32",
+		tty: false, rows: 24, columns: 80,
+	});
+	try {
+		const output = nextOutput(transport);
+		const exit = nextExit(transport);
+		assert.equal(Buffer.from((await output).data).toString("utf8"), "quoted & value");
+		assert.deepEqual(await exit, { exitCode: 0, signal: null });
+	} finally {
+		await transport.terminate();
+		await transport.close();
+	}
+});
+
+test("pipe interrupt uses POSIX signals or Windows process-tree termination", async () => {
 	const interruptSignal = process.platform === "win32" ? "SIGBREAK" : "SIGINT";
 	const transport = await startNode([
 		`process.on('${interruptSignal}', () => process.exit(0));`,
@@ -72,11 +93,12 @@ test("pipe interrupt stops a live process without escalating", async () => {
 
 	try {
 		await nextOutput(transport);
-		assert.deepEqual(await transport.interrupt(), {
-			state: "interrupted",
-			signal: interruptSignal,
-		});
-		assert.deepEqual(await nextExit(transport), { exitCode: 0, signal: null });
+		assert.deepEqual(await transport.interrupt(), process.platform === "win32"
+			? { state: "terminated", signal: "SIGKILL" }
+			: { state: "interrupted", signal: interruptSignal });
+		const exit = await nextExit(transport);
+		if (process.platform === "win32") assert.notEqual(exit.exitCode, 0);
+		else assert.deepEqual(exit, { exitCode: 0, signal: null });
 	} finally {
 		await transport.terminate();
 		await transport.close();
@@ -100,9 +122,7 @@ test("pipe spawn failures are sanitized and do not emit an unhandled error", asy
 	);
 });
 
-test("pipe termination removes a spawned grandchild process tree", {
-	skip: process.platform === "win32" && process.env.CI !== "true",
-}, async () => {
+test("pipe termination removes a spawned grandchild process tree", async () => {
 	const parentScript = [
 		"const { spawn } = require('node:child_process');",
 		"const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'ignore' });",
@@ -116,7 +136,8 @@ test("pipe termination removes a spawned grandchild process tree", {
 		grandchildPid = Number(Buffer.from((await nextOutput(transport)).data).toString("utf8"));
 		assert.equal(Number.isSafeInteger(grandchildPid), true);
 		assert.equal(isProcessAlive(grandchildPid), true);
-		const cleanup = await transport.terminate();
+		const cleanup = process.platform === "win32"
+			? await transport.interrupt() : await transport.terminate();
 		assert.equal(cleanup.state, "terminated");
 		await nextExit(transport);
 		assert.equal(await waitUntilAbsent(grandchildPid), true);

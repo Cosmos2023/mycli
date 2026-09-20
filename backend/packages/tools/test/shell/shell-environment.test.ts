@@ -14,6 +14,7 @@ test("shell environment keeps core keys and replaces PWD with the canonical cwd"
 		homeDir: join(cwd, "isolated-home"),
 		packageRoot: join(cwd, "isolated-package"),
 		platformPackageRoot: null,
+		platform: "linux",
 		sourceEnv: {
 			HOME: "/home/demo",
 			LANG: "en_US.UTF-8",
@@ -37,6 +38,44 @@ test("shell environment keeps core keys and replaces PWD with the canonical cwd"
 	});
 });
 
+test("Windows shell environment pins UTF-8 instead of the console code page", async (t) => {
+	const cwd = await temporaryDirectory(t);
+	const result = createShellEnvironment({
+		cwd,
+		homeDir: join(cwd, "isolated-home"),
+		platformPackageRoot: null,
+		platform: "win32",
+		sourceEnv: {
+			LOCALAPPDATA: "C:\\Users\\demo\\AppData\\Local",
+			PATH: "C:\\Windows\\System32",
+			USERPROFILE: "C:\\Users\\demo",
+		},
+	});
+
+	assert.equal(result.env.PYTHONUTF8, "1");
+	assert.equal(result.env.PYTHONIOENCODING, "utf-8");
+	assert.equal(result.env.LOCALAPPDATA, "C:\\Users\\demo\\AppData\\Local");
+	assert.equal(result.diagnostics.envKeys.includes("PYTHONUTF8"), true);
+});
+
+test("Windows shell environment fills runtime essentials a partial source omits", async (t) => {
+	const cwd = await temporaryDirectory(t);
+	const result = createShellEnvironment({
+		cwd,
+		homeDir: join(cwd, "isolated-home"),
+		platformPackageRoot: null,
+		platform: "win32",
+		sourceEnv: { PATH: "C:\\Windows\\System32", USERPROFILE: "C:\\Users\\demo" },
+	});
+
+	// PowerShell cannot launch native programs without PATHEXT, and programs that
+	// toggle the console code page need SystemRoot to load their message tables.
+	assert.equal(result.env.PATHEXT, process.env.PATHEXT);
+	assert.equal(result.env.SYSTEMROOT, process.env.SystemRoot);
+	assert.equal(result.env.COMSPEC, process.env.ComSpec ?? result.env.COMSPEC);
+	assert.equal(result.env.WINDIR, process.env.WINDIR);
+});
+
 test("shell environment removes secret-like names without exposing their values", async (t) => {
 	const cwd = await temporaryDirectory(t);
 	const secrets = ["key-value-123", "secret-value-456", "token-value-789"];
@@ -46,6 +85,7 @@ test("shell environment removes secret-like names without exposing their values"
 		homeDir: join(cwd, "isolated-home"),
 		packageRoot: join(cwd, "isolated-package"),
 		platformPackageRoot: null,
+		platform: "linux",
 		sourceEnv: {
 			PATH: "/usr/bin",
 			API_KEY: secrets[0],
@@ -76,15 +116,18 @@ test("shell environment accepts a Windows Path key and injects rg.exe with its m
 		homeDir,
 		packageRoot: join(cwd, "isolated-package"),
 		platform: "win32",
+		platformPackageRoot: null,
 		architecture: "x64",
 		sourceEnv: {
 			Path: "C:\\Windows\\System32",
 			USERPROFILE: homeDir,
+			LOCALAPPDATA: join(homeDir, "AppData", "Local"),
 		},
 	});
 
 	assert.equal(result.env.PATH, `${directory};C:\\Windows\\System32`);
 	assert.equal(result.env.MYCLI_RIPGREP_PATH_DIR, directory);
+	assert.equal(result.env.LOCALAPPDATA, join(homeDir, "AppData", "Local"));
 });
 
 async function temporaryDirectory(t: test.TestContext): Promise<string> {

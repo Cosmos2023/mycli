@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
+import { removeFixtureDirectoryAfterTests } from "../../../packages/storage/test/fixtures/directory-cleanup.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -12,7 +13,7 @@ const NOW = "2026-08-08T00:00:00.000Z";
 
 test("freezes the first system template per session", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-instruction-snapshot-"));
-	t.after(async () => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	const store = new SQLiteSessionStore({ dbPath: join(root, "sessions.db"), clock: () => NOW });
 	t.after(() => store.close());
 	reserve(store, "session-1", root);
@@ -54,7 +55,7 @@ test("freezes the first system template per session", async (t) => {
 
 test("rejects a template whose declared hash does not match", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-instruction-hash-"));
-	t.after(async () => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	const store = new SQLiteSessionStore({ dbPath: join(root, "sessions.db"), clock: () => NOW });
 	t.after(() => store.close());
 	reserve(store, "session-1", root);

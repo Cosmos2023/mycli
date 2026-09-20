@@ -1,6 +1,18 @@
 export interface NormalizedOutput {
 	readonly text: string;
 	readonly replacementCount: number;
+	/** Decoding used for this output; `fallback` means the UTF-8 attempt failed. */
+	readonly encoding?: "utf-8" | "fallback";
+}
+
+export interface TerminalOutputNormalizerOptions {
+	/**
+	 * Console code page used when a Windows child ignores UTF-8 and emits the
+	 * legacy ANSI/OEM encoding (for example `cmd.exe` before `chcp 65001`).
+	 * Leave unset to keep the historical replacement-character behavior; the
+	 * Shell session manager enables it for Windows console children.
+	 */
+	readonly fallbackEncoding?: string;
 }
 
 type EscapeState =
@@ -13,30 +25,70 @@ type EscapeState =
 	| "control_string_escape";
 
 export class TerminalOutputNormalizer {
-	readonly #decoder = new TextDecoder("utf-8", { fatal: false });
+	readonly #decoder: TextDecoder;
+	readonly #fallback: TextDecoder | undefined;
+	#encoding: NormalizedOutput["encoding"] = "utf-8";
 	#escapeState: EscapeState = "text";
 	#pendingCarriageReturn = false;
 	#finished = false;
+
+	constructor(options: TerminalOutputNormalizerOptions = {}) {
+		const fallback = options.fallbackEncoding;
+		this.#fallback = fallback === undefined ? undefined : new TextDecoder(fallback, { fatal: false });
+		// Fatal decoding only makes sense when a console-code-page fallback exists;
+		// otherwise keep the historical replacement-character behavior.
+		this.#decoder = new TextDecoder("utf-8", { fatal: this.#fallback !== undefined });
+	}
 
 	push(chunk: Uint8Array | string): NormalizedOutput {
 		if (this.#finished) {
 			throw new Error("terminal output normalizer is already finished");
 		}
-		const decoded = typeof chunk === "string"
-			? chunk
-			: this.#decoder.decode(chunk, { stream: true });
-		return this.#normalize(decoded);
+		if (typeof chunk === "string") {
+			return this.#withEncoding(this.#normalize(chunk));
+		}
+		const { text, encoding } = this.#decodeBytes(chunk, true);
+		return this.#withEncoding(this.#normalize(text), encoding);
 	}
 
 	finish(): NormalizedOutput {
 		if (this.#finished) return EMPTY_OUTPUT;
 		this.#finished = true;
-		const decoded = this.#decoder.decode();
+		const decoded = this.#encoding === "fallback"
+			? this.#fallback?.decode() ?? ""
+			: this.#decodeBytes(new Uint8Array(), false).text;
 		const normalized = this.#normalize(decoded);
 		const text = this.#pendingCarriageReturn ? `${normalized.text}\n` : normalized.text;
 		this.#pendingCarriageReturn = false;
 		this.#escapeState = "text";
-		return Object.freeze({ text, replacementCount: normalized.replacementCount });
+		return this.#withEncoding(
+			{ text, replacementCount: normalized.replacementCount },
+			this.#encoding,
+		);
+	}
+
+	#withEncoding(
+		output: NormalizedOutput,
+		encoding: NormalizedOutput["encoding"] = this.#encoding,
+	): NormalizedOutput {
+		return Object.freeze(encoding === "fallback" ? { ...output, encoding } : output);
+	}
+
+	#decodeBytes(chunk: Uint8Array, stream: boolean): { readonly text: string; readonly encoding: NonNullable<NormalizedOutput["encoding"]> } {
+		if (this.#encoding === "fallback") {
+			return { text: this.#fallback?.decode(chunk, { stream }) ?? "", encoding: "fallback" };
+		}
+		try {
+			return { text: this.#decoder.decode(chunk, { stream }), encoding: "utf-8" };
+		} catch {
+			// The child emitted its console code page instead of UTF-8. Switch the
+			// whole stream to the fallback decoder; resetting the UTF-8 decoder
+			// drops any half-decoded sequence it kept from earlier chunks.
+			if (this.#fallback === undefined) throw new Error("terminal output is not valid UTF-8");
+			this.#decoder.decode();
+			this.#encoding = "fallback";
+			return { text: this.#fallback.decode(chunk, { stream }), encoding: "fallback" };
+		}
 	}
 
 	#normalize(decoded: string): NormalizedOutput {

@@ -8,6 +8,7 @@ import { WorkspaceTrustStore } from "@mycli/config";
 import { GatewayClient, type GatewayEvent } from "@mycli/gateway";
 import { startTestNodeBackend } from "./support/offline-update-fetch.ts";
 import { writeResponsesText, writeResponsesTool } from "./support/responses-sse.ts";
+import { shellCommand } from "./support/shell-command.ts";
 import type { NodeBackend } from "../src/node-runtime/node-backend.ts";
 import {
 	initialRuntimeState,
@@ -53,7 +54,7 @@ test("Worker terminal interactions reach the TUI and survive backend restart", {
 				if (requestCount === 5) await waitUntil(() => events.some((event) => event.method === "shell.completed"));
 				response.writeHead(200, { "content-type": "text/event-stream" });
 				if (requestCount === 1) writeResponsesTool(response, "shell-call", "Shell", {
-					command: `"${process.execPath}" interactive.cjs`, tty: true, yield_time_ms: 250,
+					command: shellCommand(process.execPath, ["interactive.cjs"], process.env), tty: true, yield_time_ms: 250,
 				}, "response-shell");
 				else if (requestCount <= 5) {
 					assert.ok(shellId);

@@ -367,10 +367,19 @@ function parsePosix(command: string, allowWrapper: boolean): ShellParseResult {
 }
 
 function parseWindows(command: string, shellKind: "powershell" | "cmd"): ShellParseResult {
-	const tokenized = tokenizeWindows(command, shellKind);
+	const normalized = shellKind === "powershell" ? stripPowerShellCallOperator(command) : command;
+	const tokenized = tokenizeWindows(normalized, shellKind);
 	if ("error" in tokenized) return tokenized.error;
 	if (tokenized.tokens.length === 0) return invalid("empty command");
 	return buildSegments(tokenized.tokens, shellKind);
+}
+
+// PowerShell needs `&` in front of a quoted executable path. That call operator
+// starts a plain command, so review the invocation instead of treating the
+// whole line as unreviewable syntax.
+function stripPowerShellCallOperator(command: string): string {
+	const stripped = command.replace(/^\s*&[ \t]+/u, "");
+	return stripped.trim() ? stripped : command;
 }
 
 function buildSegments(tokens: readonly ShellToken[], shellKind: ShellCommandKind): ShellParseResult {

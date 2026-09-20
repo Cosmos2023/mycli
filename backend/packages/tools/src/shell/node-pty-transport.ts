@@ -1,4 +1,5 @@
 import { setTimeout as delay } from "node:timers/promises";
+import { windowsCmdVerbatimArguments } from "./shell-profile.ts";
 import {
 	createProcessController,
 	type ProcessController,
@@ -36,7 +37,7 @@ interface NodePtyProcess {
 interface NodePtyModule {
 	spawn(
 		executable: string,
-		args: string[],
+		args: string[] | string,
 		options: {
 			readonly name: string;
 			readonly cols: number;
@@ -73,7 +74,9 @@ export async function startNodePtyTransport(
 
 	let process: NodePtyProcess;
 	try {
-		process = nodePty.spawn(request.executable, [...request.args], {
+		const verbatim = request.platform === "win32"
+			? windowsCmdVerbatimArguments(request.executable, request.args) : undefined;
+		process = nodePty.spawn(request.executable, verbatim?.join(" ") ?? [...request.args], {
 			name: request.name ?? request.env.TERM ?? DEFAULT_TERMINAL_NAME,
 			cols: request.columns,
 			rows: request.rows,
@@ -238,6 +241,10 @@ class NodePtyTransport implements ShellTransport {
 		this.#pendingOutput = [];
 		this.#outputListeners.clear();
 		this.#exitListeners.clear();
+		if (this.kind === "windows_conpty") {
+			// node-pty can report exit before releasing its ConPTY output worker.
+			try { this.#process.kill(); } catch { /* The native terminal is already closed. */ }
+		}
 	}
 
 	readonly #onData = (data: string): void => {

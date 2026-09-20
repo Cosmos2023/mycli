@@ -33,6 +33,7 @@ import { collectConfigChecks } from "../src/management/doctor/check-config.ts";
 import { collectProcessChecks } from "../src/management/doctor/check-process.ts";
 import { collectRuntimeChecks } from "../src/management/doctor/check-runtime.ts";
 import { collectStorageChecks } from "../src/management/doctor/check-storage.ts";
+import { collectTerminalChecks } from "../src/management/doctor/check-terminal.ts";
 import {
 	doctorResponseFromReport,
 	runDoctorCollectors,
@@ -1171,7 +1172,31 @@ test("runtime and process doctor validate local contracts without starting work"
 		["process_sandbox", "ok"],
 	]);
 	assert.equal(executableProbes, 1);
-	assert.doesNotMatch(JSON.stringify(processChecks), new RegExp(root.workspaceRoot, "u"));
+	assert.equal(JSON.stringify(processChecks).includes(JSON.stringify(root.workspaceRoot)), false);
+});
+
+test("terminal doctor reports the resolved shell and flags an ignored override", () => {
+	const ignored = collectTerminalChecks({
+		env: { MYCLI_SHELL_PATH: String.raw`C:\missing\pwsh.exe` },
+		platform: "win32",
+		isTty: true,
+		columns: 120,
+		rows: 40,
+	});
+	const honored = collectTerminalChecks({
+		env: { MYCLI_SHELL_PATH: "zsh" },
+		platform: "linux",
+		isTty: true,
+		columns: 120,
+		rows: 40,
+	});
+
+	const ignoredSelection = ignored.find((check) => check.name === "shell_selection");
+	assert.equal(ignoredSelection?.status, "warning");
+	assert.equal(ignoredSelection?.message,
+		"shell=cmd dialect=cmd configured_shell_ignored=true");
+	assert.equal(honored.find((check) => check.name === "shell_selection")?.message,
+		"shell=zsh dialect=posix-sh");
 });
 
 async function doctorFixture(t: test.TestContext): Promise<{

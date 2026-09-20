@@ -1,4 +1,4 @@
-import { basename } from "node:path";
+import { resolveShellProfile } from "@mycli/tools";
 import type { DoctorCheck } from "./types.ts";
 
 interface TerminalDoctorOptions {
@@ -9,25 +9,14 @@ interface TerminalDoctorOptions {
 	readonly platform?: NodeJS.Platform;
 }
 
-const KNOWN_SHELLS = new Set([
-	"bash",
-	"cmd.exe",
-	"fish",
-	"nu",
-	"nushell",
-	"powershell.exe",
-	"pwsh",
-	"pwsh.exe",
-	"sh",
-	"zsh",
-]);
-
 export function collectTerminalChecks(options: TerminalDoctorOptions = {}): readonly DoctorCheck[] {
 	const env = options.env ?? process.env;
 	const isTty = options.isTty ?? process.stdout.isTTY === true;
 	const columns = boundedDimension(options.columns ?? process.stdout.columns);
 	const rows = boundedDimension(options.rows ?? process.stdout.rows);
-	const shell = shellName(env, options.platform ?? process.platform);
+	const shell = resolveShellProfile({ env, platform: options.platform });
+	const configured = (env.MYCLI_SHELL_PATH ?? "").trim();
+	const configuredIgnored = configured.length > 0 && shell.executable !== configured;
 	const dimensionsKnown = columns !== undefined && rows !== undefined;
 	const dimensionsUsable = dimensionsKnown && columns >= 40 && rows >= 10;
 	return Object.freeze([
@@ -43,17 +32,12 @@ export function collectTerminalChecks(options: TerminalDoctorOptions = {}): read
 		),
 		check(
 			"shell_selection",
-			shell === "unknown" ? "warning" : "ok",
-			`shell=${shell}`,
+			configuredIgnored ? "warning" : "ok",
+			configuredIgnored
+				? `shell=${shell.name} dialect=${shell.dialect} configured_shell_ignored=true`
+				: `shell=${shell.name} dialect=${shell.dialect}`,
 		),
 	]);
-}
-
-function shellName(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string {
-	const raw = platform === "win32" ? env.ComSpec : env.SHELL;
-	if (!raw) return "unknown";
-	const candidate = basename(raw.replaceAll("\\", "/")).toLowerCase();
-	return KNOWN_SHELLS.has(candidate) ? candidate : "unknown";
 }
 
 function boundedDimension(value: number | undefined): number | undefined {

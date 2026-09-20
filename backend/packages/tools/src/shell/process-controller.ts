@@ -97,12 +97,13 @@ export function createProcessController(
 
 	async function cleanupWindows(preferInterrupt: boolean): Promise<ProcessCleanupResult> {
 		if (preferInterrupt) {
+			let delivered = false;
 			try {
-				managed.kill("SIGBREAK");
+				delivered = managed.kill("SIGBREAK");
 			} catch {
 				// Continue to the fixed process-tree termination path.
 			}
-			if (await waitForTreeExit(INTERRUPT_GRACE_MS) || !isTreeAlive(targetPid)) {
+			if (delivered && (await waitForTreeExit(INTERRUPT_GRACE_MS) || !isTreeAlive(targetPid))) {
 				return { state: "interrupted", signal: "SIGBREAK" };
 			}
 		}

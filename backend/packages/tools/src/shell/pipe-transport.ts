@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import type { Readable } from "node:stream";
+import { windowsCmdVerbatimArguments } from "./shell-profile.ts";
 import {
 	createProcessController,
 	type ProcessController,
@@ -25,13 +26,16 @@ export async function startPipeTransport(
 	options: StartPipeTransportOptions = {},
 ): Promise<ShellTransport> {
 	validateRequest(request);
-	const child = spawn(request.executable, [...request.args], {
+	const verbatim = request.platform === "win32"
+		? windowsCmdVerbatimArguments(request.executable, request.args) : undefined;
+	const child = spawn(request.executable, verbatim ?? [...request.args], {
 		cwd: request.cwd,
 		env: { ...request.env },
 		detached: request.platform !== "win32",
 		shell: false,
 		stdio: ["ignore", "pipe", "pipe"],
 		windowsHide: true,
+		windowsVerbatimArguments: verbatim !== undefined,
 	});
 	try {
 		await once(child, "spawn");
@@ -57,7 +61,9 @@ export async function startPipeTransport(
 			get signalCode() {
 				return child.signalCode;
 			},
-			kill: (signal) => child.kill(signal),
+			// Node cannot deliver console control events through a Windows pipe process.
+			kill: (signal) => request.platform === "win32" && signal === "SIGBREAK"
+				? false : child.kill(signal),
 		}, {
 			...options.processController,
 			platform: request.platform,

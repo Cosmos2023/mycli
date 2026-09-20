@@ -87,14 +87,18 @@ test("node-pty classifies load and spawn failures by platform without raw detail
 });
 
 test("node-pty marks a successful Windows transport as ConPTY", async () => {
+	const fake = new FakePtyProcess();
 	const transport = await startNodePtyTransport(request("win32"), {
-		loadNodePty: async () => ({ spawn: () => new FakePtyProcess() }),
+		loadNodePty: async () => ({ spawn: () => fake }),
 		processController: { isProcessTreeAlive: () => false },
 	});
 
 	assert.equal(transport.kind, "windows_conpty");
 	assert.equal(transport.tty, true);
+	fake.emitExit({ exitCode: 0 });
 	await transport.close();
+	await transport.close();
+	assert.equal(fake.kills, 1, "release native ConPTY even after process exit");
 });
 
 test("ConPTY waits for an asynchronous pid and preserves early output and exit", async () => {

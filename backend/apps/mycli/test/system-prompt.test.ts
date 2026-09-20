@@ -29,6 +29,7 @@ test("complete Node system prompt contains the workflow contract", () => {
 	const prompt = loadSystemPromptTemplate();
 	for (const section of [
 		"# Identity",
+		"# Shell And Platform",
 		"# Tool Discipline",
 		"# Tool Calls And Scheduling",
 		"# Dirty Worktree Safety",
@@ -59,4 +60,9 @@ test("complete Node system prompt contains the workflow contract", () => {
 	assert.match(prompt, /call `wait_agent`; do not poll with shell commands/u);
 	assert.match(prompt, /Read and integrate each relevant report before giving the final answer/u);
 	assert.match(prompt, /After compaction or resume, use `list_agents`/u);
+	assert.match(prompt, /The environment context reports the active platform and shell/u);
+	assert.match(prompt, /Windows PowerShell 5\.1 rejects `&&` and `\|\|`/u);
+	assert.match(prompt, /Never change the console code page or output encoding/u);
+	assert.match(prompt, /only works in POSIX shells/u);
+	assert.doesNotMatch(prompt, /Alternatives include Node\.js or Python scripts, `sed`, `awk`, `perl`/u);
 });
