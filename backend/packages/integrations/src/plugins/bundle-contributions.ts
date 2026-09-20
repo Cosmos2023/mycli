@@ -40,7 +40,7 @@ export function pluginBundleContributions(discovery: PluginDiscovery, options: {
 		for (const [documentIndex, document] of plugin.manifest.hooks.entries()) {
 			const diagnostics: HookConfigDiagnostic[] = [];
 			const specs = parseHookConfigDocument(document, { path: plugin.manifest.manifestPath, scope: plugin.source },
-				{ workspaceRoot: options.workspaceRoot, homeDir: "", env: options.env }, diagnostics);
+				{ workspaceRoot: options.workspaceRoot, homeDir: "", env: options.env, pluginRoot: root }, diagnostics);
 			issues.push(...diagnostics.map((issue) => ({ pluginId: plugin.pluginId, errorClass: issue.errorClass })));
 			for (const spec of specs) {
 				const id = `plugin:${namespace}:${documentIndex}-${spec.hookId}`;

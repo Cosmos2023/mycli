@@ -66,8 +66,10 @@ test("writes a private atomic allowlist without command or environment values", 
 	const directoryMode = (await stat(join(fixture.homeDir, ".mycli"))).mode & 0o777;
 	const fileMode = (await stat(path)).mode & 0o777;
 
-	assert.equal(directoryMode, 0o700);
-	assert.equal(fileMode, 0o600);
+	if (process.platform !== "win32") {
+		assert.equal(directoryMode, 0o700);
+		assert.equal(fileMode, 0o600);
+	}
 	assert.equal(raw.includes("private-command"), false);
 	assert.equal(raw.includes("private-value"), false);
 	assert.equal(raw.includes("second-private-command"), false);

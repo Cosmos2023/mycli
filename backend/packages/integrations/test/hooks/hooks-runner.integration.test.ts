@@ -14,6 +14,17 @@ import {
 
 const FIXTURE = join(import.meta.dirname, "..", "fixtures", "hook-command.mjs");
 
+test("hook launcher forwards helper-owned environment after hook sanitization", async (t) => {
+	const fixture = await runnerFixture(t);
+	const runner = configuredRunner(fixture, { prepareProcess: () => ({ executable: process.execPath,
+		args: ["-e", "console.log(JSON.stringify({action:'modify',arguments:{carrier:process.env.MYCLI_SANDBOX_REQUEST_0}}))"],
+		env: { MYCLI_SANDBOX_REQUEST_0: "fixture-carrier" }, isolation: "windows_native" }) });
+	const spec = await approvedSpec(fixture, "allow");
+	assert.deepEqual(await runner.run(spec, invocation(), freshSignal()), {
+		action: "modify", arguments: { carrier: "fixture-carrier" },
+	});
+});
+
 test("runs approved JSON hooks with versioned input and maps allow, deny, and modify", async (t) => {
 	const fixture = await runnerFixture(t);
 	const runner = configuredRunner(fixture);

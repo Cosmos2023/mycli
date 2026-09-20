@@ -5,6 +5,7 @@ import type { HookInvocation, HookResult } from "@mycli/core";
 import {
 	createProcessController,
 	prepareSandboxedProcess,
+	windowsCmdVerbatimArguments,
 	type SandboxedProcessLaunch,
 	type SandboxProfile,
 } from "@mycli/tools";
@@ -212,11 +213,14 @@ async function runChildProcess(options: {
 	readonly timeoutMs: number;
 	readonly signal: AbortSignal;
 }): Promise<ProcessOutcome> {
-	const child = spawn(options.launch.executable, [...options.launch.args], {
+	const verbatim = process.platform === "win32"
+		? windowsCmdVerbatimArguments(options.launch.executable, options.launch.args) : undefined;
+	const child = spawn(options.launch.executable, verbatim ?? [...options.launch.args], {
 		cwd: options.cwd,
-		env: { ...options.env },
+		env: { ...options.env, ...options.launch.env },
 		shell: false,
 		windowsHide: true,
+		windowsVerbatimArguments: verbatim !== undefined,
 		detached: process.platform !== "win32",
 		stdio: ["pipe", "pipe", "pipe"],
 	});
@@ -421,6 +425,18 @@ function hookEnvironment(
 	if (spec.pluginRoot) {
 		env.CODEX_PLUGIN_ROOT = spec.pluginRoot;
 		env.CLAUDE_PLUGIN_ROOT = spec.pluginRoot;
+	}
+	if (process.platform === "win32") {
+		// PowerShell resolves native executables through PATHEXT and most tools
+		// need a writable temp directory; without them a hook can exit 0 with no
+		// output because the child never really ran.
+		for (const key of [
+			"SystemRoot", "WINDIR", "SystemDrive", "LOCALAPPDATA",
+			"PATHEXT", "COMSPEC", "TEMP", "TMP",
+		]) {
+			const value = environmentValue(environment, key);
+			if (value) env[key] = value;
+		}
 	}
 	if (spec.envPolicy === "inherit_safe") {
 		for (const key of SAFE_ENV_KEYS) {

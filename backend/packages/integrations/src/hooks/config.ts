@@ -18,7 +18,11 @@ export interface DiscoverHookConfigOptions {
 	readonly platform?: NodeJS.Platform;
 	readonly env?: Readonly<NodeJS.ProcessEnv>;
 	readonly shellPath?: string;
+	/** Plugin bundle root substituted for `${CODEX_PLUGIN_ROOT}`-style placeholders. */
+	readonly pluginRoot?: string;
 }
+
+const PLUGIN_ROOT_VARIABLES = ["CODEX_PLUGIN_ROOT", "CLAUDE_PLUGIN_ROOT"] as const;
 
 interface HookConfigFile {
 	readonly path: string;
@@ -264,13 +268,17 @@ function commandValue(
 ): { readonly argv: readonly string[]; readonly shellKind?: ConfiguredHookSpec["shellKind"] } {
 	if (typeof value === "string" && value.trim()) {
 		if (value.includes("\0")) throw new HookConfigError("invalid_command");
+		const command = interpolatePluginRoot(value.trim(), options.pluginRoot);
 		const profile = resolveShellProfile({
 			...(options.platform ? { platform: options.platform } : {}),
 			...(options.env ? { env: options.env } : {}),
 			...(options.shellPath ? { shellPath: options.shellPath } : {}),
 		});
 		return {
-			argv: Object.freeze([profile.executable, ...profile.execArgv(value.trim())]),
+			argv: Object.freeze([
+				profile.executable,
+				...profile.execArgv(quotedExecutableInvocation(command, profile.kind)),
+			]),
 			shellKind: profile.kind,
 		};
 	}
@@ -285,7 +293,40 @@ function commandValue(
 	))) {
 		throw new HookConfigError("invalid_command");
 	}
-	return { argv: Object.freeze(value.map((item) => (item as string).trim())) };
+	return {
+		argv: Object.freeze(value.map((item) => (
+			interpolatePluginRoot((item as string).trim(), options.pluginRoot)
+		))),
+	};
+}
+
+// Plugin bundles are authored for POSIX, CMD, and PowerShell shells. Interpolate
+// the bundle root before the shell runs so one manifest works on every host
+// instead of depending on that shell's own variable syntax.
+export function interpolatePluginRoot(command: string, pluginRoot: string | undefined): string {
+	if (!pluginRoot) return command;
+	let resolved = command;
+	for (const name of PLUGIN_ROOT_VARIABLES) {
+		for (const placeholder of [
+			`\${${name}}`,
+			`$${name}`,
+			`$env:${name}`,
+			`%${name}%`,
+		]) {
+			resolved = resolved.replaceAll(placeholder, pluginRoot);
+		}
+	}
+	return resolved;
+}
+
+// PowerShell treats a leading quoted token as a string literal, while CMD and
+// POSIX shells run it. Authored hook commands use the quoted form, so add the
+// call operator instead of rejecting them.
+function quotedExecutableInvocation(
+	command: string,
+	kind: ConfiguredHookSpec["shellKind"],
+): string {
+	return kind === "powershell" && /^["']/u.test(command) ? `& ${command}` : command;
 }
 
 function timeoutValue(value: unknown): number {

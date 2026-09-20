@@ -13,6 +13,16 @@ import {
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "plugins");
 
+test("plugin launcher forwards helper-owned environment after its minimal environment", async (t) => {
+	const manifest = await fixtureManifest("good");
+	const host = new PluginProcessHost({ manifest, sandboxProfile: fullAccessSandbox(manifest.pluginRoot),
+		prepareProcess: (argv) => ({ executable: argv[0]!, args: ["--import",
+			"data:text/javascript,if(process.env.MYCLI_SANDBOX_REQUEST_0!==%27fixture-carrier%27)throw%20Error(%27carrier-missing%27)", ...argv.slice(1)],
+			env: { MYCLI_SANDBOX_REQUEST_0: "fixture-carrier" }, isolation: "windows_native" }) });
+	t.after(() => host.close());
+	assert.ok((await host.start(new AbortController().signal)).length > 0);
+});
+
 test("plugin host initializes once, correlates concurrent calls, freezes registration, and shuts down", {
 	timeout: 10_000,
 }, async (t) => {

@@ -109,12 +109,14 @@ test("package paths reject escapes, symlink cycles and copying into the source",
 	await bundle(f.packageRoot, { name: "demo", skills: "./../outside" });
 	await assert.rejects(loadPluginBundle(f.packageRoot), /plugin_path_invalid/u);
 	await bundle(f.packageRoot, { name: "demo" });
-	await write(join(f.root, "outside"), "private-value");
-	await symlink(join(f.root, "outside"), join(f.packageRoot, "escape"));
+	const outside = join(f.root, "outside");
+	if (process.platform === "win32") await mkdir(outside);
+	await write(process.platform === "win32" ? join(outside, "secret") : outside, "private-value");
+	await symlink(outside, join(f.packageRoot, "escape"), process.platform === "win32" ? "junction" : "file");
 	const result = await f.manager.execute({ action: "add", source: f.packageRoot }, signal);
 	assert.deepEqual(result.issues, ["plugin_path_escape"]);
 	await rm(join(f.packageRoot, "escape"));
-	await symlink(f.packageRoot, join(f.packageRoot, "cycle"));
+	await symlink(f.packageRoot, join(f.packageRoot, "cycle"), process.platform === "win32" ? "junction" : "dir");
 	await assert.rejects(copyPluginPackage(f.packageRoot, join(f.root, "copy"), signal), /plugin_path_cycle/u);
 	await assert.rejects(copyPluginPackage(f.packageRoot, join(f.packageRoot, "nested"), signal), /plugin_destination_inside_source/u);
 });

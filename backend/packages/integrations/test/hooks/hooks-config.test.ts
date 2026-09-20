@@ -112,6 +112,46 @@ test("normalizes supported Codex groups and resolves string commands through the
 	assert.equal(configuredHookMatches(discovery.hooks[3]!, { toolName: "anything" }), true);
 });
 
+test("interpolates plugin roots for every supported shell placeholder syntax", async (t) => {
+	const fixture = await configFixture(t);
+	const pluginRoot = String.raw`C:\Users\demo\.mycli\plugins\demo`;
+	await writeHooks(fixture.workspaceRoot, {
+		hooks: [
+			{
+				id: "posix-style",
+				hook_point: "stop",
+				command: `node "\${CLAUDE_PLUGIN_ROOT}/hook.mjs"`,
+			},
+			{
+				id: "cmd-style",
+				hook_point: "stop",
+				command: `node "%CODEX_PLUGIN_ROOT%/hook.mjs"`,
+			},
+			{
+				id: "argv-style",
+				hook_point: "stop",
+				command: [process.execPath, "$env:CODEX_PLUGIN_ROOT/hook.mjs"],
+			},
+		],
+	});
+
+	const discovery = await discoverHookConfig({
+		...fixture,
+		platform: "linux",
+		env: { SHELL: "/custom/sh" },
+		pluginRoot,
+	});
+
+	assert.deepEqual(discovery.hooks.map((hook) => hook.command), [
+		["/custom/sh", "-lc", `node "${pluginRoot}/hook.mjs"`],
+		["/custom/sh", "-lc", `node "${pluginRoot}/hook.mjs"`],
+		[process.execPath, `${pluginRoot}/hook.mjs`],
+	]);
+	assert.deepEqual(discovery.hooks[2]?.command, [process.execPath, `${pluginRoot}/hook.mjs`]);
+	assert.equal(discovery.hooks[0]?.shellKind, "posix");
+	assert.deepEqual(discovery.diagnostics, []);
+});
+
 test("isolates invalid entries and emits bounded diagnostics without sensitive config values", async (t) => {
 	const fixture = await configFixture(t);
 	await writeHooks(fixture.workspaceRoot, {

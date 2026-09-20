@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { writeFile } from "node:fs/promises";
 import { basename } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const [mode, value] = process.argv.slice(2);
 
@@ -86,7 +87,7 @@ if (mode === "grandchild") {
 			respond({ action: "allow" });
 			break;
 		case "hang-tree": {
-			spawn(process.execPath, [new URL(import.meta.url).pathname, "grandchild", value], {
+			spawn(process.execPath, [fileURLToPath(import.meta.url), "grandchild", value], {
 				stdio: "ignore",
 			});
 			setInterval(() => undefined, 1_000);

@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { cp, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test, { type TestContext } from "node:test";
+import { removeFixtureDirectoryAfterTests } from "../../../storage/test/fixtures/directory-cleanup.ts";
 import {
 	HookManager,
 	PluginProcessHost,
@@ -161,7 +162,7 @@ test("plugin runtime does not retain commands from a plugin rejected for route c
 	timeout: 10_000,
 }, async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-plugin-route-conflict-"));
-	t.after(async () => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	const workspaceRoot = join(root, "workspace");
 	const homeDir = join(root, "home");
 	const pluginsRoot = join(workspaceRoot, ".mycli", "plugins");
@@ -199,7 +200,7 @@ async function runtimeFixture(
 	pluginIds: readonly ("good" | "crash")[],
 ): Promise<{ readonly workspaceRoot: string; readonly homeDir: string }> {
 	const root = await mkdtemp(join(tmpdir(), "mycli-plugin-runtime-"));
-	t.after(async () => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	const workspaceRoot = join(root, "workspace");
 	const homeDir = join(root, "home");
 	const pluginsRoot = join(workspaceRoot, ".mycli", "plugins");

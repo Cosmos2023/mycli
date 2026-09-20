@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { extname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { pluginWorkerSandboxProfile } from "./worker-sandbox.ts";
 import {
 	parsePluginV2ProtocolMessage,
 	type PluginV2ProtocolMessage,
@@ -65,7 +66,7 @@ const DEFAULT_MAX_LINE_BYTES = 262_144;
 const DEFAULT_MAX_STDERR_BYTES = 32_768;
 const DEFAULT_MAX_OUTSTANDING = 32;
 const MAX_PROTOCOL_LIMIT = 1_048_576;
-const MINIMAL_ENV_KEYS = ["PATH", "SystemRoot", "WINDIR", "TEMP", "TMP", "TMPDIR"] as const;
+const MINIMAL_ENV_KEYS = ["PATH", "SystemRoot", "WINDIR", "LOCALAPPDATA", "TEMP", "TMP", "TMPDIR"] as const;
 
 export class PluginHostError extends Error {
 	readonly evidence: PluginFailureEvidence;
@@ -188,9 +189,12 @@ export class PluginProcessHost {
 		try {
 			const workerPath = this.#options.workerPath ?? defaultWorkerPath();
 			const execArgv = this.#options.workerExecArgv ?? defaultWorkerExecArgv();
+			const profile = this.#options.workerPath === undefined
+				? pluginWorkerSandboxProfile(this.#options.sandboxProfile, workerPath, extname(workerPath) === ".ts")
+				: this.#options.sandboxProfile;
 			launch = this.#prepareProcess(
 				[process.execPath, ...execArgv, workerPath, this.#options.manifest.entryPath],
-				this.#options.sandboxProfile,
+				profile,
 			);
 		} catch {
 			const error = new PluginHostError("sandbox_unavailable", { phase: "connect", dispatched: false });
@@ -224,7 +228,7 @@ export class PluginProcessHost {
 		try {
 			child = spawn(launch.executable, [...launch.args], {
 				cwd: this.#options.manifest.pluginRoot,
-				env: { ...environment },
+				env: { ...environment, ...launch.env },
 				shell: false,
 				windowsHide: true,
 				detached: process.platform !== "win32",

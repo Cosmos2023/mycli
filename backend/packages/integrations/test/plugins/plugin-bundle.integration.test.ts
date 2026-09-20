@@ -5,19 +5,21 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import type { SandboxProfile } from "@mycli/tools";
-import { discoverPlugins, McpClient, PluginPackageManager, pluginBundleContributions, pluginMcpServerId, PluginRuntime,
+import { removeFixtureDirectoryAfterTests } from "../../../storage/test/fixtures/directory-cleanup.ts";
+import { discoverPlugins, PluginPackageManager, pluginBundleContributions, pluginMcpServerId, PluginRuntime,
 	skillInvocationArtifactFromMetadata, SkillRegistry, SkillTool } from "../../src/index.ts";
+import { McpClient } from "../../src/mcp/index.ts";
 
 const signal = new AbortController().signal;
 const unrestricted = (cwd: string): SandboxProfile => ({ mode: "danger-full-access", filesystem: "unrestricted",
 	network: "enabled", workspaceRoot: cwd, cwd, writableRoots: [cwd] });
 
 test("installed bundles activate namespaced skills, real MCP tools and root-aware command hooks", { timeout: 15_000 }, async (t) => {
-	const root = await mkdtemp(join(tmpdir(), "mycli-bundle-live-"));
-	t.after(() => rm(root, { recursive: true, force: true }));
+	const root = await mkdtemp(join(tmpdir(), "mycli-bundle-live spaces & chars-"));
+	removeFixtureDirectoryAfterTests(t, root);
 	const homeDir = join(root, "home");
 	const workspaceRoot = join(root, "workspace");
-	const source = join(root, "source with spaces");
+	const source = join(root, "source with spaces & characters");
 	await mkdir(homeDir);
 	await mkdir(workspaceRoot);
 	await mkdir(join(source, ".codex-plugin"), { recursive: true });
@@ -27,7 +29,7 @@ test("installed bundles activate namespaced skills, real MCP tools and root-awar
 	await writeFile(join(source, ".codex-plugin/plugin.json"), JSON.stringify({ name: "demo", description: "Repository review helpers",
 		mcpServers: { mcpServers: { fixture: { command: process.execPath, args: [fileURLToPath(new URL("../fixtures/mcp-stdio-server.mjs", import.meta.url))] },
 			broken: { command: "unreachable", env: "malformed", required: true } } },
-		hooks: { hooks: { UserPromptSubmit: [{ hooks: [{ type: "command", command: `"${process.execPath}" "$CODEX_PLUGIN_ROOT/hook.mjs"` }] }] } },
+		hooks: { hooks: { UserPromptSubmit: [{ hooks: [{ type: "command", command: `"${process.execPath}" "${process.platform === "win32" ? "%CODEX_PLUGIN_ROOT%" : "$CODEX_PLUGIN_ROOT"}/hook.mjs"` }] }] } },
 	}));
 	const manager = new PluginPackageManager({ homeDir, workspaceRoot });
 	assert.equal((await manager.execute({ action: "add", source }, signal)).ok, true);

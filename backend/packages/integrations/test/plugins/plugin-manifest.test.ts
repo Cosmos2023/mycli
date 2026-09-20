@@ -39,7 +39,9 @@ test("loads a validated Plugin API v2 manifest without importing its compiled en
 
 test("rejects missing, escaping, symlinked, and identity-mismatched entries", async (t) => {
 	const fixture = await manifestFixture(t);
-	const outside = join(fixture.root, "outside.js");
+	const outsideDirectory = join(fixture.root, "outside");
+	await mkdir(outsideDirectory);
+	const outside = join(outsideDirectory, "index.js");
 	await writeFile(outside, "export {};", "utf8");
 	const cases = [
 		{ id: "demo", entry: "dist/missing.js", expected: "entry_missing" },
@@ -64,8 +66,13 @@ test("rejects missing, escaping, symlinked, and identity-mismatched entries", as
 
 	const symlinkRoot = join(fixture.root, "symlink", "demo");
 	await writePlugin(symlinkRoot, manifestLines("demo", "dist/index.js"), "export {};");
-	await rm(join(symlinkRoot, "dist", "index.js"));
-	await symlink(outside, join(symlinkRoot, "dist", "index.js"));
+	if (process.platform === "win32") {
+		await rm(join(symlinkRoot, "dist"), { recursive: true });
+		await symlink(outsideDirectory, join(symlinkRoot, "dist"), "junction");
+	} else {
+		await rm(join(symlinkRoot, "dist", "index.js"));
+		await symlink(outside, join(symlinkRoot, "dist", "index.js"));
+	}
 	const escaped = await loadPluginManifest({
 		pluginRoot: symlinkRoot,
 		source: "repo",
