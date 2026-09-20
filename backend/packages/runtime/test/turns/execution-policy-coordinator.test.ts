@@ -24,6 +24,22 @@ test("execution policy coordinator fails closed before configuration", async (t)
 	coordinator.finishTurn("turn-1");
 });
 
+test("managed Windows readonly and network options survive grants and turn snapshots", async (t) => {
+	const workspace = await temporaryWorkspace(t);
+	const vendor = join(workspace, "vendor");
+	await mkdir(vendor);
+	const coordinator = new ExecutionPolicyCoordinator({ workspaceRoot: workspace,
+		constraints: { source: "managed", readOnlyRoots: [vendor], allowLocalBinding: true, writableTemp: false } });
+	coordinator.configure({ trust: "trusted", permission: "workspace" });
+	const current = coordinator.beginTurn("parity").profile;
+	assert.deepEqual(current.readOnlyRoots, [await realpath(vendor)]);
+	assert.equal(current.allowLocalBinding, true);
+	assert.equal(current.writableTemp, false);
+	coordinator.finishTurn("parity");
+	coordinator.configure({ trust: "trusted", permission: "full-access" });
+	assert.deepEqual(coordinator.snapshot().profile.readOnlyRoots, current.readOnlyRoots);
+});
+
 test("execution policy coordinator freezes a turn and applies changes to the next turn", async (t) => {
 	const workspace = await temporaryWorkspace(t);
 	const canonicalWorkspace = await realpath(workspace);

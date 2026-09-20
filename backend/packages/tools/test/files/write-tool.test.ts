@@ -121,7 +121,7 @@ test("an approved Write rejects a parent symlink swap before creating a temp fil
 	const prepared = await write.prepare(input, options());
 	assert.ok(prepared.mutationGuard);
 	await rename(sourceDirectory, movedDirectory);
-	await symlink(outsideDirectory, sourceDirectory);
+	await symlink(outsideDirectory, sourceDirectory, process.platform === "win32" ? "junction" : "dir");
 
 	const result = await write.execute(input, {
 		...options(),

@@ -224,3 +224,14 @@ test("child authority cannot drop inherited read-deny roots or globs", () => {
 	assert.deepEqual(child.deniedReadRoots, parent.deniedReadRoots);
 	assert.equal(Object.isFrozen(child.deniedReadGlobs), true);
 });
+
+test("child authority preserves readonly, loopback and temporary storage limits", () => {
+	const parent = { trusted: true, permission: "workspace", sandboxMode: "workspace-write", filesystem: "workspace_write", network: "enabled",
+		writableRoots: ["/workspace"], readOnlyRoots: ["/workspace/vendor"], allowLocalBinding: false, writableTemp: false } as const;
+	assert.throws(() => narrowAgentExecutionPolicy(parent, { ...parent, readOnlyRoots: [] }), AgentAuthorityError);
+	assert.throws(() => narrowAgentExecutionPolicy(parent, { ...parent, allowLocalBinding: true }), AgentAuthorityError);
+	assert.throws(() => narrowAgentExecutionPolicy(parent, { ...parent, writableTemp: true }), AgentAuthorityError);
+	const child = narrowAgentExecutionPolicy(parent);
+	assert.deepEqual(child, parent);
+	assert.equal(Object.isFrozen(child.readOnlyRoots), true);
+});

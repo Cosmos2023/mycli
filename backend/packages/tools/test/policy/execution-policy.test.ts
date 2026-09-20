@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import {
 	executionPolicy,
+	freezeNetworkEgress,
 	hasUnrestrictedNetwork,
 	networkDomainAllowed,
 	normalizeNetworkDomains,
@@ -72,6 +73,38 @@ test("network domain policy normalizes exact and wildcard hosts", () => {
 	}), false);
 	assert.throws(() => normalizeNetworkDomains(["https://example.com"]));
 	assert.throws(() => normalizeNetworkDomains(["*.127.0.0.1"]));
+});
+
+test("structured network egress is a bounded deny-by-default allowlist", () => {
+	const policy = freezeNetworkEgress({
+		default: "deny",
+		allow: [{
+			to: [{ cidr: "10.0.0.0/8", except: ["10.1.0.0/16"] }],
+			ports: [{ protocol: "tcp", port: 443, endPort: 444 }],
+		}],
+	});
+	assert.equal(policy.default, "deny");
+	assert.equal(Object.isFrozen(policy), true);
+	assert.equal(Object.isFrozen(policy.allow?.[0]?.to?.[0]?.except), true);
+	assert.equal(hasUnrestrictedNetwork({
+		...executionPolicy("full-access", process.cwd()),
+		networkEgress: policy,
+	}), false);
+
+	for (const invalid of [
+		{ default: "allow" as const, allow: [{ to: [{ cidr: "10.0.0.0/8" }] }] },
+		{ default: "deny" as const, allow: [] },
+		{ default: "deny" as const, allow: [{ to: [] }] },
+		{ default: "deny" as const, allow: [{ to: [{ cidr: "10.0.0.0" }] }] },
+		{ default: "deny" as const, allow: [{ to: [{ cidr: "10.0.0.0/33" }] }] },
+		{ default: "deny" as const, allow: [{ to: [{ cidr: "::1/129" }] }] },
+		{ default: "deny" as const, allow: [{ to: [{ cidr: "10.0.0.0/8" }], ports: [{ protocol: "sctp" as never }] }] },
+		{ default: "deny" as const, allow: [{ to: [{ cidr: "10.0.0.0/8" }], ports: [{ endPort: 443 }] }] },
+		{ default: "deny" as const, allow: [{ to: [{ cidr: "10.0.0.0/8" }], ports: [{ port: 500, endPort: 400 }] }] },
+		{ default: "deny" as const, allow: Array.from({ length: 33 }, () => ({ to: [{ cidr: "10.0.0.0/8" }] })) },
+	]) {
+		assert.throws(() => freezeNetworkEgress(invalid as never), TypeError);
+	}
 });
 
 async function temporaryWorkspace(t: test.TestContext): Promise<string> {

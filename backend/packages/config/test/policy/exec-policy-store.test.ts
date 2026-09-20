@@ -80,16 +80,74 @@ test("serializes concurrent writers without losing rules", async (t) => {
 	const fixture = await storeFixture(t);
 	const patterns = Array.from({ length: 12 }, (_, index) => ["tool", `task-${index}`]);
 
-	await Promise.all(patterns.map((pattern) => fixture.store({
+	const writes = await Promise.allSettled(patterns.map((pattern) => fixture.store({
 		lockTimeoutMs: 2_000,
 		lockRetryDelayMs: 1,
 	}).allow(pattern)));
+	for (const result of writes) {
+		if (result.status === "rejected") throw result.reason;
+	}
 
 	const rules = await fixture.store().loadUserRules();
 	assert.equal(rules.length, patterns.length);
 	assert.deepEqual(new Set(rules.map((rule) => rule.pattern.join("\0"))),
 		new Set(patterns.map((pattern) => pattern.join("\0"))));
 	assert.equal((await readdir(fixture.rulesDir)).includes("default.rules.lock"), false);
+});
+
+test("retries Windows delete-pending lock errors before writing", async (t) => {
+	const fixture = await storeFixture(t);
+	let attempts = 0;
+	const store = fixture.store({
+		lockRetryDelayMs: 1,
+		failpoint: (name) => {
+			if (name === "exec_policy_before_lock_open" && ++attempts === 1) {
+				throw Object.assign(new Error("delete pending"), { code: "EPERM" });
+			}
+		},
+	});
+	if (process.platform === "win32") {
+		assert.equal((await store.allow(["tool", "retry"])).status, "created");
+		assert.equal(attempts, 2);
+		assert.equal((await store.loadUserRules()).length, 1);
+	} else {
+		await assert.rejects(store.allow(["tool", "retry"]), {
+			kind: "exec_policy_write_failed",
+		});
+		assert.equal(attempts, 1);
+	}
+});
+
+test("persistent lock permission errors remain bounded and never write rules", async (t) => {
+	const fixture = await storeFixture(t);
+	const store = fixture.store({
+		lockTimeoutMs: 20,
+		lockRetryDelayMs: 1,
+		failpoint: (name) => {
+			if (name === "exec_policy_before_lock_open") {
+				throw Object.assign(new Error("permission denied"), { code: "EPERM" });
+			}
+		},
+	});
+	await assert.rejects(store.allow(["tool", "blocked"]), { kind: "exec_policy_write_failed" });
+	assert.deepEqual(await readdir(fixture.rulesDir), []);
+});
+
+test("does not recover an old lock whose owner is still alive", async (t) => {
+	const fixture = await storeFixture(t);
+	await mkdir(fixture.rulesDir, { recursive: true });
+	const lockPath = join(fixture.rulesDir, "default.rules.lock");
+	const old = Date.now() - 60_000;
+	const payload = JSON.stringify({
+		version: 1, owner_id: "live-owner", pid: process.pid, created_at_ms: old,
+	});
+	await writeFile(lockPath, payload, "utf8");
+	await utimes(lockPath, new Date(old), new Date(old));
+	await assert.rejects(fixture.store({
+		lockTimeoutMs: 20, lockRetryDelayMs: 1, lockStaleMs: 1,
+	}).allow(["tool", "blocked"]), { kind: "exec_policy_lock_timeout" });
+	assert.equal(await readFile(lockPath, "utf8"), payload);
+	assert.deepEqual(await fixture.store().loadUserRules(), []);
 });
 
 test("recovers a stale lock owned by a dead process", async (t) => {

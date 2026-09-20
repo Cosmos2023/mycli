@@ -96,7 +96,8 @@ export function resolveFileSandboxAccess(
 				&& options.sandboxOverrideApproved === true
 				&& options.sandboxOverridePolicy === undefined),
 		deniedReadPolicy: {
-			deniedReadRoots: [...(options.executionPolicy?.deniedReadRoots ?? []), ...(effectivePolicy?.deniedReadRoots ?? [])],
+			deniedReadRoots: [...(options.executionPolicy?.deniedReadRoots ?? []), ...(effectivePolicy?.deniedReadRoots ?? []),
+				...(options.executionPolicy?.readOnlyRoots ?? []), ...(effectivePolicy?.readOnlyRoots ?? [])],
 			deniedReadGlobs: [...(options.executionPolicy?.deniedReadGlobs ?? []), ...(effectivePolicy?.deniedReadGlobs ?? [])],
 		},
 		// Omitting a policy preserves the standalone workspace default; explicit [] denies writes.

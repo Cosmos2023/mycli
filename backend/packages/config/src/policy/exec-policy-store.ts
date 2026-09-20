@@ -155,20 +155,25 @@ export class ExecPolicyStore {
 			const ownerId = randomUUID();
 			let handle: Awaited<ReturnType<typeof open>>;
 			try {
+				this.#failpoint("exec_policy_before_lock_open");
 				handle = await open(path, "wx", 0o600);
 			} catch (error) {
-				if (!isNodeError(error, "EEXIST")) {
+				const exists = isNodeError(error, "EEXIST");
+				// Windows can report EPERM while another writer's unlink is pending.
+				const deletePending = process.platform === "win32" && isNodeError(error, "EPERM");
+				if (!exists && !deletePending) {
 					throw new ExecPolicyStoreError(
 						"exec_policy_write_failed",
 						"Could not acquire the global rule lock.",
 					);
 				}
-				if (await this.#recoverStaleLock(path)) continue;
+				if (exists && await this.#recoverStaleLock(path)) continue;
 				const elapsed = Date.now() - startedAt;
 				if (elapsed >= this.#lockTimeoutMs) {
 					throw new ExecPolicyStoreError(
-						"exec_policy_lock_timeout",
-						"Timed out waiting for the global rule lock.",
+						exists ? "exec_policy_lock_timeout" : "exec_policy_write_failed",
+						exists ? "Timed out waiting for the global rule lock."
+							: "Could not acquire the global rule lock.",
 					);
 				}
 				await delay(Math.min(this.#lockRetryDelayMs, this.#lockTimeoutMs - elapsed));

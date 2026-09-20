@@ -1,8 +1,17 @@
-import { realpathSync } from "node:fs";
+﻿import { realpathSync } from "node:fs";
 export {
 	networkDomainAllowed,
 	normalizeNetworkDomains,
 } from "@mycli/core";
+export { freezeNetworkEgress, NETWORK_EGRESS_LIMITS } from "@mycli/core";
+export type {
+	NetworkDestination,
+	NetworkEgressPolicy,
+	NetworkEgressRule,
+	NetworkPortRule,
+	NetworkRuleProtocol,
+} from "@mycli/core";
+import type { NetworkEgressPolicy } from "@mycli/core";
 
 export type PermissionProfile = "read-only" | "workspace" | "full-access";
 export type SandboxMode = "read-only" | "workspace-write" | "danger-full-access";
@@ -16,7 +25,11 @@ export interface ExecutionPolicy {
 	readonly filesystem: FilesystemPolicy;
 	readonly network: NetworkPolicy;
 	readonly networkDomains?: readonly string[];
+	readonly networkEgress?: NetworkEgressPolicy;
 	readonly readableRoots?: readonly string[];
+	readonly readOnlyRoots?: readonly string[];
+	readonly allowLocalBinding?: boolean;
+	readonly writableTemp?: boolean;
 	readonly writableRoots: readonly string[];
 }
 
@@ -50,7 +63,8 @@ export function hasUnrestrictedFilesystem(
 export function hasUnrestrictedNetwork(
 	policy: ExecutionPolicy | undefined,
 ): boolean {
-	return policy?.network === "enabled" && policy.networkDomains === undefined;
+	return policy?.network === "enabled" && policy.networkDomains === undefined
+		&& policy.networkEgress === undefined;
 }
 
 function immutablePolicy(

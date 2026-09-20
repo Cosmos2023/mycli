@@ -1,5 +1,5 @@
-import { open } from "node:fs/promises";
-import { join } from "node:path";
+import { open, stat } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { atomicPrivateFileUpdate } from "./private-file-writer.ts";
 
 const CACHE_FILE_NAME = "version.json";
@@ -353,9 +353,26 @@ async function readCache(
 			record,
 		});
 	} catch (error) {
-		return Object.freeze({ state: isNodeError(error, "ENOENT") ? "missing" : "unreadable" });
+		return Object.freeze({
+			state: isNodeError(error, "ENOENT") ? await missingCacheState(path) : "unreadable",
+		});
 	} finally {
 		await handle?.close().catch(() => undefined);
+	}
+}
+
+async function missingCacheState(path: string): Promise<"missing" | "unreadable"> {
+	// Windows also returns ENOENT when an ancestor is a file, not a directory.
+	let parent = dirname(path);
+	while (true) {
+		try {
+			return (await stat(parent)).isDirectory() ? "missing" : "unreadable";
+		} catch (error) {
+			if (!isNodeError(error, "ENOENT")) return "unreadable";
+		}
+		const next = dirname(parent);
+		if (next === parent) return "missing";
+		parent = next;
 	}
 }
 

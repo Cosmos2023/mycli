@@ -72,6 +72,7 @@ type SnapshotStoreConstructor = new () => SnapshotStore;
 test("writes complete content and preserves the existing permission mode", async (t) => {
 	const fixture = await mutationFixture(t, "old\n");
 	await chmod(fixture.target, 0o640);
+	const originalMode = (await stat(fixture.target)).mode & 0o777;
 	const result = await createRuntime(fixture.root).write({
 		path: "a.txt",
 		content: "new\n",
@@ -81,7 +82,7 @@ test("writes complete content and preserves the existing permission mode", async
 	assert.equal(result.status, "overwritten");
 	assert.equal(result.path, "a.txt");
 	assert.equal(await readFile(fixture.target, "utf8"), "new\n");
-	assert.equal((await stat(fixture.target)).mode & 0o777, 0o640);
+	assert.equal((await stat(fixture.target)).mode & 0o777, originalMode);
 	assert.equal(result.addedLines, 1);
 	assert.equal(result.removedLines, 1);
 });

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { NetworkEgressPolicy } from "../policy/network-egress-policy.ts";
 import type {
 	CanonicalConversationItem,
 	ProtocolId,
@@ -99,7 +100,11 @@ export interface AgentExecutionPolicySnapshot {
 	readonly filesystem: "read_only" | "workspace_write" | "unrestricted";
 	readonly network: "disabled" | "enabled";
 	readonly networkDomains?: readonly string[];
+	readonly networkEgress?: NetworkEgressPolicy;
 	readonly readableRoots?: readonly string[];
+	readonly readOnlyRoots?: readonly string[];
+	readonly allowLocalBinding?: boolean;
+	readonly writableTemp?: boolean;
 	readonly deniedReadRoots?: readonly string[];
 	readonly deniedReadGlobs?: readonly string[];
 	readonly writableRoots: readonly string[];
@@ -442,6 +447,9 @@ export function narrowAgentExecutionPolicy(
 		|| filesystemRank(candidate.filesystem) > filesystemRank(parent.filesystem)
 		|| networkRank(candidate.network) > networkRank(parent.network)
 		|| networkDomainsBroadenAuthority(parent, candidate)
+		|| candidate.allowLocalBinding === true && parent.allowLocalBinding !== true
+		|| (candidate.writableTemp ?? candidate.filesystem !== "read_only") && !(parent.writableTemp ?? parent.filesystem !== "read_only")
+		|| (parent.readOnlyRoots ?? []).some((root) => !(candidate.readOnlyRoots ?? []).includes(root))
 		|| (parent.deniedReadRoots ?? []).some((root) => !(candidate.deniedReadRoots ?? []).includes(root))
 		|| (parent.deniedReadGlobs ?? []).some((glob) => !(candidate.deniedReadGlobs ?? []).includes(glob))
 		|| (parent.filesystem !== "unrestricted"
@@ -454,6 +462,7 @@ export function narrowAgentExecutionPolicy(
 	if (broader) throw new AgentAuthorityError();
 	return Object.freeze({
 		...candidate,
+		...(candidate.readOnlyRoots === undefined ? {} : { readOnlyRoots: Object.freeze([...candidate.readOnlyRoots]) }),
 		...(candidate.deniedReadRoots === undefined ? {} : { deniedReadRoots: Object.freeze([...candidate.deniedReadRoots]) }),
 		...(candidate.deniedReadGlobs === undefined ? {} : { deniedReadGlobs: Object.freeze([...candidate.deniedReadGlobs]) }),
 		...(candidate.networkDomains === undefined ? {} : {

@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import sharp from "sharp";
 import { executionPolicy, ToolRouter, ViewImageTool, type ToolExecutionOptions } from "../../src/index.ts";
+import { createFilePathAlias } from "../fixtures/path-alias.ts";
 
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADUlEQVQImWP4////fwAJ+wP9CNHoHgAAAABJRU5ErkJggg==";
 const OPTIONS: ToolExecutionOptions = {
@@ -43,9 +44,9 @@ test("view_image enforces symlink boundaries and honors explicit readable roots"
 	await mkdir(workspace);
 	const outside = join(root, "private.png");
 	await writeFile(outside, Buffer.from(PNG, "base64"));
-	await symlink(outside, join(workspace, "link.png"));
+	const alias = await createFilePathAlias(outside, join(workspace, "link"));
 	const tool = new ViewImageTool({ workspaceRoot: workspace, homeDir: root });
-	for (const path of [outside, "../private.png", "link.png"]) {
+	for (const path of [outside, "../private.png", alias]) {
 		const result = await tool.execute({ path }, OPTIONS);
 		assert.equal(result.errorKind, "workspace_escape");
 		assert.equal(result.images, undefined);

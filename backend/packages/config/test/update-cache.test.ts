@@ -325,6 +325,28 @@ test("timed out and unwritable refreshes remain non-fatal", async (t) => {
 	await unwritable.close();
 });
 
+test("status distinguishes absent parents from file collisions without writing", async (t) => {
+	const root = await temporaryDirectory(t);
+	const collision = join(root, "collision");
+	await writeFile(collision, "keep\n", "utf8");
+	for (const [homeDir, expected] of [
+		[join(root, "absent", "home"), "missing"],
+		[collision, "unreadable"],
+		[join(collision, "home"), "unreadable"],
+	] as const) {
+		const service = new CachedUpdateService({
+			homeDir, packageName: PACKAGE_NAME, currentVersion: CURRENT_VERSION,
+			fetch: (async () => { throw new Error("status must not fetch"); }) as typeof fetch,
+		});
+		try {
+			assert.equal((await service.status(true)).cacheState, expected);
+		} finally {
+			await service.close();
+		}
+	}
+	assert.equal(await readFile(collision, "utf8"), "keep\n");
+});
+
 test("installation guidance is evidence based with an explicit npm fallback", () => {
 	assert.deepEqual(updateInstallGuidance(PACKAGE_NAME, {
 		npm_config_user_agent: "pnpm/10.0.0 npm/? node/v24",

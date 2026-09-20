@@ -81,6 +81,8 @@ export function permissionRequestSatisfied(
 	workspaceRoot?: string,
 ): boolean {
 	if (!policy) return false;
+	if ((permissions.fileSystem?.write ?? []).some((path) =>
+		(policy.readOnlyRoots ?? []).some((root) => pathWithinRoot(root, path)))) return false;
 	if (permissions.network?.enabled && policy.network !== "enabled") return false;
 	const paths = [...(permissions.fileSystem?.read ?? []), ...(permissions.fileSystem?.write ?? [])];
 	if (paths.length > 0 && hasDeniedReads(policy)

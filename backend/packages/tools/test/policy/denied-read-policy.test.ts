@@ -46,7 +46,16 @@ test("Windows launch forwards resolved denies and preserves an absent exact root
 	for (const platform of ["darwin", "linux", "freebsd"] as const) {
 		assert.throws(() => prepareSandboxedProcess([process.execPath], profile, { platform }), /Denied-read rules/u);
 	}
-	assert.throws(() => prepareSandboxedProcess([process.execPath], { ...profile, ...executionPolicy("full-access", root) }, { platform: "win32" }), /Denied-read rules/u);
+	const fullAccess = prepareSandboxedProcess([process.execPath],
+		{ ...profile, ...executionPolicy("full-access", root) },
+		{ platform: "win32", windowsHelperPath: "helper.exe", isExecutable: () => true });
+	assert.equal(fullAccess.isolation, "windows_native");
+	const fullRequest = JSON.parse(fullAccess.args[1]!);
+	assert.equal(fullRequest.filesystem, "unrestricted");
+	assert.deepEqual(fullRequest.denied_read_roots, request.denied_read_roots);
+	assert.throws(() => prepareSandboxedProcess([process.execPath],
+		{ ...profile, ...executionPolicy("full-access", root) },
+		{ platform: "win32", isExecutable: () => false }), { kind: "sandbox_unavailable" });
 });
 
 test("Read and view_image cannot bypass denies with Full Access or a readable grant", async (t) => {

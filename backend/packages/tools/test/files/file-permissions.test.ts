@@ -239,3 +239,18 @@ test("denied reads also prevent mutation previews, overrides, and history disclo
 	assert.deepEqual(fixture.history, []);
 	await assertOriginalFiles(fixture.workspace);
 });
+
+test("readonly roots prevent every file mutation even with an approved Full Access override", async (t) => {
+	const fixture = await permissionFixture(t);
+	const policy: ExecutionPolicy = { ...executionPolicy("workspace", fixture.workspace), readOnlyRoots: [fixture.workspace] };
+	for (const original of mutationCalls(fixture.workspace)) {
+		const call = escalatedCall(original);
+		const options: ToolExecutionOptions = { ...executionOptions(call, policy), sandboxOverrideApproved: true,
+			sandboxOverridePolicy: executionPolicy("full-access", fixture.workspace) };
+		const result = await fixture.router.execute(call, options);
+		assert.equal(result.success, false, call.callId);
+		assert.equal(result.errorKind, "permission_denied", call.callId);
+	}
+	assert.deepEqual(fixture.history, []);
+	await assertOriginalFiles(fixture.workspace);
+});

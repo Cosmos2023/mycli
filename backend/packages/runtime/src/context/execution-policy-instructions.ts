@@ -20,6 +20,12 @@ export function renderExecutionPolicyContext(
 			: policy.networkDomains ? policyList(policy.networkDomains) : "all"}`,
 		`readable_roots: ${policyList(policy.readableRoots ?? [])}`,
 		`writable_roots: ${policyList(policy.writableRoots)}`,
+		...(policy.readOnlyRoots === undefined ? [] : [
+			`readonly_roots: ${policyList(policy.readOnlyRoots)}`,
+			"Readonly roots remain readable but cannot be modified, including through approvals or Full Access.",
+		]),
+		...(policy.allowLocalBinding === undefined ? [] : [`allow_local_binding: ${policy.allowLocalBinding}`]),
+		...(policy.writableTemp === undefined ? [] : [`writable_tmp: ${policy.writableTemp}`]),
 		...((policy.deniedReadRoots?.length ?? 0) > 0 || (policy.deniedReadGlobs?.length ?? 0) > 0 ? [
 			`denied_read_roots: ${policyList(policy.deniedReadRoots ?? [])}`,
 			`denied_read_globs: ${policyList(policy.deniedReadGlobs ?? [])}`,

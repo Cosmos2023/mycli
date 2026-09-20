@@ -12,12 +12,16 @@ test("renders canonical path data without changing policy or breaking its instru
 	const policy: ExecutionPolicy = Object.freeze({
 		mode: "workspace-write", filesystem: "workspace_write", network: "enabled",
 		readableRoots: paths, writableRoots: Object.freeze(["/work/z", "/work/z"]),
+		readOnlyRoots: paths, allowLocalBinding: false, writableTemp: false,
 		networkDomains: Object.freeze(["docs.example.com", "*.example.org"]),
 	});
 	const text = renderExecutionPolicyContext(policy, undefined);
 
 	assert.deepEqual(listField(text, "readable_roots"), [...paths].sort());
 	assert.deepEqual(listField(text, "writable_roots"), ["/work/z"]);
+	assert.deepEqual(listField(text, "readonly_roots"), [...paths].sort());
+	assert.match(text, /allow_local_binding: false/u);
+	assert.match(text, /writable_tmp: false/u);
 	assert.deepEqual(listField(text, "network_domains"), ["*.example.org", "docs.example.com"]);
 	assert.equal(text.match(/<\/execution_policy>/gu)?.length, 1);
 	assert.ok(text.includes("permission_profile: workspace"));

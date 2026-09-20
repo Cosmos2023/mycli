@@ -4,13 +4,13 @@ import {
 	mkdir,
 	realpath,
 	rm,
-	symlink,
 	writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import * as tools from "../../src/index.ts";
+import { createFilePathAlias } from "../fixtures/path-alias.ts";
 
 test("resolves relative and absolute files inside the real workspace", async (t) => {
 	const fixture = await workspaceFixture(t);
@@ -26,14 +26,14 @@ test("rejects parent traversal and symlink escape before reading", async (t) => 
 	const resolveReadableWorkspaceFile = requiredResolver();
 	const outside = join(fixture.parent, "outside-secret.txt");
 	await writeFile(outside, "private", "utf8");
-	await symlink(outside, join(fixture.root, "outside-link"));
+	const alias = await createFilePathAlias(outside, join(fixture.root, "outside-link"));
 
 	await assert.rejects(
 		() => resolveReadableWorkspaceFile(fixture.root, "../outside-secret.txt"),
 		hasKind("workspace_escape"),
 	);
 	await assert.rejects(
-		() => resolveReadableWorkspaceFile(fixture.root, "outside-link"),
+		() => resolveReadableWorkspaceFile(fixture.root, alias),
 		hasKind("workspace_escape"),
 	);
 });
@@ -43,7 +43,7 @@ test("resolves outside files only with unrestricted path access", async (t) => {
 	const resolveReadableWorkspaceFile = requiredResolver();
 	const outside = join(fixture.parent, "outside.txt");
 	await writeFile(outside, "outside", "utf8");
-	await symlink(outside, join(fixture.root, "outside-link"));
+	const alias = await createFilePathAlias(outside, join(fixture.root, "outside-link"));
 	const unrestricted = { allowOutsideWorkspace: true };
 
 	assert.equal(
@@ -51,7 +51,7 @@ test("resolves outside files only with unrestricted path access", async (t) => {
 		await realpath(outside),
 	);
 	assert.equal(
-		await resolveReadableWorkspaceFile(fixture.root, "outside-link", unrestricted),
+		await resolveReadableWorkspaceFile(fixture.root, alias, unrestricted),
 		await realpath(outside),
 	);
 });
@@ -93,9 +93,9 @@ test("resolves existing and new mutation targets under the real workspace", asyn
 test("allows internal symlinks and resolves their real mutation target", async (t) => {
 	const fixture = await workspaceFixture(t);
 	const resolveWritableWorkspaceFile = requiredWritableResolver();
-	await symlink(fixture.file, join(fixture.root, "internal-link"));
+	const alias = await createFilePathAlias(fixture.file, join(fixture.root, "internal-link"));
 
-	const resolved = await resolveWritableWorkspaceFile(fixture.root, "internal-link");
+	const resolved = await resolveWritableWorkspaceFile(fixture.root, alias);
 
 	assert.equal(resolved.target, await realpath(fixture.file));
 	assert.equal(resolved.relativePath, "src/a.ts");
@@ -107,9 +107,9 @@ test("rejects traversal absolute escape and symbolic-link mutation escape", asyn
 	const resolveWritableWorkspaceFile = requiredWritableResolver();
 	const outside = join(fixture.parent, "outside-secret.txt");
 	await writeFile(outside, "private", "utf8");
-	await symlink(outside, join(fixture.root, "outside-link"));
+	const alias = await createFilePathAlias(outside, join(fixture.root, "outside-link"));
 
-	for (const path of ["../outside-secret.txt", outside, "outside-link"] as const) {
+	for (const path of ["../outside-secret.txt", outside, alias] as const) {
 		await assert.rejects(
 			() => resolveWritableWorkspaceFile(fixture.root, path),
 			hasKind("workspace_escape"),
@@ -144,7 +144,7 @@ test("confines outside mutations to exact granted writable roots", async (t) => 
 	const denied = join(fixture.parent, "private.txt");
 	await mkdir(grantedRoot);
 	await writeFile(denied, "private", "utf8");
-	await symlink(denied, join(grantedRoot, "escape-link"));
+	const alias = await createFilePathAlias(denied, join(grantedRoot, "escape-link"));
 	const options = { allowedRoots: [await realpath(grantedRoot)] };
 
 	const granted = await resolveWritableWorkspaceFile(
@@ -158,7 +158,7 @@ test("confines outside mutations to exact granted writable roots", async (t) => 
 		hasKind("workspace_escape"),
 	);
 	await assert.rejects(
-		() => resolveWritableWorkspaceFile(fixture.root, join(grantedRoot, "escape-link"), options),
+		() => resolveWritableWorkspaceFile(fixture.root, alias, options),
 		hasKind("workspace_escape"),
 	);
 });

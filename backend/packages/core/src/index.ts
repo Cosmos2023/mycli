@@ -225,6 +225,17 @@ export {
 	networkDomainAllowed,
 	normalizeNetworkDomains,
 } from "./policy/network-domain-policy.ts";
+export {
+	freezeNetworkEgress,
+	NETWORK_EGRESS_LIMITS,
+} from "./policy/network-egress-policy.ts";
+export type {
+	NetworkDestination,
+	NetworkEgressPolicy,
+	NetworkEgressRule,
+	NetworkPortRule,
+	NetworkRuleProtocol,
+} from "./policy/network-egress-policy.ts";
 export type {
 	InstructionContract,
 	InstructionFragment,

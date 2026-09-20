@@ -6,6 +6,7 @@ import type {
 } from "@mycli/core";
 import {
 	executionPolicy,
+	freezeNetworkEgress,
 	validateDeniedReadGlobs,
 	deniedReadPath,
 	freezePermissionRequest,
@@ -13,6 +14,7 @@ import {
 	pathWithinRoot,
 	type PermissionGrant,
 	type ExecutionPolicy,
+	type NetworkEgressPolicy,
 	type PermissionProfile,
 } from "@mycli/tools";
 
@@ -26,7 +28,11 @@ export interface ExecutionPolicyConstraints {
 	readonly source: "managed" | "runtime";
 	readonly network?: "enabled" | "disabled";
 	readonly networkDomains?: readonly string[];
+	readonly networkEgress?: NetworkEgressPolicy;
 	readonly readableRoots?: readonly string[];
+	readonly readOnlyRoots?: readonly string[];
+	readonly allowLocalBinding?: boolean;
+	readonly writableTemp?: boolean;
 	readonly deniedReadRoots?: readonly string[];
 	readonly deniedReadGlobs?: readonly string[];
 	readonly writableRoots?: readonly string[];
@@ -242,21 +248,31 @@ export class ExecutionPolicyCoordinator {
 			? "disabled"
 			: policy.network;
 		const networkDomains = this.#constraints.networkDomains ?? policy.networkDomains;
+		const networkEgress = this.#constraints.networkEgress ?? policy.networkEgress;
 		const readableRoots = this.#constraints.readableRoots ?? policy.readableRoots;
+		const readOnlyRoots = uniqueStrings([...(policy.readOnlyRoots ?? []), ...(this.#constraints.readOnlyRoots ?? [])]);
+		const allowLocalBinding = this.#constraints.allowLocalBinding ?? policy.allowLocalBinding;
+		const writableTemp = this.#constraints.writableTemp ?? policy.writableTemp;
 		const deniedReadRoots = uniqueStrings([...(policy.deniedReadRoots ?? []), ...(this.#constraints.deniedReadRoots ?? [])]);
 		const deniedReadGlobs = uniqueStrings([...(policy.deniedReadGlobs ?? []), ...(this.#constraints.deniedReadGlobs ?? [])]);
 		const hasDenies = deniedReadRoots.length > 0 || deniedReadGlobs.length > 0;
-		if (!hasDenies && constrainedRoots === undefined
+		if (!hasDenies && readOnlyRoots.length === 0 && allowLocalBinding === policy.allowLocalBinding
+			&& writableTemp === policy.writableTemp && constrainedRoots === undefined
 			&& network === policy.network
 			&& networkDomains === policy.networkDomains
+			&& networkEgress === policy.networkEgress
 			&& readableRoots === policy.readableRoots) return policy;
 		return immutablePolicy(
-			{ ...policy, ...(hasDenies ? { deniedReadRoots, deniedReadGlobs } : {}) },
+			{ ...policy, ...(hasDenies ? { deniedReadRoots, deniedReadGlobs } : {}),
+				...(readOnlyRoots.length ? { readOnlyRoots } : {}),
+				...(allowLocalBinding === undefined ? {} : { allowLocalBinding }),
+				...(writableTemp === undefined ? {} : { writableTemp }) },
 			roots,
 			network,
 			constrainedRoots !== undefined || this.#constraints.readableRoots !== undefined || hasDenies,
 			networkDomains,
 			readableRoots,
+			networkEgress,
 		);
 	}
 
@@ -273,6 +289,7 @@ export class ExecutionPolicyCoordinator {
 		const requestedWrite = permissions.fileSystem?.write ?? [];
 		const write = requestedWrite.filter((path) =>
 			(allowedRoots === undefined || allowedRoots.some((root) => pathWithinRoot(root, path)))
+			&& !(this.#constraints?.readOnlyRoots ?? []).some((root) => pathWithinRoot(root, path))
 			&& !deniedReadPath(this.#workspaceRoot, path, this.#constraints ?? {}));
 		const constrainedDomains = this.#constraints?.networkDomains;
 		const networkAllowed = this.#constraints?.network !== "disabled"
@@ -310,8 +327,17 @@ function normalizeConstraints(
 		&& constraints.network !== "disabled") {
 		throw new TypeError("execution policy network constraint is invalid");
 	}
+	for (const value of [constraints.allowLocalBinding, constraints.writableTemp]) {
+		if (value !== undefined && typeof value !== "boolean") throw new TypeError("execution policy option must be boolean");
+	}
 	return Object.freeze({
 		source: constraints.source,
+		...(constraints.networkEgress === undefined
+			? {}
+			: { networkEgress: freezeNetworkEgress(constraints.networkEgress) }),
+		...(constraints.readOnlyRoots === undefined ? {} : { readOnlyRoots: Object.freeze(constraints.readOnlyRoots.map(executionPolicyRoot)) }),
+		...(constraints.allowLocalBinding === undefined ? {} : { allowLocalBinding: constraints.allowLocalBinding }),
+		...(constraints.writableTemp === undefined ? {} : { writableTemp: constraints.writableTemp }),
 		...(constraints.deniedReadRoots === undefined ? {} : {
 			deniedReadRoots: uniqueStrings(constraints.deniedReadRoots.map((root) => {
 				if (!isAbsolute(root) || /[\0\r\n]/u.test(root)) throw new TypeError("denied-read roots must be absolute paths");
@@ -377,6 +403,7 @@ function immutablePolicy(
 	forceRestricted = false,
 	networkDomains: readonly string[] | undefined = base.networkDomains,
 	readableRoots: readonly string[] | undefined = base.readableRoots,
+	networkEgress: NetworkEgressPolicy | undefined = base.networkEgress,
 ): ExecutionPolicy {
 	const unrestricted = base.filesystem === "unrestricted" && !forceRestricted;
 	const hasWritableRoots = writableRoots.length > 0;
@@ -388,7 +415,11 @@ function immutablePolicy(
 			? "unrestricted"
 			: hasWritableRoots ? "workspace_write" : "read_only",
 		network,
+		...(networkEgress === undefined ? {} : { networkEgress }),
 		...(base.deniedReadRoots === undefined ? {} : { deniedReadRoots: Object.freeze([...base.deniedReadRoots]) }),
+		...(base.readOnlyRoots === undefined ? {} : { readOnlyRoots: Object.freeze([...base.readOnlyRoots]) }),
+		...(base.allowLocalBinding === undefined ? {} : { allowLocalBinding: base.allowLocalBinding }),
+		...(base.writableTemp === undefined ? {} : { writableTemp: base.writableTemp }),
 		...(base.deniedReadGlobs === undefined ? {} : { deniedReadGlobs: Object.freeze([...base.deniedReadGlobs]) }),
 		...(networkDomains === undefined ? {} : {
 			networkDomains: Object.freeze([...networkDomains]),
@@ -406,6 +437,9 @@ function copyExecutionPolicy(policy: ExecutionPolicy): ExecutionPolicy {
 		filesystem: policy.filesystem,
 		network: policy.network,
 		...(policy.deniedReadRoots === undefined ? {} : { deniedReadRoots: Object.freeze([...policy.deniedReadRoots]) }),
+		...(policy.readOnlyRoots === undefined ? {} : { readOnlyRoots: Object.freeze([...policy.readOnlyRoots]) }),
+		...(policy.allowLocalBinding === undefined ? {} : { allowLocalBinding: policy.allowLocalBinding }),
+		...(policy.writableTemp === undefined ? {} : { writableTemp: policy.writableTemp }),
 		...(policy.deniedReadGlobs === undefined ? {} : { deniedReadGlobs: Object.freeze([...policy.deniedReadGlobs]) }),
 		...(policy.networkDomains === undefined ? {} : {
 			networkDomains: Object.freeze([...policy.networkDomains]),

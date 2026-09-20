@@ -1,22 +1,34 @@
 import { readFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
-import { normalizeNetworkDomains } from "@mycli/core";
+import {
+	freezeNetworkEgress,
+	normalizeNetworkDomains,
+	type NetworkEgressPolicy,
+} from "@mycli/core";
 import { parse } from "smol-toml";
 
 const EXECUTION_POLICY_FIELDS = new Set([
 	"network",
 	"readable_roots",
+	"readonly_roots",
+	"allow_local_binding",
+	"writable_tmp",
 	"denied_read_roots",
 	"denied_read_globs",
 	"writable_roots",
 	"allowed_network_domains",
+	"network_egress",
 ]);
 
 export interface ManagedExecutionPolicyConstraints {
 	readonly source: "managed";
 	readonly network?: "enabled" | "disabled";
 	readonly networkDomains?: readonly string[];
+	readonly networkEgress?: NetworkEgressPolicy;
 	readonly readableRoots?: readonly string[];
+	readonly readOnlyRoots?: readonly string[];
+	readonly allowLocalBinding?: boolean;
+	readonly writableTemp?: boolean;
 	readonly deniedReadRoots?: readonly string[];
 	readonly deniedReadGlobs?: readonly string[];
 	readonly writableRoots?: readonly string[];
@@ -59,6 +71,10 @@ export async function loadManagedExecutionPolicy(
 		throw invalidManagedPolicy("denied_read_globs");
 	}
 	const readableRoots = optionalStringArray(policy.readable_roots, "readable_roots", 256, 4_096);
+	const readOnlyRoots = optionalStringArray(policy.readonly_roots, "readonly_roots", 256, 4_096);
+	if (readOnlyRoots?.some((root) => !isAbsolute(root))) throw invalidManagedPolicy("readonly_roots");
+	const allowLocalBinding = optionalBoolean(policy.allow_local_binding, "allow_local_binding");
+	const writableTemp = optionalBoolean(policy.writable_tmp, "writable_tmp");
 	const writableRoots = optionalStringArray(policy.writable_roots, "writable_roots", 256, 4_096);
 	const configuredNetworkDomains = optionalStringArray(
 		policy.allowed_network_domains,
@@ -74,12 +90,18 @@ export async function loadManagedExecutionPolicy(
 	} catch {
 		throw invalidManagedPolicy("allowed_network_domains");
 	}
+	const networkEgress = managedNetworkEgress(policy.network_egress);
+	if (networkEgress !== undefined && (networkDomains !== undefined || network === "disabled")) {
+		throw invalidManagedPolicy("network_egress");
+	}
 	if (network === undefined
 		&& deniedReadRoots === undefined
 		&& deniedReadGlobs === undefined
 		&& readableRoots === undefined
+		&& readOnlyRoots === undefined && allowLocalBinding === undefined && writableTemp === undefined
 		&& writableRoots === undefined
-		&& networkDomains === undefined) {
+		&& networkDomains === undefined
+		&& networkEgress === undefined) {
 		return undefined;
 	}
 	return Object.freeze({
@@ -88,9 +110,68 @@ export async function loadManagedExecutionPolicy(
 		...(deniedReadGlobs === undefined ? {} : { deniedReadGlobs }),
 		...(network === undefined ? {} : { network }),
 		...(readableRoots === undefined ? {} : { readableRoots }),
+		...(readOnlyRoots === undefined ? {} : { readOnlyRoots }),
+		...(allowLocalBinding === undefined ? {} : { allowLocalBinding }),
+		...(writableTemp === undefined ? {} : { writableTemp }),
 		...(writableRoots === undefined ? {} : { writableRoots }),
 		...(networkDomains === undefined ? {} : { networkDomains }),
+		...(networkEgress === undefined ? {} : { networkEgress }),
 	});
+}
+
+function managedNetworkEgress(value: unknown): NetworkEgressPolicy | undefined {
+	if (value === undefined) return undefined;
+	if (!isRecord(value)) throw invalidManagedPolicy("network_egress");
+	try {
+		return freezeNetworkEgress({
+			default: value.default as NetworkEgressPolicy["default"],
+			...(value.allow === undefined ? {} : { allow: managedEgressRules(value.allow) }),
+			...(value.deny === undefined ? {} : { deny: managedEgressRules(value.deny) }),
+		});
+	} catch {
+		throw invalidManagedPolicy("network_egress");
+	}
+}
+
+function managedEgressRules(value: unknown) {
+	if (!Array.isArray(value)) throw invalidManagedPolicy("network_egress");
+	return value.map((rule) => {
+		if (!isRecord(rule) || !Array.isArray(rule.to)) throw invalidManagedPolicy("network_egress");
+		const to = rule.to.map((destination) => {
+			if (!isRecord(destination) || typeof destination.cidr !== "string") {
+				throw invalidManagedPolicy("network_egress");
+			}
+			const except = destination.except;
+			if (except !== undefined && !Array.isArray(except)) throw invalidManagedPolicy("network_egress");
+			return {
+				cidr: destination.cidr,
+				...(except === undefined ? {} : { except: except as readonly string[] }),
+			};
+		});
+		const ports = rule.ports;
+		if (ports === undefined) return { to };
+		if (!Array.isArray(ports)) throw invalidManagedPolicy("network_egress");
+		return {
+			to,
+			ports: ports.map((port) => {
+				if (!isRecord(port)) throw invalidManagedPolicy("network_egress");
+				const endPort = port.end_port;
+				if (endPort !== undefined && typeof endPort !== "number") {
+					throw invalidManagedPolicy("network_egress");
+				}
+				return {
+					...(port.protocol === undefined ? {} : { protocol: port.protocol }),
+					...(port.port === undefined ? {} : { port: port.port }),
+					...(endPort === undefined ? {} : { endPort }),
+				} as never;
+			}),
+		};
+	});
+}
+
+function optionalBoolean(value: unknown, field: string): boolean | undefined {
+	if (value === undefined || typeof value === "boolean") return value;
+	throw invalidManagedPolicy(field);
 }
 
 function optionalNetworkPolicy(value: unknown): "enabled" | "disabled" | undefined {

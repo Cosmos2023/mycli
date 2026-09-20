@@ -4,7 +4,12 @@ import {
 	stableModelInputJson,
 	type ToolDefinition,
 } from "@mycli/core";
-import { normalizeNetworkDomains, type ExecutionPolicy } from "@mycli/tools";
+import {
+	freezeNetworkEgress,
+	normalizeNetworkDomains,
+	type ExecutionPolicy,
+	type NetworkEgressPolicy,
+} from "@mycli/tools";
 import type {
 	ExecutionPolicyConfiguration,
 	TurnExecutionPolicy,
@@ -292,6 +297,9 @@ function executionPolicy(value: unknown): ExecutionPolicy {
 		throw new TypeError("execution policy mode and filesystem do not match");
 	}
 	const writableRoots = policyRootList(policy.writableRoots, "writable roots");
+	for (const value of [policy.allowLocalBinding, policy.writableTemp]) {
+		if (value !== undefined && typeof value !== "boolean") throw new TypeError("execution policy option must be boolean");
+	}
 	if (policy.filesystem === "read_only" && writableRoots.length > 0) {
 		throw new TypeError("read-only execution policy cannot have writable roots");
 	}
@@ -306,12 +314,19 @@ function executionPolicy(value: unknown): ExecutionPolicy {
 			MAX_POLICY_LIST_ITEMS,
 			253,
 		));
+	const networkEgress: NetworkEgressPolicy | undefined = policy.networkEgress === undefined
+		? undefined
+		: freezeNetworkEgress(policy.networkEgress as NetworkEgressPolicy);
 	return Object.freeze({
 		mode: policy.mode,
 		filesystem: policy.filesystem,
 		network: policy.network,
 		...(networkDomains === undefined ? {} : { networkDomains }),
+		...(networkEgress === undefined ? {} : { networkEgress }),
 		...(policy.deniedReadRoots === undefined ? {} : { deniedReadRoots: policyRootList(policy.deniedReadRoots, "denied read roots") }),
+		...(policy.readOnlyRoots === undefined ? {} : { readOnlyRoots: policyRootList(policy.readOnlyRoots, "readonly roots") }),
+		...(policy.allowLocalBinding === undefined ? {} : { allowLocalBinding: policy.allowLocalBinding as boolean }),
+		...(policy.writableTemp === undefined ? {} : { writableTemp: policy.writableTemp as boolean }),
 		...(policy.deniedReadGlobs === undefined ? {} : { deniedReadGlobs: stringList(policy.deniedReadGlobs, "denied read globs", MAX_POLICY_LIST_ITEMS, 4_096) }),
 		...(policy.readableRoots === undefined
 			? {}

@@ -18,7 +18,7 @@ test("run execution snapshots own deeply frozen policy and catalog values", () =
 		properties: { query: { type: "string" } },
 		additionalProperties: false,
 	};
-	const writableRoots = ["/workspace"];
+	const writableRoots = [resolve("/workspace")];
 	const direct = definition("builtin:search", "Search", schema);
 	const deferred = definition("mcp:docs:search", "docs_search");
 	const snapshot = createRunExecutionSnapshot({
@@ -31,6 +31,7 @@ test("run execution snapshots own deeply frozen policy and catalog values", () =
 				filesystem: "workspace_write",
 				network: "disabled",
 				writableRoots,
+				readOnlyRoots: [resolve("/workspace/vendor")], allowLocalBinding: true, writableTemp: false,
 			},
 		},
 		policyConfiguration: {
@@ -51,16 +52,63 @@ test("run execution snapshots own deeply frozen policy and catalog values", () =
 	assert.equal(snapshot.toolCatalog.directTools[0]?.inputSchema.properties
 		&& Reflect.get(snapshot.toolCatalog.directTools[0].inputSchema.properties, "query")
 		&& Reflect.get(Reflect.get(snapshot.toolCatalog.directTools[0].inputSchema.properties, "query"), "type"), "string");
-	assert.deepEqual(snapshot.policy?.profile.writableRoots, ["/workspace"]);
+	assert.deepEqual(snapshot.policy?.profile.writableRoots, [resolve("/workspace")]);
 	assert.equal(Object.isFrozen(snapshot), true);
 	assert.equal(Object.isFrozen(snapshot.toolCatalog.directTools), true);
 	assert.equal(Object.isFrozen(snapshot.toolCatalog.directTools[0]?.inputSchema), true);
 	assert.equal(Object.isFrozen(snapshot.policy?.profile.writableRoots), true);
+	assert.deepEqual(snapshot.policy?.profile.readOnlyRoots, [resolve("/workspace/vendor")]);
+	assert.equal(Object.isFrozen(snapshot.policy?.profile.readOnlyRoots), true);
+	const restoredPolicy = parseRunExecutionSnapshot(JSON.parse(JSON.stringify(snapshot)), "turn-1").policy?.profile;
+	assert.equal(restoredPolicy?.allowLocalBinding, true);
+	assert.equal(restoredPolicy?.writableTemp, false);
 	assert.deepEqual(
 		toolExposureForSnapshot(snapshot.toolCatalog, ["missing", "docs_search"])
 			.map((tool) => tool.name),
 		["Search", "docs_search"],
 	);
+});
+
+test("run snapshots retain structured egress rules and reject malformed ones", () => {
+	const networkEgress = {
+		default: "deny" as const,
+		allow: [{
+			to: [{ cidr: "10.0.0.0/8", except: ["10.1.0.0/16"] }],
+			ports: [{ protocol: "tcp" as const, port: 443, endPort: 444 }],
+		}],
+	};
+	const input = {
+		turnId: "turn-egress",
+		collaborationMode: "default" as const,
+		policy: {
+			toolsEnabled: true,
+			profile: {
+				mode: "workspace-write" as const,
+				filesystem: "workspace_write" as const,
+				network: "enabled" as const,
+				networkEgress,
+				writableRoots: [resolve("/workspace")],
+			},
+		},
+		policyConfiguration: { trust: "trusted" as const, permission: "workspace" as const, source: "session" as const },
+		toolCatalog: { catalogVersion: 7, directTools: [], deferredTools: [], skillCatalog: "" },
+	};
+	const snapshot = createRunExecutionSnapshot(input);
+	assert.deepEqual(snapshot.policy?.profile.networkEgress, networkEgress);
+	assert.equal(Object.isFrozen(snapshot.policy?.profile.networkEgress), true);
+	const restored = parseRunExecutionSnapshot(JSON.parse(JSON.stringify(snapshot)), "turn-egress")
+		.policy?.profile;
+	assert.deepEqual(restored?.networkEgress, networkEgress);
+	assert.throws(() => createRunExecutionSnapshot({
+		...input,
+		policy: {
+			...input.policy,
+			profile: {
+				...input.policy.profile,
+				networkEgress: { default: "allow" as never, allow: networkEgress.allow },
+			},
+		},
+	}), TypeError);
 });
 
 test("run execution snapshot parsing verifies identity and catalog fingerprints", () => {
@@ -139,14 +187,14 @@ test("policy replacement preserves the original catalog and configuration snapsh
 			mode: "workspace-write",
 			filesystem: "workspace_write",
 			network: "disabled",
-			writableRoots: ["/workspace"],
+			writableRoots: [resolve("/workspace")],
 		},
 	});
 
 	assert.equal(updated.toolCatalog, original.toolCatalog);
 	assert.equal(updated.collaborationMode, "default");
 	assert.deepEqual(updated.policy?.configuration, original.policy?.configuration);
-	assert.deepEqual(updated.policy?.profile.writableRoots, ["/workspace"]);
+	assert.deepEqual(updated.policy?.profile.writableRoots, [resolve("/workspace")]);
 });
 
 test("run execution snapshots reject inconsistent or authority-expanding policy payloads", () => {
@@ -163,7 +211,7 @@ test("run execution snapshots reject inconsistent or authority-expanding policy 
 				mode: "read-only",
 				filesystem: "workspace_write",
 				network: "disabled",
-				writableRoots: ["/workspace"],
+				writableRoots: [resolve("/workspace")],
 			},
 		},
 		toolCatalog,
@@ -220,7 +268,8 @@ test("run execution snapshots bound the complete frozen catalog and continuation
 	});
 	const longRoots = (prefix: string) => Array.from({ length: 256 }, (_, index) => {
 		const suffix = `-${index}`;
-		return `/${prefix}${"r".repeat(4_096 - prefix.length - suffix.length - 1)}${suffix}`;
+		const root = resolve("/");
+		return `${root}${prefix}${"r".repeat(4_096 - prefix.length - suffix.length - root.length)}${suffix}`;
 	});
 	const serializedCandidate = {
 		version: 1,
