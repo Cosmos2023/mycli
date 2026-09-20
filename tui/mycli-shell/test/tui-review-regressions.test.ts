@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { resolve, sep } from "node:path";
 import test, { type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { stripVTControlCharacters } from "node:util";
@@ -42,8 +43,12 @@ async function frame(terminal: HeadlessTerminal): Promise<string> {
 	return terminal.visibleLines().join("\n");
 }
 
+function imagePath(name: string): string {
+	return resolve(`/tmp/${name}.png`).split(sep).join("/");
+}
+
 function pasteImage(terminal: HeadlessTerminal, name: string): void {
-	terminal.sendInput(`\x1b[200~/tmp/${name}.png\x1b[201~`);
+	terminal.sendInput(`\x1b[200~${imagePath(name)}\x1b[201~`);
 }
 
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: Error) => void } {
@@ -97,7 +102,7 @@ for (const restore of ["history", "undo"] as const) {
 		assert.equal(runtime.editor.getText(), text);
 		terminal.sendInput("\r");
 		await delay(0);
-		assert.deepEqual(submitted.at(-1)?.attachments?.localImages, [{ path: `/tmp/${restore}.png`, placeholder: text }]);
+		assert.deepEqual(submitted.at(-1)?.attachments?.localImages, [{ path: imagePath(restore), placeholder: text }]);
 	});
 }
 
@@ -126,7 +131,7 @@ for (const deleteEarlier of [false, true]) {
 		}
 		terminal.sendInput("\r");
 		await delay(0);
-		assert.deepEqual(submitted?.localImages?.map((image) => image.path), [`/tmp/${deleteEarlier ? "third" : "second"}.png`]);
+		assert.deepEqual(submitted?.localImages?.map((image) => image.path), [imagePath(deleteEarlier ? "third" : "second")]);
 	});
 }
 
@@ -155,7 +160,7 @@ test("equal image labels with different payloads remain separate history entries
 	terminal.sendInput("\x1b[A");
 	terminal.sendInput("\r");
 	await delay(0);
-	assert.deepEqual(submitted, [["/tmp/first.png"], ["/tmp/second.png"], ["/tmp/first.png"]]);
+	assert.deepEqual(submitted, [[imagePath("first")], [imagePath("second")], [imagePath("first")]]);
 });
 
 test("switching sessions does not expose another session's attachment through undo", async (t) => {
@@ -168,7 +173,7 @@ test("switching sessions does not expose another session's attachment through un
 	runtime.setState(initialState());
 	terminal.sendInput("\r");
 	await delay(0);
-	assert.deepEqual(submitted?.localImages?.map((image) => image.path), ["/tmp/session-a.png"]);
+	assert.deepEqual(submitted?.localImages?.map((image) => image.path), [imagePath("session-a")]);
 });
 
 test("failed settings persistence only rolls back the selected setting", async (t) => {

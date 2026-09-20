@@ -31,6 +31,20 @@ function assertVisibleMessage(terminal: HeadlessTerminal, text: string): void {
 	assert.ok(screen.some((line) => line.includes("WRAP CHECK")));
 }
 
+async function waitForVisibleMessage(terminal: HeadlessTerminal, text: string): Promise<void> {
+	const deadline = Date.now() + 2_000;
+	while (true) {
+		await delay(20);
+		await terminal.flush();
+		try {
+			assertVisibleMessage(terminal, text);
+			return;
+		} catch (error) {
+			if (!(error instanceof assert.AssertionError) || Date.now() >= deadline) throw error;
+		}
+	}
+}
+
 test("mixed Chinese progress prose fills available rows during streaming and resize", () => {
 	for (const initialWidth of [60, 80, 100, 120]) {
 		const component = new AssistantMessageComponent("");
@@ -77,10 +91,9 @@ for (const nativeScrollback of [false, true]) {
 		assertVisibleMessage(terminal, SAMPLE);
 		for (const width of [80, 60, 120, 100, 80]) {
 			terminal.resize(width, 24);
-			// Native resize rebuilds from source after the 75 ms debounce.
-			await delay(120);
-			await terminal.flush();
-			assertVisibleMessage(terminal, SAMPLE);
+			// Wait for the debounced frame, including the render scheduled after
+			// the timer. CPU contention can delay either step independently.
+			await waitForVisibleMessage(terminal, SAMPLE);
 		}
 	});
 }

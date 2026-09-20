@@ -56,15 +56,39 @@ test("compaction has its own clock and returns to the original turn clock", asyn
 });
 
 test("approval responses retain their scope once, and ignore unmatched responses", () => {
-	for (const [choice, label] of [["approve_once", "Approved once"], ["allow_session", "Allowed for this session"], ["always_allow", "Approved with “Always allow”"], ["reject", "Rejected"]]) {
+	for (const [choice, expected] of [
+		["approve_once", "You approved mycli to run git status this time"],
+		["allow_session", "You approved mycli to run git status every time this session"],
+		["always_allow", "You approved mycli to always run commands that start with git status"],
+		["reject", "You did not approve mycli to run git status"],
+	]) {
 		let state = reduceRuntimeEvent(initialRuntimeState(), "approval.request", { decision_id: "d", command_preview: "git status", preview: "Shell", tool_name: "Shell" });
 		assert.equal(reduceRuntimeEvent(state, "approval.respond", { decision_id: "other", choice }), state);
 		state = reduceRuntimeEvent(state, "approval.respond", { decision_id: "d", choice });
 		state = reduceRuntimeEvent(state, "approval.respond", { decision_id: "d", choice });
 		assert.equal(state.pendingApproval, null);
 		assert.equal(state.transcript.length, 1);
-		assert.equal(state.transcript[0]?.text, `${label}: git status`);
+		assert.equal(state.transcript[0]?.text, expected);
 	}
+});
+
+test("approval decisions shorten long or multi-line commands to a snippet", () => {
+	const long = `Get-ChildItem ${"x".repeat(200)}`;
+	let state = reduceRuntimeEvent(initialRuntimeState(), "approval.request", { decision_id: "long", command_preview: long, tool_name: "Shell" });
+	state = reduceRuntimeEvent(state, "approval.respond", { decision_id: "long", choice: "approve_once" });
+	const longText = String(state.transcript[0]?.text ?? "");
+	assert.match(longText, /^You approved mycli to run Get-ChildItem /u);
+	assert.match(longText, /… this time$/u);
+	assert.equal(longText.includes("x".repeat(100)), false);
+
+	let multiline = reduceRuntimeEvent(initialRuntimeState(), "approval.request", {
+		decision_id: "multi",
+		command_preview: "$PSVersionTable.PSVersion;\nWrite-Output done",
+		tool_name: "Shell",
+	});
+	multiline = reduceRuntimeEvent(multiline, "approval.respond", { decision_id: "multi", choice: "approve_once" });
+	assert.equal(multiline.transcript[0]?.text,
+		"You approved mycli to run $PSVersionTable.PSVersion; ... this time");
 });
 
 test("MCP startup uses catalog state and failures are deduplicated across refreshes", () => {

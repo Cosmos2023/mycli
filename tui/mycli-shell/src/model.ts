@@ -721,7 +721,7 @@ export type MycliShellSandboxReadiness = {
 	code: "ready" | "setup_incomplete" | "helper_missing" | "handshake_failed"
 		| "enforcement_unavailable" | "unsupported_platform" | "not_required";
 	platform: string;
-	isolation: "macos_seatbelt" | "linux_bubblewrap" | "windows_restricted_token" | "none";
+	isolation: "macos_seatbelt" | "linux_bubblewrap" | "windows_restricted_token" | "windows_psec" | "none";
 };
 
 export type MycliShellPermissionState = {

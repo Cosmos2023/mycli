@@ -3589,6 +3589,75 @@ test("mycli shell runtime keeps the trust gate visible when persistence fails", 
 	assert.equal(runtime.ui.children.length, 1);
 });
 
+test("mycli shell runtime paints the main UI before deferred startup gates resolve", async () => {
+	const terminal = new TestTerminal();
+	const runtime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal,
+		deferStartupGates: true,
+	});
+
+	runtime.start();
+	await setTimeout(25);
+
+	assert.equal(runtime.ui.children[0], runtime.transcriptArea);
+	assert.equal(runtime.ui.children.length, 6);
+	assert.doesNotMatch(stripAnsi(terminal.output), /Project trust/);
+	assert.match(stripAnsi(terminal.output), /deepseek-v4-flash/);
+
+	runtime.applyStartupGates({
+		authenticationRequired: false,
+		trustRequired: true,
+		modelSelectionAvailable: false,
+	});
+	await setTimeout(25);
+
+	assert.equal(runtime.ui.children[0], runtime.transcriptArea);
+	assert.equal(runtime.ui.children.length, 6);
+	assert.match(stripAnsi(terminal.output), /Project trust/);
+});
+
+test("mycli shell runtime keeps the composer when no startup gate is pending", async () => {
+	const terminal = new TestTerminal();
+	const runtime = new MycliShellRuntime({
+		initialState: sampleState(),
+		terminal,
+		deferStartupGates: true,
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	runtime.applyStartupGates({
+		authenticationRequired: false,
+		trustRequired: false,
+		modelSelectionAvailable: true,
+	});
+	await setTimeout(25);
+
+	assert.equal(runtime.ui.children[0], runtime.transcriptArea);
+	assert.equal(runtime.ui.children.length, 6);
+	assert.equal(runtime.editorContainer.children[0], runtime.editor);
+	assert.doesNotMatch(stripAnsi(terminal.output), /Project trust/);
+});
+
+test("mycli shell runtime adopts composer text typed before the first session arrives", async () => {
+	const terminal = new TestTerminal();
+	const runtime = new MycliShellRuntime({
+		initialState: { ...sampleState(), sessionId: undefined },
+		terminal,
+		deferStartupGates: true,
+	});
+
+	runtime.start();
+	await setTimeout(25);
+	runtime.editor.setText("fix the failing test");
+	runtime.setState({ ...sampleState(), sessionId: "session-1" });
+	await setTimeout(25);
+
+	assert.equal(runtime.getState().sessionId, "session-1");
+	assert.equal(runtime.editor.getText(), "fix the failing test");
+});
+
 test("mycli shell command palette replaces editor like coding-agent selector", async () => {
 	const terminal = new TestTerminal();
 	const runtime = new MycliShellRuntime({

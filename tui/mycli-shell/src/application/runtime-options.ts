@@ -36,6 +36,13 @@ export type MycliShellRuntimeOptions = {
 	initialState: MycliShellState;
 	terminal?: Terminal;
 	requireTrust?: boolean;
+	/**
+	 * Mount and paint the main UI immediately, then evaluate the startup gates
+	 * once `applyStartupGates` receives the first session payload. Startup
+	 * callers use this when the shell is rendered before the backend answers;
+	 * `requireTrust` stays unused until those gates are applied.
+	 */
+	deferStartupGates?: boolean;
 	trustSavedDecision?: ProjectTrustDecision;
 	projectTrusted?: boolean;
 	onTrustSelect?: (trusted: boolean) => void | Promise<void>;

@@ -128,7 +128,11 @@ import {
 	visualSettingsWithChoice,
 	visualSettingValue,
 } from "./settings-values.ts";
-import { StartupOnboardingCoordinator, type StartupOnboardingStage } from "./startup-onboarding.ts";
+import {
+	StartupOnboardingCoordinator,
+	type StartupOnboardingInput,
+	type StartupOnboardingStage,
+} from "./startup-onboarding.ts";
 
 type ComposerSessionSnapshot = {
 	draft: EditorDraft;
@@ -217,12 +221,14 @@ export class MycliShellRuntime {
 		this.state = options.initialState;
 		this.commandCatalog = [...(options.commands ?? [])];
 		this.routingNames = [...(options.commandNames ?? commandRoutingNames(this.commandCatalog))];
-		const startupOnboarding = new StartupOnboardingCoordinator({
-			authenticationRequired: this.startupAuthenticationRequired(),
-			trustRequired: options.requireTrust === true,
-			modelSelectionAvailable: (this.state.models?.length ?? 0) > 0,
-		});
-		this.startupOnboarding = startupOnboarding.current() ? startupOnboarding : null;
+		const startupOnboarding = options.deferStartupGates === true
+			? null
+			: new StartupOnboardingCoordinator({
+				authenticationRequired: this.startupAuthenticationRequired(),
+				trustRequired: options.requireTrust === true,
+				modelSelectionAvailable: (this.state.models?.length ?? 0) > 0,
+			});
+		this.startupOnboarding = startupOnboarding?.current() ? startupOnboarding : null;
 		this.now = options.now ?? Date.now;
 		this.ui = new TUI(options.terminal ?? new ProcessTerminal());
 		this.applyVisualSettings(this.state.settings, this.state.terminalCapabilities);
@@ -323,6 +329,28 @@ export class MycliShellRuntime {
 		}
 	}
 
+	/**
+	 * Evaluates the startup gates that were deferred while the first session
+	 * payload was loading. Either opens the pending onboarding stage or hands
+	 * focus to the composer.
+	 */
+	applyStartupGates(input: StartupOnboardingInput): void {
+		if (!this.options.deferStartupGates) return;
+		const coordinator = new StartupOnboardingCoordinator(input);
+		this.startupOnboarding = coordinator.current() ? coordinator : null;
+		if (!this.startupOnboarding) {
+			if (this.mainMounted && this.selectorActive) {
+				this.ui.requestRender();
+				return;
+			}
+			this.finishStartupOnboarding();
+			return;
+		}
+		if (this.started) {
+			this.showStartupOnboardingStage();
+		}
+	}
+
 	setState(nextState: MycliShellState, options: MycliShellStateUpdateOptions = {}): void {
 		const previousState = this.state;
 		const effectiveState = this.applyToolDetailMode(nextState, options.transcriptUpdate);
@@ -330,7 +358,10 @@ export class MycliShellRuntime {
 		if (sessionChanged) {
 			this.sessionRevision += 1;
 			if (this.selectorStack.some((entry) => entry.dispose)) this.restoreEditor();
-			this.captureComposerSession(previousState.sessionId);
+			// The shell paints before the first session arrives, so the composer may
+			// already hold text the user typed during startup. Adopt it as the draft
+			// of the session that is activating instead of dropping it.
+			this.captureComposerSession(previousState.sessionId ?? effectiveState.sessionId);
 			this.closeTranscriptViewer();
 		}
 		const settingsChanged = this.settingsSignature(previousState) !== this.settingsSignature(effectiveState);

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { resolve, sep } from "node:path";
 import test from "node:test";
 import { normalizeDroppedFilePaste } from "../src/tui-core/components/editor.ts";
 
@@ -36,7 +37,8 @@ test("editor normalizes dropped workspace image files into image placeholders", 
 
 test("editor normalizes dropped absolute image files outside workspace into image placeholders", () => {
 	const images: string[] = [];
-	const text = normalizeDroppedFilePaste("/Users/cosmos/Desktop/qq_emoji_image.jpg", {
+	const imagePath = resolve("/Users/cosmos/Desktop/qq_emoji_image.jpg").split(sep).join("/");
+	const text = normalizeDroppedFilePaste(imagePath, {
 		cwd: "/Users/cosmos/Downloads",
 		onDroppedImageFile: (path) => {
 			images.push(path);
@@ -45,7 +47,7 @@ test("editor normalizes dropped absolute image files outside workspace into imag
 	});
 
 	assert.equal(text, "[image #1]");
-	assert.deepEqual(images, ["/Users/cosmos/Desktop/qq_emoji_image.jpg"]);
+	assert.deepEqual(images, [imagePath]);
 });
 
 test("editor keeps multi-item and outside-workspace pastes as plain text", () => {

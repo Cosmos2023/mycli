@@ -4,6 +4,7 @@ import { Text } from "../../tui-core/components/text.ts";
 import type { Component } from "../../tui-core/tui.ts";
 import { theme } from "../../theme/theme.ts";
 import { AssistantMessageComponent } from "./assistant-message.ts";
+import { ApprovalDecisionComponent } from "./approval-decision.ts";
 import { BackgroundTerminalsComponent } from "./background-terminals.ts";
 import { BashExecutionComponent } from "./bash-execution.ts";
 import { ClarificationResponseComponent } from "./clarification-response.ts";
@@ -113,6 +114,9 @@ function createMessageComponent(message: MycliShellMessage, hideThinking?: boole
 	if (message.role === "user") return new UserMessageComponent(message.text);
 	if (message.role === "assistant") {
 		return new AssistantMessageComponent(message.text, message.thinking, hideThinking ?? message.thinkingHidden ?? true);
+	}
+	if (message.id.startsWith("approval-decision:")) {
+		return new ApprovalDecisionComponent(message.text, message.role === "warning");
 	}
 	return message.role === "system"
 		? new Text(theme.fg("muted", message.text), 1, 0)

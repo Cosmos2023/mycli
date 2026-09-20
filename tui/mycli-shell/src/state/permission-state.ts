@@ -128,7 +128,7 @@ function sandboxReadinessCodeValue(value: unknown): NonNullable<MycliShellPermis
 
 function sandboxIsolationValue(value: unknown): NonNullable<MycliShellPermissionState["sandboxReadiness"]>["isolation"] | null {
 	return value === "macos_seatbelt" || value === "linux_bubblewrap"
-		|| value === "windows_restricted_token" || value === "none" ? value : null;
+		|| value === "windows_restricted_token" || value === "windows_psec" || value === "none" ? value : null;
 }
 
 function nonNegativeCount(value: unknown): number {

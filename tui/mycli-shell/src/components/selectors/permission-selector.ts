@@ -247,5 +247,6 @@ function isolationLabel(value: NonNullable<MycliShellPermissionState["sandboxRea
 	if (value === "macos_seatbelt") return "macOS Seatbelt";
 	if (value === "linux_bubblewrap") return "Linux bubblewrap";
 	if (value === "windows_restricted_token") return "Windows restricted token";
+	if (value === "windows_psec") return "Windows PSEC";
 	return "no process isolation";
 }

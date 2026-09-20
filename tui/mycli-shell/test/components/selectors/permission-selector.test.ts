@@ -4,6 +4,8 @@ import { stripVTControlCharacters as stripAnsi } from "node:util";
 import { PermissionSelectorComponent } from "../../../src/components/selectors/permission-selector.ts";
 import type { MycliShellPermissionState } from "../../../src/model.ts";
 import { visibleWidth } from "../../../src/tui-core/index.ts";
+import { permissionStateFromUnknown } from "../../../src/state/permission-state.ts";
+import { setUiGlyphMode, uiGlyphMode } from "../../../src/theme/terminal-style.ts";
 
 const permissions: MycliShellPermissionState = {
 	active: "workspace",
@@ -61,7 +63,22 @@ const permissions: MycliShellPermissionState = {
 	],
 };
 
-test("permission selector renders Codex-style profiles and stays width safe", () => {
+test("permission selector preserves and renders PSEC readiness from the gateway", () => {
+	const decoded = permissionStateFromUnknown({ ...permissions,
+		sandbox_readiness: { state: "ready", code: "ready", platform: "win32", isolation: "windows_psec" },
+	});
+	assert.ok(decoded);
+	assert.equal(decoded.sandboxReadiness?.isolation, "windows_psec");
+	const selector = new PermissionSelectorComponent({ permissions: decoded,
+		onSelect() {}, onClearAllowances() {}, onCancel() {},
+	});
+	assert.match(stripAnsi(selector.render(80).join("\n")), /Sandbox: ready.*Windows PSEC/u);
+});
+
+test("permission selector renders Codex-style profiles and stays width safe", (context) => {
+	const previous = uiGlyphMode();
+	context.after(() => setUiGlyphMode(previous));
+	setUiGlyphMode("unicode");
 	const selector = new PermissionSelectorComponent({
 		permissions,
 		onSelect() {},
@@ -160,7 +177,10 @@ test("permission saves block repeated input and expose failures before retry", a
 	assert.equal(calls, 2);
 });
 
-test("permission navigation skips disabled profiles and numeric keys cannot enable them", () => {
+test("permission navigation skips disabled profiles and numeric keys cannot enable them", (context) => {
+	const previous = uiGlyphMode();
+	context.after(() => setUiGlyphMode(previous));
+	setUiGlyphMode("unicode");
 	const selected: string[] = [];
 	const selector = new PermissionSelectorComponent({
 		permissions: {

@@ -24,7 +24,7 @@ test("fatal TUI diagnostics are private, bounded, and redacted", async (t) => {
 
 	assert.equal(logPath, join(homeDir, ".mycli", "logs", "tui-errors.log"));
 	const file = await stat(logPath!);
-	assert.equal(file.mode & 0o777, 0o600);
+	if (process.platform !== "win32") assert.equal(file.mode & 0o777, 0o600);
 	const content = await readFile(logPath!, "utf8");
 	assert.doesNotMatch(content, new RegExp(secret, "u"));
 	assert.doesNotMatch(content, /private-bearer/u);

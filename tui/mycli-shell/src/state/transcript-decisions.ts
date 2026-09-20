@@ -254,15 +254,57 @@ export function removeTransientClarificationItems(items: RuntimeTranscriptItem[]
 export function appendApprovalDecision(items: RuntimeTranscriptItem[], pending: Record<string, unknown> | null, response: Record<string, unknown>): RuntimeTranscriptItem[] {
 	const decisionId = stringValue(response.decision_id) ?? stringValue(response.decisionId);
 	if (!decisionId || !pending) return items;
-	const labels: Readonly<Record<string, string>> = { approve_once: "Approved once", allow_session: "Allowed for this session", always_allow: "Approved with “Always allow”", reject: "Rejected" };
-	const label = labels[String(response.choice)];
-	if (!label) return items;
-	const subject = boundedUiText(String(pending.command_preview ?? pending.preview ?? pending.tool_name ?? "Tool request"), "Tool request", 400);
+	const sentences = APPROVAL_DECISION_SENTENCES[String(response.choice)];
+	if (!sentences) return items;
+	const snippet = approvalDecisionSnippet(
+		pending.command_preview ?? pending.preview ?? pending.tool_name,
+	);
+	const text = snippet ? sentences.withSubject(snippet) : sentences.withoutSubject;
 	const id = `approval-decision:${decisionId}`;
 	if (items.some((item) => item.id === id)) return items;
 	return [...items, { id, type: response.choice === "reject" ? "warning" : "system_notice",
-		text: `${label}: ${subject}`, folded: false,
+		text, folded: false,
 		...(typeof response.turn_id === "string" ? { turn_id: response.turn_id } : {}),
 		metadata: { decision_id: decisionId, choice: response.choice, source: "approval" },
 	}];
+}
+
+// Decision lines mirror the Codex transcript: a short sentence with the command
+// reduced to its first line and bounded to 80 characters, never the raw command.
+const APPROVAL_DECISION_SENTENCES: Readonly<Record<string, {
+	readonly withSubject: (snippet: string) => string;
+	readonly withoutSubject: string;
+}>> = Object.freeze({
+	approve_once: {
+		withSubject: (snippet) => `You approved mycli to run ${snippet} this time`,
+		withoutSubject: "You approved this request this time",
+	},
+	allow_session: {
+		withSubject: (snippet) => `You approved mycli to run ${snippet} every time this session`,
+		withoutSubject: "You approved this request every time this session",
+	},
+	always_allow: {
+		withSubject: (snippet) => `You approved mycli to always run commands that start with ${snippet}`,
+		withoutSubject: "You approved mycli to always run this command",
+	},
+	reject: {
+		withSubject: (snippet) => `You did not approve mycli to run ${snippet}`,
+		withoutSubject: "You did not approve this request",
+	},
+});
+
+export const APPROVAL_DECISION_SNIPPET_MAX_CHARS = 80;
+
+export function approvalDecisionSnippet(value: unknown): string {
+	if (typeof value !== "string") return "";
+	const normalized = value.replace(/\r\n?/gu, "\n");
+	const firstLine = normalized.split("\n").find((line) => line.trim().length > 0) ?? "";
+	const redacted = boundedUiText(firstLine, "", 400);
+	if (!redacted) return "";
+	const multiline = normalized.includes("\n");
+	const suffix = multiline ? " ..." : "";
+	if (redacted.length + suffix.length <= APPROVAL_DECISION_SNIPPET_MAX_CHARS) {
+		return `${redacted}${suffix}`;
+	}
+	return `${redacted.slice(0, APPROVAL_DECISION_SNIPPET_MAX_CHARS - 1)}…`;
 }

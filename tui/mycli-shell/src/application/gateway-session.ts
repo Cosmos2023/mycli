@@ -205,6 +205,17 @@ function currentShellState(transcriptUpdate: "unchanged" | "tail" | "replace" = 
 	return runtimeStateProjector.project(runtimeState, sessions, transcriptUpdate);
 }
 
+/**
+ * The shell paints before the backend answers, so the composer exists while the
+ * session is still being bootstrapped. Reject early submissions instead of
+ * sending gateway requests without a session; the runtime keeps the draft.
+ */
+function requireBootstrapped(): void {
+	if (!bootstrapped) {
+		throw new Error("mycli is still starting. Try again in a moment.");
+	}
+}
+
 function setRuntimeState(
 	nextState: RuntimeShellState,
 	options: { replaceSessionTranscript?: boolean; eventType?: string } = {},
@@ -473,6 +484,7 @@ async function submitTurn(
 	if (!text) {
 		return;
 	}
+	requireBootstrapped();
 	const pendingClarification = runtimeState.pendingClarification;
 	if (pendingClarification) {
 		const requestId = typeof pendingClarification.request_id === "string"
@@ -687,6 +699,7 @@ async function submitFollowUp(message: string, attachments?: MycliShellSubmitAtt
 	if (!text) {
 		return;
 	}
+	requireBootstrapped();
 	const input: QueuedTurnInput = {
 		kind: "followUp",
 		message: text,
@@ -1166,6 +1179,7 @@ async function loadProviderModels(providerId: string): Promise<MycliShellModel[]
 }
 
 async function runCommand(command: string): Promise<void> {
+	requireBootstrapped();
 	const source = currentSessionMutationContext();
 	const manual = /^\/compact(?:\s|$)/.test(command.trim());
 	const operationId = manual ? `compact_${randomUUID()}` : undefined;
@@ -1405,8 +1419,8 @@ async function stopLocalRuntime(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-	await bootstrap();
 	if (process.env.MYCLI_TUI_NATIVE === "1") {
+		await bootstrap();
 		ttyStreams = openTtyStreams();
 		nativeRuntime = new NativeChatRuntime({
 			initialState: currentShellState(),
@@ -1422,6 +1436,10 @@ async function main(): Promise<void> {
 		nativeRuntime.start();
 		return;
 	}
+	// The shell module is fully loaded before the backend worker finishes its own
+	// import and session preparation. Paint the shell first and let bootstrap feed
+	// the running runtime through setRuntimeState instead of holding the first
+	// frame until runtime.ready arrives.
 	ttyStreams = openTtyStreams();
 	const alternateScreen = ["1", "true", "always"].includes(
 		(process.env.MYCLI_TUI_ALTERNATE_SCREEN ?? "").trim().toLowerCase(),
@@ -1430,6 +1448,7 @@ async function main(): Promise<void> {
 		initialState: currentShellState(),
 		terminal: new StreamTerminal(ttyStreams, { alternateScreen }),
 		requireTrust: !runtimeState.trustGateDismissed,
+		deferStartupGates: true,
 		projectTrusted: runtimeState.trust.state === "trusted",
 		trustSavedDecision: trustDecisionFromState(runtimeState.trust.state),
 		onTrustSelect: saveWorkspaceTrust,
@@ -1510,6 +1529,19 @@ async function main(): Promise<void> {
 		commandNames: slashCommandNames,
 	});
 	runtime.start();
+	try {
+		await bootstrap();
+		runtime.applyStartupGates({
+			authenticationRequired: runtimeState.authReadiness?.ready === false,
+			trustRequired: !runtimeState.trustGateDismissed,
+			modelSelectionAvailable: (runtimeState.models?.length ?? 0) > 0,
+		});
+	} catch (error) {
+		// The shell already owns the terminal, so restore it before the entry
+		// reports the failure and exits non-zero.
+		await stopLocalRuntime().catch(() => undefined);
+		throw error;
+	}
 }
 
 export const gatewayStartup = main();

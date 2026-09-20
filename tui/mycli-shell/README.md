@@ -63,6 +63,15 @@ transcript, status and footer. Viewport caching, activity animation, tool detail
 transcript cell creation each have a separate owner. Static output, native output and the history
 viewer use the same transcript block factory as interactive rendering.
 
+Gateway startup paints in two phases. `application/gateway-session.ts` opens the TTY and starts the
+shell as soon as the module is loaded, then awaits `runtime.ready`, `session.bootstrap`, the
+transcript and the catalogs while the user already sees the composer and footer. The runtime is
+constructed with `deferStartupGates`, so the trust, credential, model, connectivity and permission
+gates are evaluated by `applyStartupGates` once the first session payload arrives. Submissions
+made before that payload is applied are rejected with a notice instead of reaching the gateway
+without a session, and composer text typed during the wait becomes the activating session's draft.
+If bootstrap fails, the shell restores the terminal before the entry reports the failure.
+
 ## Composer Layout
 
 The current activity follows the last output line with one blank row between them. Spare rows
@@ -147,6 +156,9 @@ preserves the selection and composer draft. Plugin package management remains in
 - Transcript owners increment the content revision before changing visible content. Validated tail
   hints retain a stable prefix; session replacement and changed grouping context invalidate it.
 - Keep native scrollback commitment and transcript viewer lifetime separate from status animation.
+- Paint the shell before `runtime.ready` only through the deferred gate path: startup gates wait for
+  `applyStartupGates`, submissions are refused until the first payload is applied, and a bootstrap
+  failure restores the terminal before the entry reports it.
 
 `test/architecture.test.ts` checks dependency direction, unresolved internal imports, backend
 isolation, and cycles, including type-only imports. Package type checking also rejects unused
