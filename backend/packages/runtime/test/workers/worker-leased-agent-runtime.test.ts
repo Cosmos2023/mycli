@@ -406,7 +406,9 @@ function deferred<Value>() {
 	return { promise, resolve };
 }
 
-async function waitFor(read: () => boolean, timeoutMs = 2_000): Promise<void> {
+// Lease release runs behind real Worker processes; the canonical unit suite
+// schedules many files in parallel, so a tight bound flakes under load.
+async function waitFor(read: () => boolean, timeoutMs = 10_000): Promise<void> {
 	const deadline = Date.now() + timeoutMs;
 	while (!read()) {
 		if (Date.now() >= deadline) throw new Error("timed_out_waiting_for_leased_runtime");

@@ -14,6 +14,7 @@ import { openRuntimeSessionStore } from "@mycli/storage";
 import type { NodeBackend } from "../src/node-runtime/node-backend.ts";
 import { startTestNodeBackend as startNodeBackend } from "./support/offline-update-fetch.ts";
 import { responsesTextEvents, responsesToolBatchEvents, responsesToolEvents } from "./support/responses-sse.ts";
+import { shellCommand } from "./support/shell-command.ts";
 
 type JsonObject = Record<string, unknown>;
 
@@ -33,7 +34,7 @@ test("Node backend runs a full-access PTY without approval or Python", async (t)
 		"  process.stdout.write('stdin:' + value.trim() + '\\n', () => process.exit(0));",
 		"});",
 	].join("\n"), "utf8");
-	const command = `"${process.execPath}" wait-input.cjs`;
+	const command = shellCommand(process.execPath, ["wait-input.cjs"], process.env);
 	const requests: JsonObject[] = [];
 	const server = createServer((request, response) => {
 		let raw = "";
@@ -54,7 +55,7 @@ test("Node backend runs a full-access PTY without approval or Python", async (t)
 				const shellId = shellIdFromProviderInput(body) ?? "00000000";
 				writeSse(response, responsesTool("call-input", "WriteStdin", {
 					session_id: shellId,
-					chars: "hello-m6\n",
+					chars: process.platform === "win32" ? "hello-m6\r\n" : "hello-m6\n",
 					yield_time_ms: 3_000,
 				}));
 				return;
@@ -121,6 +122,7 @@ test("Node backend runs a full-access PTY without approval or Python", async (t)
 	assert.equal(requests.length, 3);
 	assert.equal(requests.every((body) => body.max_output_tokens === 64), true);
 	assert.equal(events(messages, "shell.started").length, 1);
+	await waitFor(() => events(messages, "shell.completed").length === 1, 5_000);
 	assert.equal(events(messages, "shell.completed").length, 1);
 	assert.equal(events(messages, "tool.failed").length, 0);
 	assert.equal(existsSync(pythonMarker), false);
@@ -172,7 +174,7 @@ test("parallel Shell approvals advance while the first invocation still waits fo
 				["first", "second"].map((name) => ({
 					callId: `call-${name}`, name: "Shell",
 					argumentsValue: {
-						command: `"${process.execPath}" ${name}.cjs`,
+						command: shellCommand(process.execPath, [`${name}.cjs`], process.env),
 						yield_time_ms: 30_000, sandbox_permissions: "require_escalated",
 						justification: `Run the ${name} command with the access required by the approval test.`,
 					},
@@ -288,7 +290,7 @@ test("M6 live smoke drives a full-access PTY without approval and reports only s
 			requests.push(body);
 			if (requests.length === 1) {
 				writeSse(response, responsesTool("smoke-shell", "Shell", {
-					command: `"${process.execPath}" wait-input.cjs`,
+					command: shellCommand(process.execPath, ["wait-input.cjs"], process.env),
 					tty: true,
 					yield_time_ms: 250,
 				}));
@@ -298,7 +300,7 @@ test("M6 live smoke drives a full-access PTY without approval and reports only s
 				const shellId = shellIdFromProviderInput(body) ?? "00000000";
 				writeSse(response, responsesTool("smoke-input", "WriteStdin", {
 					session_id: shellId,
-					chars: "hello-m6-smoke\n",
+					chars: process.platform === "win32" ? "hello-m6-smoke\r\n" : "hello-m6-smoke\n",
 					yield_time_ms: 3_000,
 				}));
 				return;

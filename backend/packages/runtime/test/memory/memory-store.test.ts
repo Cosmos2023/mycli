@@ -14,7 +14,7 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import test from "node:test";
 import {
 	MemoryStore,
@@ -25,7 +25,7 @@ import {
 test("derives the Python-compatible memory directory from the real workspace", async (t) => {
 	const fixture = await createFixture(t);
 	const linkedWorkspace = join(fixture.root, "workspace-link");
-	await symlink(fixture.workspace, linkedWorkspace);
+	await symlink(fixture.workspace, linkedWorkspace, process.platform === "win32" ? "junction" : "dir");
 	const resolved = await realpath(fixture.workspace);
 	const projectKey = resolved
 		.replace(/^\/+|\/+$/gu, "")
@@ -121,7 +121,7 @@ test("rejects a topic symlink escaping the real memory root without leaking its 
 	const memoryDir = await fixture.store.directory();
 	const outside = join(fixture.root, "outside-secret.md");
 	await writeFile(outside, "private-memory-body", "utf8");
-	await symlink(outside, join(memoryDir, "escaped.md"));
+	await escapingEntryAlias(outside, join(memoryDir, "escaped.md"));
 
 	await assert.rejects(
 		() => fixture.store.scan(),
@@ -137,7 +137,7 @@ test("rejects an escaping MEMORY.md symlink before loading its body", async (t) 
 	const memoryDir = await fixture.store.directory();
 	const outside = join(fixture.root, "outside-index.md");
 	await writeFile(outside, "private-index-body", "utf8");
-	await symlink(outside, join(memoryDir, "MEMORY.md"));
+	await escapingEntryAlias(outside, join(memoryDir, "MEMORY.md"));
 
 	await assert.rejects(
 		() => fixture.store.loadEntrypoint(),
@@ -150,7 +150,7 @@ test("rejects escaping MEMORY.md reads during remember without leaving a topic",
 	const memoryDir = await fixture.store.directory();
 	const outside = join(fixture.root, "outside-index.md");
 	await writeFile(outside, "private-index-body", "utf8");
-	await symlink(outside, join(memoryDir, "MEMORY.md"));
+	await escapingEntryAlias(outside, join(memoryDir, "MEMORY.md"));
 
 	await assert.rejects(
 		() => fixture.store.remember({
@@ -171,7 +171,7 @@ test("rejects escaping MEMORY.md reads during forget before deleting a topic", a
 	await writeFile(topic, "---\nname: release\ntype: project\n---\nrelease body\n", "utf8");
 	const outside = join(fixture.root, "outside-index.md");
 	await writeFile(outside, "private-index-body", "utf8");
-	await symlink(outside, join(memoryDir, "MEMORY.md"));
+	await escapingEntryAlias(outside, join(memoryDir, "MEMORY.md"));
 
 	await assert.rejects(
 		() => fixture.store.forget("release.md"),
@@ -187,7 +187,7 @@ test("rejects a memory-root symlink swap before an atomic write", async (t) => {
 	const outside = join(fixture.root, "outside-memory");
 	await mkdir(outside);
 	await rename(memoryDir, movedMemoryDir);
-	await symlink(outside, memoryDir);
+	await symlink(outside, memoryDir, process.platform === "win32" ? "junction" : "dir");
 
 	await assert.rejects(
 		() => fixture.store.remember({
@@ -221,7 +221,7 @@ test("does not unlink an outside sentinel when the root swaps after topic rename
 				if (!swapped && basename(target) === "release.md") {
 					swapped = true;
 					await rename(memoryDir, movedMemoryDir);
-					await symlink(outside, memoryDir);
+					await symlink(outside, memoryDir, process.platform === "win32" ? "junction" : "dir");
 				}
 			},
 			unlink,
@@ -518,6 +518,13 @@ function atomicHandle(
 		stat: async () => handle.stat(),
 		close: async () => handle.close(),
 	};
+}
+
+async function escapingEntryAlias(target: string, alias: string): Promise<void> {
+	// Boundary rejection must precede reading the resolved object, including a
+	// directory junction at a topic/entrypoint filename on unprivileged Windows.
+	await symlink(process.platform === "win32" ? dirname(target) : target, alias,
+		process.platform === "win32" ? "junction" : "file");
 }
 
 function memoryPathEscapeWithoutBody(error: unknown, body: string): boolean {

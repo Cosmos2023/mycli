@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { appendFile, mkdtemp, readFile, rm } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile } from "node:fs/promises";
+import { removeFixtureDirectoryAfterTests } from "../../../packages/storage/test/fixtures/directory-cleanup.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -13,7 +14,7 @@ import {
 
 test("provider trace writer and reader retain safe retry evidence without raw errors", async (t) => {
 	const home = await mkdtemp(join(tmpdir(), "mycli-failure-trace-"));
-	t.after(async () => { await rm(home, { recursive: true, force: true }); });
+	removeFixtureDirectoryAfterTests(t, home);
 	const store = openRuntimeSessionStore({ dbPath: join(home, "sessions.db") });
 	t.after(() => store.close());
 	appendNodeTrace(home, "session", runtimeDiagnosticTraceEvent({
@@ -46,7 +47,7 @@ test("provider trace writer and reader retain safe retry evidence without raw er
 
 test("compaction traces retain typed terminal reasons and failed-attempt usage", async (t) => {
 	const home = await mkdtemp(join(tmpdir(), "mycli-compaction-trace-"));
-	t.after(async () => { await rm(home, { recursive: true, force: true }); });
+	removeFixtureDirectoryAfterTests(t, home);
 	const store = openRuntimeSessionStore({ dbPath: join(home, "sessions.db") });
 	t.after(() => store.close());
 	const errorContext = createErrorContext({ reason: "provider.output_limit", source: "provider", scope: { kind: "provider_attempt", id: "compaction" },
@@ -65,7 +66,7 @@ test("compaction traces retain typed terminal reasons and failed-attempt usage",
 
 test("completion timing survives trace serialization while invalid and private fields are dropped", async (t) => {
 	const home = await mkdtemp(join(tmpdir(), "mycli-completion-trace-"));
-	t.after(async () => { await rm(home, { recursive: true, force: true }); });
+	removeFixtureDirectoryAfterTests(t, home);
 	const store = openRuntimeSessionStore({ dbPath: join(home, "sessions.db") });
 	t.after(() => store.close());
 	const model = runtimeDiagnosticTraceEvent({

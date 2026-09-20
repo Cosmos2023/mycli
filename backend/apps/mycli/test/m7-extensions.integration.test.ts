@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
+import { removeFixtureDirectoryAfterTests } from "../../../packages/storage/test/fixtures/directory-cleanup.ts";
 import { spawn } from "node:child_process";
 import { createServer, type ServerResponse } from "node:http";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
 import { createInterface } from "node:readline";
 import test from "node:test";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { WorkspaceTrustStore } from "@mycli/config";
 import { parseJsonRpcMessage } from "@mycli/contracts";
 import {
@@ -48,7 +49,7 @@ test("M7 live smoke exits 77 with one sanitized result when credentials are unav
 	const home = join(root, "home");
 	const workspace = join(root, "workspace");
 	await Promise.all([mkdir(home), mkdir(workspace)]);
-	t.after(() => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 
 	const result = await runSmoke(workspace, {
 		...process.env,
@@ -70,13 +71,15 @@ test("M7 live smoke fails when local structural setup cannot start", async (t) =
 	const workspace = join(root, "workspace");
 	const invalidTemp = join(root, "not-a-directory");
 	await Promise.all([mkdir(home), mkdir(workspace), writeFile(invalidTemp, "fixture", "utf8")]);
-	t.after(() => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 
 	const result = await runSmoke(workspace, {
 		...process.env,
 		HOME: home,
 		USERPROFILE: home,
 		TMPDIR: invalidTemp,
+		TEMP: invalidTemp,
+		TMP: invalidTemp,
 		MYCLI_API_KEY: "test-m7-key",
 		MYCLI_BASE_URL: "http://127.0.0.1:1/v1",
 		MYCLI_PROVIDER: "openai",
@@ -95,7 +98,7 @@ test("M7 live smoke emits only structural extension and cleanup state", {
 	const home = join(root, "home");
 	const workspace = join(root, "workspace");
 	await Promise.all([mkdir(home), mkdir(workspace)]);
-	t.after(() => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	const requests: JsonObject[] = [];
 	const parentRequests: JsonObject[] = [];
 	const server = createServer((request, response) => {
@@ -295,7 +298,7 @@ test("workspace trust starts and revocation stops project MCP and plugin hosts",
 		mcpPidFile,
 		pluginPidFile,
 	});
-	t.after(async () => { await rm(root, { recursive: true, force: true }); });
+	removeFixtureDirectoryAfterTests(t, root);
 
 	const backend = await startNodeBackend({
 		cwd: workspace,
@@ -598,6 +601,8 @@ async function writeExtensionFixtures(options: {
 		mkdir(join(mycli, "skills"), { recursive: true }),
 		mkdir(join(mycli, "plugins", "good", "dist"), { recursive: true }),
 	]);
+	await copyFile(HOOK_FIXTURE, join(mycli, "hook-command.mjs"));
+	await copyFile(PROCESS_MARKER_FIXTURE, join(mycli, "plugins", "good", "dist", "process-marker.mjs"));
 	await writeFile(join(mycli, "skills", "review.md"), [
 		"---",
 		"name: review",
@@ -617,7 +622,7 @@ async function writeExtensionFixtures(options: {
 		hooks: [{
 			id: "m7-marker",
 			hook_point: "pre_tool_use",
-			command: [process.execPath, HOOK_FIXTURE, "marker", options.hookMarker],
+			command: [process.execPath, join(mycli, "hook-command.mjs"), "marker", options.hookMarker],
 			timeout_seconds: 3,
 		}],
 	}), "utf8");
@@ -642,7 +647,7 @@ async function writeExtensionFixtures(options: {
 	].join("\n"), "utf8");
 	await writeFile(join(pluginRoot, "dist", "index.js"), [
 		'import { writeFile } from "node:fs/promises";',
-		`import { writeProcessMarker } from ${JSON.stringify(pathToFileURL(PROCESS_MARKER_FIXTURE).href)};`,
+		'import { writeProcessMarker } from "./process-marker.mjs";',
 		"export async function register(context) {",
 		"  await writeProcessMarker(process.env.PLUGIN_PID_FILE);",
 		"  context.registerTool({",

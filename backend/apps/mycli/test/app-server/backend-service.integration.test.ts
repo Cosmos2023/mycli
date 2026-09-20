@@ -9,6 +9,7 @@ import {
 	startBackendService, type BackendService, type BackendClientAttachment, type BackendClientRole,
 } from "../../src/backend.ts";
 import { responsesTextEvents, responsesToolEvents, writeResponsesEvents } from "../support/responses-sse.ts";
+import { shellCommand } from "../support/shell-command.ts";
 
 test("supervised service shares its active session and survives all clients disconnecting", { timeout: 20_000 }, async (t) => {
 	const fixture = await serviceFixture(t);
@@ -60,7 +61,7 @@ test("replacement controller resumes a pending approval and a running command wi
 			response.writeHead(200, { "content-type": "text/event-stream" });
 			writeResponsesEvents(response, requests.length === 1
 				? responsesToolEvents("call-shared-shell", "Shell", {
-					command: `"${process.execPath}" wait.cjs`,
+					command: shellCommand(process.execPath, ["wait.cjs"], fixture.shellEnvironment),
 					yield_time_ms: 30_000, sandbox_permissions: "require_escalated",
 					justification: "Run the shared command with the access required by the approval test.",
 				})
@@ -196,6 +197,7 @@ interface ConnectedClient {
 
 async function serviceFixture(t: TestContext): Promise<{
 	readonly workspace: string;
+	readonly shellEnvironment: Readonly<NodeJS.ProcessEnv>;
 	readonly start: (env?: NodeJS.ProcessEnv) => Promise<BackendService>;
 	readonly connect: (role: BackendClientRole) => Promise<ConnectedClient>;
 }> {
@@ -214,12 +216,18 @@ async function serviceFixture(t: TestContext): Promise<{
 	await mkdir(join(home, ".mycli"), { recursive: true });
 	await mkdir(workspace);
 	await writeFile(join(home, ".mycli", "config.toml"), "[updates]\ncheck_on_startup = false\n");
+	const shellEnvironment = Object.freeze({
+		HOME: home,
+		USERPROFILE: home,
+		PATH: process.env.PATH,
+	});
 	return {
 		workspace,
+		shellEnvironment,
 		start: async (env = {}) => {
 			service = await startBackendService({
 				cwd: workspace, args: ["--session", "shared-session", "--model", "gpt-test"],
-				env: { HOME: home, USERPROFILE: home, PATH: process.env.PATH, ...env },
+				env: { ...shellEnvironment, ...env },
 			});
 			return service;
 		},

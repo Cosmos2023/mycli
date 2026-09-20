@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { removeFixtureDirectoryAfterTests } from "../../../storage/test/fixtures/directory-cleanup.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -272,7 +273,7 @@ async function approvalFixture(
 	options: { readonly routerThrows?: boolean; readonly storageFailpoint?: boolean } = {},
 ) {
 	const root = await mkdtemp(join(tmpdir(), "mycli-m5-approval-fault-"));
-	t.after(() => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	let executeCount = 0;
 	const store = new SQLiteSessionStore({
 		dbPath: join(root, "sessions.db"),

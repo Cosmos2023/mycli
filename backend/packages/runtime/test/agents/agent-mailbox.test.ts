@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
+import { removeFixtureDirectoryAfterTests } from "../../../storage/test/fixtures/directory-cleanup.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -180,7 +181,7 @@ async function mailboxFixture(t: test.TestContext, options: {
 	readonly onEvent?: (event: AgentCommunicationEvent) => void;
 } = {}) {
 	const root = await mkdtemp(join(tmpdir(), "mycli-agent-mailbox-runtime-"));
-	t.after(() => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	const store = new SQLiteSessionStore({ dbPath: join(root, "sessions.db"), clock: () => NOW });
 	t.after(() => store.close());
 	const rootEndpoint: AgentMailboxEndpoint = Object.freeze({

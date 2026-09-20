@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { removeFixtureDirectoryAfterTests } from "../../../packages/storage/test/fixtures/directory-cleanup.ts";
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
@@ -806,7 +807,7 @@ async function scenarioPaths(
 	const workspace = join(root, "workspace");
 	await mkdir(home);
 	await mkdir(workspace);
-	t.after(() => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	return {
 		root,
 		home,

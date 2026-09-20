@@ -6,6 +6,7 @@ import {
 	agentThreadId,
 	assertAgentStatusTransition,
 	childAgentPath,
+	freezeNetworkEgress,
 	isProviderRouteId,
 	parseAgentPath,
 	rootAgentPath,
@@ -772,8 +773,26 @@ function parseSpawnConfig(value: unknown): AgentSpawnConfigSnapshot {
 				...(executionPolicy.networkDomains === undefined ? {} : {
 					networkDomains: stringArray(executionPolicy.networkDomains, "networkDomains", 256),
 				}),
+				...(executionPolicy.networkEgress === undefined ? {} : {
+					networkEgress: freezeNetworkEgress(executionPolicy.networkEgress as never),
+				}),
 				...(executionPolicy.readableRoots === undefined ? {} : {
 					readableRoots: stringArray(executionPolicy.readableRoots, "readableRoots", 256),
+				}),
+				...(executionPolicy.readOnlyRoots === undefined ? {} : {
+					readOnlyRoots: stringArray(executionPolicy.readOnlyRoots, "readOnlyRoots", 256),
+				}),
+				...(executionPolicy.deniedReadRoots === undefined ? {} : {
+					deniedReadRoots: stringArray(executionPolicy.deniedReadRoots, "deniedReadRoots", 256),
+				}),
+				...(executionPolicy.deniedReadGlobs === undefined ? {} : {
+					deniedReadGlobs: stringArray(executionPolicy.deniedReadGlobs, "deniedReadGlobs", 256),
+				}),
+				...(executionPolicy.allowLocalBinding === undefined ? {} : {
+					allowLocalBinding: booleanValue(executionPolicy.allowLocalBinding, "allowLocalBinding"),
+				}),
+				...(executionPolicy.writableTemp === undefined ? {} : {
+					writableTemp: booleanValue(executionPolicy.writableTemp, "writableTemp"),
 				}),
 				writableRoots: stringArray(executionPolicy.writableRoots, "writableRoots", 256),
 		}),

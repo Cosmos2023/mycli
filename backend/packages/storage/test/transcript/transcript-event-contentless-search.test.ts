@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+import { removeFixtureDirectoryAfterTests } from "../fixtures/directory-cleanup.ts";
 import { randomBytes } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -124,7 +125,7 @@ async function searchCorpus(
 	readonly repository: SQLiteTranscriptEventRepository;
 }>> {
 	const root = await mkdtemp(join(tmpdir(), `mycli-contentless-search-v${version}-`));
-	t.after(async () => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	const dbPath = join(root, "sessions.db");
 	const repository = new SQLiteTranscriptEventRepository({
 		dbPath,

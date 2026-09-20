@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
+import { removeFixtureDirectoryAfterTests } from "../../../storage/test/fixtures/directory-cleanup.ts";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import {
 	NODE_RUNTIME_CONTEXT_DEFAULTS,
@@ -53,7 +54,7 @@ const READ_TOOL: ToolDefinition = Object.freeze({
 
 test("Worker startup failures and queued cancellation have durable terminal records", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-worker-start-failure-"));
-	t.after(() => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	const dbPath = join(root, "sessions.db");
 	const store = openRuntimeSessionStore({ dbPath });
 	t.after(() => store.close());
@@ -678,8 +679,8 @@ test("persists collaboration, permissions, skill catalog, workspace, and environ
 		mode: "danger-full-access" as const,
 		filesystem: "unrestricted" as const,
 		network: "enabled" as const,
-		readableRoots: Object.freeze(["/reference materials"]),
-		writableRoots: Object.freeze(["/workspace", "/approved output"]),
+		readableRoots: Object.freeze([resolve("/reference materials")]),
+		writableRoots: Object.freeze([resolve("/workspace"), resolve("/approved output")]),
 	});
 	const executionPolicyCoordinator: NonNullable<
 		NodeTurnRuntimeOptions["executionPolicyCoordinator"]
@@ -734,8 +735,8 @@ test("persists collaboration, permissions, skill catalog, workspace, and environ
 		...(requests[0]?.items ?? []).flatMap((item) => item.type === "context"
 			&& item.metadata.kind === "permissions" ? [item.text] : []),
 	].join("\n");
-	assert.ok(permissionContext.includes('readable_roots: ["/reference materials"]'));
-	assert.ok(permissionContext.includes('writable_roots: ["/approved output","/workspace"]'));
+	assert.ok(permissionContext.includes(`readable_roots: ${JSON.stringify(policy.readableRoots)}`));
+	assert.ok(permissionContext.includes(`writable_roots: ${JSON.stringify([...policy.writableRoots].sort())}`));
 	assert.ok(permissionContext.includes("listed roots are not an allowlist"));
 	const manifest = fixture.store.modelInputLedger.loadLatestProviderRequestManifest("session-1");
 	assert.ok(manifest);
@@ -826,7 +827,7 @@ async function runtimeFixture(
 	readonly dbPath: string;
 }> {
 	const root = await mkdtemp(join(tmpdir(), "mycli-runtime-model-input-"));
-	t.after(async () => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	let tick = 0;
 	const clock = (): string => new Date(Date.UTC(2026, 7, 8, 0, 0, tick++)).toISOString();
 	const dbPath = join(root, "sessions.db");

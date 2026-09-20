@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import test, { type TestContext } from "node:test";
 import {
 	initializeRipgrepEnvironment,
@@ -79,29 +79,29 @@ test("user-vendored ripgrep is prepended once and exported as its directory", as
 		packageRoot,
 		platformPackageRoot: null,
 		homeDir,
-		pathValue: `/usr/bin:${directory}:${directory}`,
+		pathValue: ["/usr/bin", directory, directory].join(delimiter),
 	});
 
 	assert.equal(result.executable, userBinary);
 	assert.equal(result.directory, directory);
-	assert.deepEqual(result.path.split(":"), [directory, "/usr/bin"]);
+	assert.deepEqual(result.path.split(delimiter), [directory, "/usr/bin"]);
 });
 
 test("existing PATH ripgrep remains available when no vendored binary exists", async (t) => {
 	const root = await temporaryDirectory(t);
 	const systemDir = join(root, "system");
-	const systemBinary = join(systemDir, "rg");
+	const systemBinary = join(systemDir, process.platform === "win32" ? "rg.exe" : "rg");
 	await writeExecutable(systemBinary);
 
 	const result = prependRipgrepToPath({
 		packageRoot: join(root, "package"),
 		platformPackageRoot: null,
 		homeDir: join(root, "home"),
-		pathValue: `/usr/bin:${systemDir}`,
+		pathValue: ["/usr/bin", systemDir].join(delimiter),
 	});
 
 	assert.equal(result.executable, systemBinary);
-	assert.equal(result.path, `${systemDir}:/usr/bin`);
+	assert.equal(result.path, [systemDir, "/usr/bin"].join(delimiter));
 });
 
 test("process startup injects the packaged binary and is idempotent", async (t) => {
@@ -129,7 +129,7 @@ test("process startup injects the packaged binary and is idempotent", async (t) 
 
 	assert.equal(first.executable, binary);
 	assert.equal(second.executable, binary);
-	assert.deepEqual(second.path.split(":"), [dirname(binary), "/usr/bin"]);
+	assert.deepEqual(second.path.split(delimiter), [dirname(binary), "/usr/bin"]);
 	assert.equal(env.PATH, second.path);
 	assert.equal(env.MYCLI_RIPGREP_PATH_DIR, dirname(binary));
 });

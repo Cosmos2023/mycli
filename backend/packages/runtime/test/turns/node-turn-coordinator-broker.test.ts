@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
+import { removeFixtureDirectoryAfterTests } from "../../../storage/test/fixtures/directory-cleanup.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -144,7 +145,7 @@ async function brokerFixture(t: test.TestContext): Promise<{
 	readonly dbPath: string;
 }> {
 	const root = await mkdtemp(join(tmpdir(), "mycli-turn-broker-"));
-	t.after(async () => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	const dbPath = join(root, "sessions.db");
 	const store = sessionStore(dbPath);
 	t.after(() => store.close());

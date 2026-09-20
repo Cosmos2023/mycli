@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { renameSync, symlinkSync } from "node:fs";
 import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -79,6 +80,32 @@ test("does not load a symlink outside the search boundary or duplicate an alias"
 	const root = await workspaceFixture(t);
 	const outside = await workspaceFixture(t);
 	await writeFile(join(outside, "AGENTS.md"), "outside private guidance");
+	if (process.platform === "win32") {
+		const moved = `${root}-moved`;
+		t.after(() => rm(moved, { recursive: true, force: true }));
+		const blocked = loadWorkspaceInstructions({ workspaceRoot: root, gitRoot: () => {
+			// Swap after discovery captures the boundary; the selected file must
+			// still be checked against its actual target before reading.
+			renameSync(root, moved);
+			symlinkSync(outside, root, "junction");
+			return root;
+		} });
+		assert.equal(blocked.content, "");
+		assert.deepEqual(blocked.diagnostics.issues, ["outside_boundary"]);
+		await rm(root);
+		renameSync(moved, root);
+		await writeFile(join(root, "AGENTS.md"), "shared guidance");
+		const child = join(root, "child");
+		await mkdir(child);
+		const loaded = loadWorkspaceInstructions({ workspaceRoot: root, cwd: child, gitRoot: () => {
+			renameSync(child, `${child}-moved`);
+			symlinkSync(root, child, "junction");
+			return root;
+		} });
+		assert.equal(loaded.content, "shared guidance");
+		assert.equal(loaded.diagnostics.files?.length, 1);
+		return;
+	}
 	await symlink(join(outside, "AGENTS.md"), join(root, "AGENTS.md"));
 	const blocked = loadWorkspaceInstructions({ workspaceRoot: root, gitRoot: () => root });
 	assert.equal(blocked.content, "");

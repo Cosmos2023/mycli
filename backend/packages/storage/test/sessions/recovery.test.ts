@@ -1,5 +1,6 @@
+import { removeFixtureDirectoryAfterTests } from "../fixtures/directory-cleanup.ts";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -44,7 +45,7 @@ type StoreConstructor = new (options: {
 test("a crash before turn reservation leaves no durable user or turn", async (t) => {
 	const SQLiteSessionStore = constructor();
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-recovery-reserve-before-"));
-	t.after(async () => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	const dbPath = join(root, ".mycli", "sessions.db");
 	const store = new SQLiteSessionStore({
 		dbPath,
@@ -62,7 +63,7 @@ test("a crash before turn reservation leaves no durable user or turn", async (t)
 test("a crash after turn reservation recovers one user item without replay", async (t) => {
 	const SQLiteSessionStore = constructor();
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-recovery-reserve-after-"));
-	t.after(async () => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	const dbPath = join(root, ".mycli", "sessions.db");
 	const initial = new SQLiteSessionStore({
 		dbPath,
@@ -89,7 +90,7 @@ test("a crash after turn reservation recovers one user item without replay", asy
 test("reopening the store interrupts orphaned running turns without changing completed turns", async (t) => {
 	const SQLiteSessionStore = constructor();
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-recovery-"));
-	t.after(async () => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	const dbPath = join(root, ".mycli", "sessions.db");
 	const initial = new SQLiteSessionStore({ dbPath, clock: () => NOW });
 	initial.reserveTurn(submission(root, "client-running", "turn-running"));
@@ -118,7 +119,7 @@ test("reopening the store interrupts orphaned running turns without changing com
 test("opening a concurrent store does not interrupt a turn owned by a live process", async (t) => {
 	const SQLiteSessionStore = constructor();
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-recovery-live-"));
-	t.after(async () => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	const dbPath = join(root, ".mycli", "sessions.db");
 	const liveProcesses = new Set([101, 202]);
 	const first = new SQLiteSessionStore({
@@ -148,7 +149,7 @@ test("opening a concurrent store does not interrupt a turn owned by a live proce
 test("recovery appends one synthetic result for each unmatched tool call", async (t) => {
 	const SQLiteSessionStore = constructor();
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-tool-recovery-"));
-	t.after(async () => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	const dbPath = join(root, ".mycli", "sessions.db");
 	const initial = new SQLiteSessionStore({ dbPath, clock: () => NOW });
 	initial.reserveTurn(submission(root, "client-running", "turn-running"));

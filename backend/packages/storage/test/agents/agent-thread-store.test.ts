@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 import {
 	parseAgentPath,
 	parseProviderRouteId,
@@ -20,6 +20,38 @@ import {
 const CREATED = "2026-08-08T00:00:00.000Z";
 const UPDATED = "2026-08-08T00:00:01.000Z";
 const COMPLETED = "2026-08-08T00:00:02.000Z";
+const fixtureRoots: string[] = [];
+after(async () => {
+	// Per-test hooks close every primary, reopened and inspection connection first.
+	for (const root of fixtureRoots) await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+});
+
+test("child filesystem and network restrictions survive durable storage", async (t) => {
+	const fixture = await storeFixture(t);
+	const executionPolicy = {
+		...spawnConfig().executionPolicy,
+		readableRoots: ["C:\\shared"], readOnlyRoots: ["C:\\repo\\vendor"],
+		deniedReadRoots: ["C:\\repo\\secret"], deniedReadGlobs: ["**/.env"],
+		allowLocalBinding: false, writableTemp: false,
+		networkEgress: {
+			default: "deny" as const,
+			allow: [{
+				to: [{ cidr: "10.0.0.0/8", except: ["10.1.0.0/16"] }],
+				ports: [{ protocol: "tcp" as const, port: 443, endPort: 444 }],
+			}],
+		},
+	};
+	fixture.store.agentThreads.reserve({ ...reserveInput("restricted", "restricted"),
+		spawnConfig: { ...spawnConfig(), executionPolicy } });
+	const stored = fixture.store.agentThreads.get("restricted")?.spawnConfig?.executionPolicy;
+	assert.deepEqual(stored, executionPolicy);
+	assert.equal(Object.isFrozen(stored?.readOnlyRoots), true);
+	for (const field of ["allowLocalBinding", "writableTemp", "readOnlyRoots", "deniedReadRoots", "deniedReadGlobs"]) {
+		const invalid = { ...executionPolicy, [field]: "invalid" };
+		assert.throws(() => fixture.store.agentThreads.reserve({ ...reserveInput(`bad-${field}`, "bad"),
+			spawnConfig: { ...spawnConfig(), executionPolicy: invalid } }), StorageFailure);
+	}
+});
 
 test("child integration authority survives storage and rejects malformed fingerprints", async (t) => {
 	const fixture = await storeFixture(t);
@@ -495,7 +527,7 @@ async function storeFixture(
 	agentLifecycleFailpoint?: (name: AgentLifecycleFailpoint) => void,
 ) {
 	const root = await mkdtemp(join(tmpdir(), "mycli-agent-thread-store-"));
-	t.after(() => rm(root, { recursive: true, force: true }));
+	fixtureRoots.push(root);
 	const dbPath = join(root, "sessions.db");
 	const timestamps = [CREATED, UPDATED, COMPLETED];
 	let index = 0;

@@ -1,5 +1,6 @@
+import { removeFixtureDirectoryAfterTests } from "../fixtures/directory-cleanup.ts";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -38,7 +39,7 @@ test("session runtime leases reject live owners and permit stale-owner takeover"
 		second.close();
 		third.close();
 	});
-	t.after(() => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 
 	assert.equal(first.acquireSessionLease("virtual-session"), true);
 	assert.equal(first.acquireSessionLease("virtual-session"), false);
@@ -81,7 +82,7 @@ test("session maintenance preserves runtime leases and reclaims unowned rows", a
 		liveOwner.close();
 		staleOwner.close();
 	});
-	t.after(() => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 
 	liveOwner.acquireSessionLease("live-empty");
 	liveOwner.acquireSessionLease("live-virtual");
@@ -182,7 +183,7 @@ test("live subagent runtime leases block root-session ownership", async (t) => {
 		subagentOwner.close();
 		rootWindow.close();
 	});
-	t.after(() => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 
 	subagentOwner.agentThreads.reserve({
 		threadId: "child-session",
@@ -250,7 +251,7 @@ test("fork creation atomically owns its target session", async (t) => {
 		targetOwner.close();
 		forkingWindow.close();
 	});
-	t.after(() => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 
 	forkingWindow.importLegacyConversation({
 		sessionId: "source-session",

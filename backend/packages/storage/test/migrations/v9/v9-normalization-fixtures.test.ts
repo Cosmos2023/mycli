@@ -1,6 +1,7 @@
+import { removeFixtureDirectoryAfterTests } from "../../fixtures/directory-cleanup.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -191,6 +192,6 @@ async function databaseFixture(
 	prefix: string,
 ): Promise<{ readonly root: string; readonly dbPath: string }> {
 	const root = await mkdtemp(join(tmpdir(), prefix));
-	t.after(async () => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	return { root, dbPath: join(root, "sessions.db") };
 }

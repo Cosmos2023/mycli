@@ -1,5 +1,6 @@
+import { removeFixtureDirectoryAfterTests } from "../fixtures/directory-cleanup.ts";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rename } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -573,6 +574,9 @@ test("rolls back a failed schema-v9 search migration and retries cleanly", async
 		(error: unknown) => error instanceof storage.StorageFailure
 			&& error.message === "persistence_error: storage operation failed",
 	);
+	// Windows refuses this rename while a failed constructor retains its handle.
+	await rename(fixture.dbPath, `${fixture.dbPath}.closed`);
+	await rename(`${fixture.dbPath}.closed`, fixture.dbPath);
 	database = await openDatabase(fixture.dbPath);
 	assert.equal(
 		(database.prepare("SELECT version FROM schema_version").get() as { version: number }).version,
@@ -1818,7 +1822,7 @@ function effectAttempt(
 
 async function databaseFixture(t: test.TestContext): Promise<{ root: string; dbPath: string }> {
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-storage-"));
-	t.after(async () => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	return { root, dbPath: join(root, ".mycli", "sessions.db") };
 }
 

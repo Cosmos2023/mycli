@@ -100,7 +100,9 @@ test("prepare verifies, extracts, permissions, and atomically installs the binar
 	assert.deepEqual(calls, ["download", "verify", "extract"]);
 	assert.equal(result.installed, true);
 	assert.equal(await readFile(result.path, "utf8"), "#!/bin/sh\nprintf 'ripgrep 15.1.0'\n");
-	assert.equal((await stat(result.path)).mode & 0o111, 0o111);
+	if (process.platform !== "win32") {
+		assert.equal((await stat(result.path)).mode & 0o111, 0o111);
+	}
 	assert.deepEqual((await readdir(dirname(result.path))).filter((name) => name.startsWith(".")), []);
 });
 

@@ -239,8 +239,9 @@ export class SQLiteSessionStore implements SessionStore {
 		this.#processId = options.processId ?? process.pid;
 		this.#isProcessAlive = options.isProcessAlive ?? processIsAlive;
 		this.#stateFailpoint = options.stateFailpoint ?? (() => undefined);
+		let opened: Database.Database | undefined;
 		try {
-			this.#database = new Database(options.dbPath, {
+			this.#database = opened = new Database(options.dbPath, {
 				timeout: options.busyTimeoutMs ?? 1000,
 			});
 			this.#configure(options.busyTimeoutMs ?? 1000);
@@ -294,6 +295,7 @@ export class SQLiteSessionStore implements SessionStore {
 				this.recoverInterruptedTurns();
 			}
 		} catch (error) {
+			opened?.close();
 			throw storageError(error);
 		}
 	}

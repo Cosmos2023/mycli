@@ -1,5 +1,6 @@
+import { removeFixtureDirectoryAfterTests } from "../fixtures/directory-cleanup.ts";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -254,7 +255,7 @@ async function fixture(t: test.TestContext, options: {
 	readonly nativeTransport?: ProviderNativeTransportSnapshot;
 } = {}): Promise<{ readonly store: SQLiteTranscriptEventRepository; readonly dbPath: string }> {
 	const root = await mkdtemp(join(tmpdir(), "mycli-provider-attempts-"));
-	t.after(() => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	const dbPath = join(root, "sessions.db");
 	const store = new SQLiteTranscriptEventRepository({ dbPath, clock: () => NOW, ownerId: "owner-1",
 		initializeSchemaVersion: options.version ?? SCHEMA_V13_VERSION, reconcileRuntimeState: false,

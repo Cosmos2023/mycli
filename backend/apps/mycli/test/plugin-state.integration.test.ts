@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { removeFixtureDirectoryAfterTests } from "../../../packages/storage/test/fixtures/directory-cleanup.ts";
+import { cp, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -10,7 +11,7 @@ import { createRuntimeIntegrationComposition } from "../src/node-runtime/integra
 
 test("plugin resources publish crashes and recovery without stale state or healthy-call refreshes", { timeout: 15_000 }, async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-plugin-state-"));
-	t.after(() => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	const workspaceRoot = join(root, "workspace");
 	const homeDir = join(root, "home");
 	const pluginRoot = join(workspaceRoot, ".mycli", "plugins", "crash");

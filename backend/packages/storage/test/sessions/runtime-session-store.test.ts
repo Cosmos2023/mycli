@@ -1,5 +1,6 @@
+import { removeFixtureDirectoryAfterTests } from "../fixtures/directory-cleanup.ts";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -218,7 +219,7 @@ async function databaseFixture(t: test.TestContext): Promise<{
 	readonly dbPath: string;
 }> {
 	const root = await mkdtemp(join(tmpdir(), "mycli-runtime-session-store-"));
-	t.after(() => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	await mkdir(join(root, ".mycli"));
 	return { root, dbPath: join(root, ".mycli", "sessions.db") };
 }

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
+import { removeFixtureDirectoryAfterTests } from "../../../storage/test/fixtures/directory-cleanup.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -169,7 +170,7 @@ function runtimeFor(store: RuntimeSessionStore, root: string, adapters: readonly
 
 async function databaseFixture(t: test.TestContext): Promise<{ root: string; dbPath: string; store: RuntimeSessionStore }> {
 	const root = await mkdtemp(join(tmpdir(), "mycli-image-capability-"));
-	t.after(() => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	const dbPath = join(root, "session.db");
 	const store = openRuntimeSessionStore({ dbPath });
 	t.after(() => store.close());

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
+import { removeFixtureDirectoryAfterTests } from "../../../storage/test/fixtures/directory-cleanup.ts";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import {
 	NODE_RUNTIME_CONTEXT_DEFAULTS,
@@ -125,7 +126,7 @@ for (const failure of ["prepare", "cancel"] as const) {
 
 test("runs unchanged provider and live-event contracts on the normalized turn store", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-normalized-runtime-"));
-	t.after(async () => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	const store = new SQLiteTranscriptEventRepository({
 		dbPath: join(root, "sessions.db"),
 		clock: clockSequence(),
@@ -169,7 +170,7 @@ test("runs unchanged provider and live-event contracts on the normalized turn st
 
 test("persists hosted web search for resume while retaining provider-native replay", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-web-search-runtime-"));
-	t.after(async () => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	const store = new SQLiteTranscriptEventRepository({
 		dbPath: join(root, "sessions.db"),
 		clock: clockSequence(),
@@ -938,7 +939,7 @@ for (const action of ["deny", "error"] as const) {
 
 test("a failed plugin pre-hook records no tool effects and retains the hook failure as its cause", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-plugin-hook-error-"));
-	t.after(() => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	const store = new SQLiteTranscriptEventRepository({ dbPath: join(root, "sessions.db"), initializeSchemaVersion: 14 });
 	t.after(() => store.close());
 	const trace: string[] = [];
@@ -4241,7 +4242,7 @@ function executionProfile() {
 		mode: "workspace-write" as const,
 		filesystem: "workspace_write" as const,
 		network: "disabled" as const,
-		writableRoots: Object.freeze(["/workspace"]),
+		writableRoots: Object.freeze([resolve("/workspace")]),
 	});
 }
 

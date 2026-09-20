@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
+import { removeFixtureDirectoryAfterTests } from "../fixtures/directory-cleanup.ts";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -179,7 +180,7 @@ test("uses the owning write transaction and rolls back content insertion", async
 
 test("deduplicates the same content inserted by independent processes", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-content-blob-process-"));
-	t.after(async () => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	const dbPath = join(root, "sessions.db");
 	createV11SessionDatabase({ dbPath });
 	const [left, right] = await Promise.all([
@@ -197,7 +198,7 @@ test("deduplicates the same content inserted by independent processes", async (t
 
 test("reports and explicitly collects v11 content orphans without vacuuming", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-content-blob-maintenance-"));
-	t.after(async () => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	const dbPath = join(root, "sessions.db");
 	createV11SessionDatabase({ dbPath });
 	const reachable = encodeSessionContentBlob("reachable content\n".repeat(1_000));
@@ -292,7 +293,7 @@ async function repositoryFixture(
 	readonly write: <Result>(operation: () => Result) => Result;
 }>> {
 	const root = await mkdtemp(join(tmpdir(), `mycli-content-blob-${name}-`));
-	t.after(async () => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	const dbPath = join(root, "sessions.db");
 	createV11SessionDatabase({ dbPath });
 	const database = new Database(dbPath);

@@ -1,5 +1,6 @@
+import { removeFixtureDirectoryAfterTests } from "../fixtures/directory-cleanup.ts";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -205,7 +206,7 @@ async function taskStoreFixture(
 	timestamps: readonly string[] = [CREATED, UPDATED, COMPLETED],
 ) {
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-subagent-tasks-"));
-	t.after(() => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	const dbPath = join(root, "sessions.db");
 	let index = 0;
 	const sessionStore = new SQLiteSessionStore({

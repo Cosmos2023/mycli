@@ -1,5 +1,6 @@
+import { removeFixtureDirectoryAfterTests } from "../fixtures/directory-cleanup.ts";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -10,7 +11,7 @@ import {
 
 test("upserts one stable bounded shell history snapshot", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-shell-history-"));
-	t.after(() => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	const store = new SQLiteSessionStore({
 		dbPath: join(root, "sessions.db"),
 		clock: () => "2026-08-05T00:00:00.000Z",
@@ -80,7 +81,7 @@ test("upserts one stable bounded shell history snapshot", async (t) => {
 
 test("bounds retained shell output and records omitted characters", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-shell-history-"));
-	t.after(() => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	const store = new SQLiteSessionStore({ dbPath: join(root, "sessions.db") });
 	t.after(() => store.close());
 	store.reserveTurn({
@@ -119,7 +120,7 @@ test("bounds retained shell output and records omitted characters", async (t) =>
 
 test("stores full shell output as append-only pages outside bounded history", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-shell-output-pages-"));
-	t.after(() => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	const store = new SQLiteSessionStore({ dbPath: join(root, "sessions.db") });
 	t.after(() => store.close());
 	store.reserveTurn({
@@ -189,7 +190,7 @@ test("stores full shell output as append-only pages outside bounded history", as
 
 test("rejects duplicate shell chunk sequences instead of overwriting output", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-shell-output-append-only-"));
-	t.after(() => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	const store = new SQLiteSessionStore({ dbPath: join(root, "sessions.db") });
 	t.after(() => store.close());
 	store.reserveTurn({

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { resolve } from "node:path";
 import test from "node:test";
 import type { ToolDefinition } from "@mycli/core";
 import { createRunExecutionSnapshot } from "../../src/turns/run-execution-snapshot.ts";
@@ -27,13 +28,13 @@ test("run execution coordinator freezes mode policy and catalog once per turn", 
 	assert.equal(coordinator.resolve("turn-1"), first);
 	assert.equal(first.collaborationMode, "plan");
 	assert.equal(first.toolCatalog.catalogVersion, 1);
-	assert.deepEqual(first.policy?.profile.writableRoots, ["/workspace-1"]);
+	assert.deepEqual(first.policy?.profile.writableRoots, [resolve("/workspace-1")]);
 
 	coordinator.configureCollaborationMode({ collaborationMode: "default" });
 	const second = coordinator.resolve("turn-2");
 	assert.equal(second.collaborationMode, "default");
 	assert.equal(second.toolCatalog.catalogVersion, 2);
-	assert.deepEqual(second.policy?.profile.writableRoots, ["/workspace-2"]);
+	assert.deepEqual(second.policy?.profile.writableRoots, [resolve("/workspace-2")]);
 
 	coordinator.finish("turn-1");
 	assert.equal(coordinator.snapshot("turn-1"), undefined);
@@ -91,7 +92,7 @@ test("run execution coordinator replaces only the active policy snapshot", () =>
 
 	assert.equal(refreshed.toolCatalog, initial.toolCatalog);
 	assert.equal(refreshed.collaborationMode, initial.collaborationMode);
-	assert.deepEqual(refreshed.policy?.profile.writableRoots, ["/workspace-2"]);
+	assert.deepEqual(refreshed.policy?.profile.writableRoots, [resolve("/workspace-2")]);
 	assert.throws(
 		() => coordinator.refreshPolicy("missing"),
 		/run_execution_snapshot_missing/u,
@@ -114,7 +115,7 @@ function policy(version: number) {
 			mode: "workspace-write" as const,
 			filesystem: "workspace_write" as const,
 			network: "disabled" as const,
-			writableRoots: Object.freeze([`/workspace-${version}`]),
+			writableRoots: Object.freeze([resolve(`/workspace-${version}`)]),
 		}),
 	});
 }

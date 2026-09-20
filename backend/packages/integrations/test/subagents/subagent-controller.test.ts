@@ -392,9 +392,11 @@ const NOW = "2026-08-06T00:00:00.000Z";
 
 async function controllerFixture(t: TestContext) {
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-subagent-controller-"));
-	t.after(() => rm(root, { recursive: true, force: true }));
 	const store = new SQLiteSessionStore({ dbPath: join(root, "sessions.db"), clock: () => NOW });
-	t.after(() => store.close());
+	t.after(async () => {
+		store.close();
+		await rm(root, { recursive: true, force: true });
+	});
 	return {
 		store,
 		controller: (

@@ -71,9 +71,11 @@ test("projects Python-compatible private event task and subagent artifacts", asy
 	assert.equal(snapshot.lifecycle_kind, "completed");
 	assert.equal(index.agent_path, "/root/review");
 	assert.equal(snapshot.messages[0].text, "Inspect");
-	assert.equal((await stat(outputPath)).mode & 0o777, 0o600);
-	assert.equal((await stat(snapshotPath)).mode & 0o777, 0o600);
-	assert.equal((await stat(join(sessionDir, "events.jsonl"))).mode & 0o777, 0o600);
+	if (process.platform !== "win32") {
+		assert.equal((await stat(outputPath)).mode & 0o777, 0o600);
+		assert.equal((await stat(snapshotPath)).mode & 0o777, 0o600);
+		assert.equal((await stat(join(sessionDir, "events.jsonl"))).mode & 0o777, 0o600);
+	}
 });
 
 test("rejects traversal-like session and task identities", async (t) => {

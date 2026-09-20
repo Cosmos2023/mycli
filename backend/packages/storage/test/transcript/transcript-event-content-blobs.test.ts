@@ -1,5 +1,6 @@
+import { removeFixtureDirectoryAfterTests } from "../fixtures/directory-cleanup.ts";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -120,7 +121,7 @@ test("rolls back blobs, event, references, and FTS when externalized append fail
 
 test("keeps schema v10 payloads inline", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-content-blob-v10-"));
-	t.after(async () => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	const dbPath = join(root, "sessions.db");
 	const repository = new SQLiteTranscriptEventRepository({ dbPath });
 	t.after(() => repository.close());
@@ -230,7 +231,7 @@ async function repositoryFixture(
 	readonly repository: SQLiteTranscriptEventRepository;
 }> {
 	const root = await mkdtemp(join(tmpdir(), `mycli-event-content-blobs-${name}-`));
-	t.after(async () => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	const dbPath = join(root, "sessions.db");
 	const repository = new SQLiteTranscriptEventRepository({
 		dbPath,

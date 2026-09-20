@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { removeFixtureDirectoryAfterTests } from "../fixtures/directory-cleanup.ts";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -135,6 +136,6 @@ function storedEvents(dbPath: string): readonly unknown[] {
 
 async function temporaryDatabase(t: test.TestContext): Promise<string> {
 	const root = await mkdtemp(join(tmpdir(), "mycli-error-context-"));
-	t.after(() => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	return join(root, "session.db");
 }

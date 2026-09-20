@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { chmod, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 import {
@@ -192,7 +192,7 @@ test("CLI startup prepends resolved vendored ripgrep before handling local comma
 	const harness = cliHarness({ argv: ["--help"], env, homeDir });
 
 	assert.equal(await runCli(harness.options), 0);
-	assert.equal(env.PATH, `${dirname(resolvedBinary)}:/usr/bin`);
+	assert.equal(env.PATH, `${dirname(resolvedBinary)}${delimiter}/usr/bin`);
 	assert.equal(env.MYCLI_RIPGREP_PATH_DIR, dirname(resolvedBinary));
 });
 

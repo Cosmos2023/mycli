@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
+import { removeFixtureDirectoryAfterTests } from "../../../storage/test/fixtures/directory-cleanup.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -18,7 +19,7 @@ for (const scenario of [
 	{ failure: new StorageFailure("fixture full", { sqlite_code: "SQLITE_FULL" }), reason: "storage.capacity_exceeded" },
 ]) test(`terminal failure retains its cause when commit fails: ${scenario.reason ?? "none"}`, async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-error-boundary-"));
-	t.after(() => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	let commits = 0;
 	const store = new SQLiteTranscriptEventRepository({ dbPath: join(root, "session.db"), initializeSchemaVersion: 14,
 		turnTerminalizationFailpoint: (name) => { if (name === "failure_after_display") {
@@ -59,7 +60,7 @@ for (const scenario of [
 
 test("a failed readable projection cannot replace an already committed successful turn", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-error-projection-"));
-	t.after(() => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	const store = new SQLiteTranscriptEventRepository({ dbPath: join(root, "session.db"), initializeSchemaVersion: 14 });
 	t.after(() => store.close());
 	const diagnostics: unknown[] = [];
@@ -77,7 +78,7 @@ test("a failed readable projection cannot replace an already committed successfu
 
 for (const failProvider of [false, true]) test(`disconnect after terminal commit preserves the result without replay: ${failProvider}`, async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-error-disconnect-"));
-	t.after(() => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	const dbPath = join(root, "session.db");
 	const store = new SQLiteTranscriptEventRepository({ dbPath, initializeSchemaVersion: 14 });
 	t.after(() => store.close());

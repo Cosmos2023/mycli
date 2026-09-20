@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
+import { removeFixtureDirectoryAfterTests } from "../../../storage/test/fixtures/directory-cleanup.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setImmediate } from "node:timers/promises";
@@ -320,7 +321,7 @@ interface ApprovalFixture {
 
 async function approvalFixture(t: test.TestContext): Promise<ApprovalFixture> {
 	const root = await mkdtemp(join(tmpdir(), "mycli-parallel-approval-"));
-	t.after(async () => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	const dbPath = join(root, "sessions.db");
 	let failWrites = false;
 	const open = (): { store: RuntimeSessionStore; coordinator: ParallelApprovalCoordinator } => {

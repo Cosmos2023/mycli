@@ -1,5 +1,6 @@
+import { removeFixtureDirectoryAfterTests } from "../fixtures/directory-cleanup.ts";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -1189,7 +1190,7 @@ function hasCode(error: unknown, code: string): boolean {
 
 async function databaseFixture(t: test.TestContext): Promise<{ root: string; dbPath: string }> {
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-m5-storage-"));
-	t.after(async () => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	return { root, dbPath: join(root, ".mycli", "sessions.db") };
 }
 

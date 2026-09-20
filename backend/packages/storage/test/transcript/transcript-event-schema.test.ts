@@ -1,5 +1,6 @@
+import { removeFixtureDirectoryAfterTests } from "../fixtures/directory-cleanup.ts";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -192,7 +193,9 @@ test("loads typed events from v10 while the v9-only store rejects the marker wit
 			&& error.diagnostics.expected_version === 9
 			&& error.diagnostics.actual_version === 10,
 	);
-	const version = new Database(fixture.dbPath, { readonly: true }).prepare(
+	const inspection = new Database(fixture.dbPath, { readonly: true });
+	t.after(() => inspection.close());
+	const version = inspection.prepare(
 		"SELECT version FROM schema_version",
 	).pluck().get();
 	assert.equal(version, 10);
@@ -269,6 +272,6 @@ async function databaseFixture(t: test.TestContext): Promise<{
 	readonly dbPath: string;
 }> {
 	const root = await mkdtemp(join(tmpdir(), "mycli-v10-schema-"));
-	t.after(async () => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	return { root, dbPath: join(root, "sessions.db") };
 }

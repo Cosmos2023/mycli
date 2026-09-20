@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
+import { removeFixtureDirectoryAfterTests } from "../../../packages/storage/test/fixtures/directory-cleanup.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -8,7 +9,7 @@ import { canonicalSnapshot, emptyQueue } from "../src/node-runtime/node-session-
 
 test("an empty canonical session writes valid coverage without inventing a model request", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-empty-snapshot-"));
-	t.after(async () => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	const store = openRuntimeSessionStore({ dbPath: join(root, "sessions.db") });
 	t.after(() => store.close());
 	store.saveQueueSnapshot({ sessionId: "empty", workspaceRoot: root, threadId: "thread-empty",
