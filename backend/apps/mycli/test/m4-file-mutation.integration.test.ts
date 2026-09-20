@@ -288,6 +288,11 @@ async function scenarioFixture(
 			MYCLI_THINKING_ENABLED: "false",
 			MYCLI_REQUEST_MAX_RETRIES: "0",
 			MYCLI_STREAM_MAX_RETRIES: "0",
+			// These scenarios assert file-mutation policy, not compaction. Keep the
+			// scripted provider steps from being split by a mid-turn checkpoint by
+			// giving the fixture model a prompt budget above its scripted context.
+			MYCLI_MAX_PROMPT_TOKENS: "100000",
+			MYCLI_COMPACTION_TOKEN_LIMIT: "80000",
 		},
 	});
 	const messages: JsonObject[] = [];
