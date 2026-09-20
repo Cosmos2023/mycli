@@ -15,7 +15,9 @@ PathGuard::PathGuard(const std::filesystem::path& path, DWORD leaf_access) {
         components.push_back(current);
     }
     for (std::size_t index = 0; index < components.size(); ++index) {
-        const DWORD access = FILE_READ_ATTRIBUTES |
+        // Attribute-only handles do not participate in Windows sharing checks.
+        // Request data access so omitting FILE_SHARE_DELETE really pins the path.
+        const DWORD access = FILE_READ_DATA | FILE_READ_ATTRIBUTES |
             (index + 1 == components.size() ? leaf_access : 0);
         const HANDLE handle = CreateFileW(components[index].c_str(), access,
             FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,

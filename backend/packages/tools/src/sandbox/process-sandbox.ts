@@ -33,11 +33,13 @@ export type ProcessIsolation =
 	| "host_subprocess"
 	| "macos_seatbelt"
 	| "linux_bubblewrap"
-	| "windows_restricted_token";
+	| "windows_restricted_token"
+	| "windows_native";
 
 export interface SandboxedProcessLaunch {
 	readonly executable: string;
 	readonly args: readonly string[];
+	readonly env?: Readonly<Record<string, string>>;
 	readonly isolation: ProcessIsolation;
 }
 
@@ -61,23 +63,21 @@ export function prepareSandboxedProcess(
 ): SandboxedProcessLaunch {
 	validateArgv(argv);
 	const platform = probes.platform ?? process.platform;
-	if (platform === "win32" && profile.readableRoots !== undefined) {
-		throw new ProcessSandboxError("sandbox_unavailable", "Windows process read allowlists cannot be enforced.");
+	if (platform !== "win32" && ((profile.readOnlyRoots?.length ?? 0) > 0
+		|| profile.allowLocalBinding !== undefined || profile.writableTemp !== undefined)) {
+		throw new ProcessSandboxError("sandbox_unavailable", "This platform cannot enforce the requested Windows policy features.");
 	}
 	if (networkProxy && ((platform !== "darwin" && platform !== "win32") || profile.network !== "enabled"
 		|| profile.networkDomains === undefined || profile.networkDomains.length === 0
 		|| !Number.isSafeInteger(networkProxy.port) || networkProxy.port < 1 || networkProxy.port > 65_535)) {
 		throw new ProcessSandboxError("network_proxy_unavailable", "The process network proxy cannot enforce this policy.");
 	}
-	if (hasDeniedReads(profile) && (platform !== "win32" || hasUnrestrictedFilesystem(profile))) {
+	if (hasDeniedReads(profile) && platform !== "win32") {
 		throw new ProcessSandboxError("sandbox_unavailable", "Denied-read rules require the Windows restricted filesystem sandbox.");
 	}
-	if (profile.mode === "danger-full-access" && hasUnrestrictedNetwork(profile)) {
+	if (profile.mode === "danger-full-access" && hasUnrestrictedNetwork(profile)
+		&& !hasDeniedReads(profile) && !profile.readOnlyRoots?.length && profile.readableRoots === undefined) {
 		return hostLaunch(argv);
-	}
-	if (platform === "win32" && hasUnrestrictedFilesystem(profile)) {
-		throw new ProcessSandboxError("sandbox_unavailable",
-			"Windows network-restricted processes require a read-only or workspace-write filesystem policy.");
 	}
 	const resolvedProfile = resolveProfile(profile);
 	const isExecutable = probes.isExecutable ?? sandboxExecutableExists;
@@ -132,6 +132,8 @@ function resolveProfile(profile: SandboxProfile): SandboxProfile {
 		workspaceRoot,
 		cwd,
 		writableRoots: Object.freeze(profile.writableRoots.map((root) => realpathSync.native(root))),
+		...(profile.readableRoots === undefined ? {} : { readableRoots: Object.freeze(profile.readableRoots.map((root) => realpathSync.native(root))) }),
+		...(profile.readOnlyRoots === undefined ? {} : { readOnlyRoots: Object.freeze(profile.readOnlyRoots.map((root) => realpathSync.native(root))) }),
 	});
 }
 

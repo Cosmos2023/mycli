@@ -71,6 +71,53 @@ int RunTests() {
             return 1;
         }
     }
+
+    auto egress = network_enabled;
+    egress.insert(egress.rfind(L'}'), LR"(, "network_egress": {"default": "deny", "allow": [
+        {"to": [{"cidr": "127.0.0.0/8", "except": ["127.0.0.2/32"]}],
+         "ports": [{"protocol": "tcp", "port": 443, "end_port": 444}]}]})");
+    const auto egress_request = mycli::sandbox::ParseAndValidateRequest(egress);
+    if (!egress_request.network_egress.has_value() || !egress_request.has_psec_options
+        || egress_request.network_egress->allow_default
+        || egress_request.network_egress->allow.size() != 1
+        || egress_request.network_egress->allow.front().destinations.size() != 1
+        || egress_request.network_egress->allow.front().ports.front().end_port != 444) {
+        std::cerr << "valid network egress policy was parsed incorrectly\n";
+        return 1;
+    }
+    for (const auto* invalid : {
+            LR"({"default": "maybe"})",
+            LR"({"default": "allow", "allow": [{"to": [{"cidr": "10.0.0.0/8"}]}]})",
+            LR"({"default": "deny", "allow": []})",
+            LR"({"default": "deny", "allow": [{"to": []}]})",
+            LR"({"default": "deny", "allow": [{"to": [{"cidr": "10.0.0.0"}]}]})",
+            LR"({"default": "deny", "allow": [{"to": [{"cidr": "10.0.0.0/33"}]}]})",
+            LR"({"default": "deny", "allow": [{"to": [{"cidr": "::1/129"}]}]})",
+            LR"({"default": "deny", "allow": [{"to": [{"cidr": "10.0.0.0/8"}], "ports": [{"protocol": "sctp"}]}]})",
+            LR"({"default": "deny", "allow": [{"to": [{"cidr": "10.0.0.0/8"}], "ports": [{"end_port": 443}]}]})",
+            LR"({"default": "deny", "allow": [{"to": [{"cidr": "10.0.0.0/8"}], "ports": [{"port": 500, "end_port": 400}]}]})",
+            LR"({"default": "deny", "allow": [{"to": [{"cidr": "10.0.0.0/8"}], "unknown": true}]})"}) {
+        auto invalid_egress = network_enabled;
+        invalid_egress.insert(invalid_egress.rfind(L'}'),
+            std::wstring{L", \"network_egress\": "} + invalid);
+        if (!Rejects(invalid_egress)) {
+            std::cerr << "invalid network egress policy was accepted\n";
+            return 1;
+        }
+    }
+    auto egress_with_proxy = egress;
+    egress_with_proxy.insert(egress_with_proxy.rfind(L'}'), L", \"network_proxy_port\": 40000");
+    if (!Rejects(egress_with_proxy)) {
+        std::cerr << "network egress with a managed proxy was accepted\n";
+        return 1;
+    }
+    auto egress_without_network = std::wstring{kValidRequest};
+    egress_without_network.insert(egress_without_network.rfind(L'}'),
+        LR"(, "network_egress": {"default": "deny", "allow": [{"to": [{"cidr": "10.0.0.0/8"}]}]})");
+    if (!Rejects(egress_without_network)) {
+        std::cerr << "network egress with disabled networking was accepted\n";
+        return 1;
+    }
     auto offline_proxy = std::wstring{kValidRequest};
     offline_proxy.insert(offline_proxy.rfind(L'}'), L", \"network_proxy_port\": 40000");
     if (!Rejects(offline_proxy)) {
@@ -104,6 +151,32 @@ int RunTests() {
     unknown_field.insert(unknown_field.rfind(L'}'), L", \"unexpected\": true");
     if (!Rejects(unknown_field)) {
         std::cerr << "unknown request field was accepted\n";
+        return 1;
+    }
+    auto advanced = std::wstring{kValidRequest};
+    advanced.insert(advanced.rfind(L'}'), LR"(, "readable_roots": ["C:\\shared"],
+        "readonly_roots": ["C:\\workspace\\vendor"], "allow_local_binding": true, "writable_tmp": false)");
+    const auto parsed = mycli::sandbox::ParseAndValidateRequest(advanced);
+    if (!parsed.has_psec_options || !parsed.explicit_read_roots || !parsed.allow_local_binding ||
+        parsed.writable_tmp || parsed.readable_roots.size() != 1 || parsed.readonly_roots.size() != 1 ||
+        request.has_psec_options || !request.writable_tmp) {
+        std::cerr << "PSEC options or legacy defaults were parsed incorrectly\n";
+        return 1;
+    }
+    for (const auto* field : {L"allow_local_binding", L"writable_tmp"}) {
+        for (const auto* value : {L"null", L"0", L"\"false\"", L"[]"}) {
+            auto invalid = std::wstring{kValidRequest};
+            invalid.insert(invalid.rfind(L'}'), std::wstring{L", \""} + field + L"\": " + value);
+            if (!Rejects(invalid)) {
+                std::cerr << "invalid PSEC boolean was accepted\n";
+                return 1;
+            }
+        }
+    }
+    auto relative_root = std::wstring{kValidRequest};
+    relative_root.insert(relative_root.rfind(L'}'), LR"(, "readonly_roots": ["relative"])");
+    if (!Rejects(relative_root) || !Rejects(std::wstring(1000001, L' '))) {
+        std::cerr << "invalid path or oversized PSEC payload was accepted\n";
         return 1;
     }
     return 0;

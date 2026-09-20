@@ -13,6 +13,8 @@
 #include "wfp.hpp"
 #include "desktop.hpp"
 #include "sid.hpp"
+#include "psec.hpp"
+#include "identity.hpp"
 
 namespace mycli::sandbox {
 namespace {
@@ -150,6 +152,13 @@ std::wstring BuildWindowsCommandLine(const std::vector<std::wstring>& argv) {
     if (argv.empty() || argv.front().empty()) {
         throw std::invalid_argument("command argv must contain an executable");
     }
+    const auto name = std::filesystem::path{argv.front()}.filename().wstring();
+    if (argv.size() == 5 && (_wcsicmp(name.c_str(), L"cmd.exe") == 0 || _wcsicmp(name.c_str(), L"cmd") == 0)
+        && _wcsicmp(argv[1].c_str(), L"/d") == 0 && _wcsicmp(argv[2].c_str(), L"/s") == 0
+        && _wcsicmp(argv[3].c_str(), L"/c") == 0) {
+        // cmd strips the outer pair after /s /c; CRT backslash escaping corrupts its command text.
+        return QuoteWindowsArgument(argv.front()) + L" /d /s /c \"" + argv[4] + L"\"";
+    }
     std::wstring command_line;
     for (const auto& argument : argv) {
         if (!command_line.empty()) {
@@ -163,7 +172,8 @@ std::wstring BuildWindowsCommandLine(const std::vector<std::wstring>& argv) {
 DWORD RunProcessInJobImpl(
     HANDLE primary_token,
     const std::vector<std::wstring>& argv,
-    const std::filesystem::path& cwd) {
+    const std::filesystem::path& cwd,
+    HANDLE security_environment = nullptr) {
     auto command_line = BuildWindowsCommandLine(argv);
     std::vector<wchar_t> mutable_command_line(
         command_line.begin(), command_line.end());
@@ -175,7 +185,12 @@ DWORD RunProcessInJobImpl(
     std::vector<HANDLE> inherited_handles{
         stdin_handle.get(), stdout_handle.get(), stderr_handle.get()};
 
-    ThreadAttributeList attributes{1};
+    ThreadAttributeList attributes{security_environment == nullptr ? 1u : 2u};
+    if (security_environment != nullptr && UpdateProcThreadAttribute(
+            attributes.get(), 0, kSecurityEnvironmentAttribute, &security_environment,
+            sizeof(security_environment), nullptr, nullptr) == 0) {
+        throw Win32Error("UpdateProcThreadAttribute(security environment)");
+    }
     if (UpdateProcThreadAttribute(
             attributes.get(),
             0,
@@ -188,7 +203,12 @@ DWORD RunProcessInJobImpl(
     }
 
     STARTUPINFOEXW startup{};
-    auto desktop_name = CurrentDesktopName();
+    std::unique_ptr<PrivateDesktop> private_desktop;
+    if (security_environment != nullptr) {
+        const auto owner = SidFromString(CurrentUserSidString());
+        private_desktop = std::make_unique<PrivateDesktop>(owner.get());
+    }
+    auto desktop_name = private_desktop ? private_desktop->name() : CurrentDesktopName();
     startup.StartupInfo.cb = sizeof(startup);
     startup.StartupInfo.lpDesktop = desktop_name.data();
     startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
@@ -202,6 +222,7 @@ DWORD RunProcessInJobImpl(
     constexpr DWORD kCreationFlags =
         CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT;
     BOOL created = FALSE;
+    const InheritedEnvironment environment;
     if (primary_token == nullptr) {
         created = CreateProcessW(
             nullptr,
@@ -210,7 +231,7 @@ DWORD RunProcessInJobImpl(
             nullptr,
             TRUE,
             kCreationFlags,
-            nullptr,
+            environment.get(),
             cwd.c_str(),
             &startup.StartupInfo,
             &process_info);
@@ -239,6 +260,7 @@ DWORD RunProcessInJobImpl(
         TerminateProcess(process.get(), 1);
         throw Win32Error("AssignProcessToJobObject");
     }
+    if (private_desktop) private_desktop->AllowAppContainer(process.get());
     if (ResumeThread(thread.get()) == static_cast<DWORD>(-1)) {
         TerminateJobObject(job.get(), 1);
         throw Win32Error("ResumeThread");
@@ -269,6 +291,16 @@ DWORD RunHostProcessInJob(
     const std::vector<std::wstring>& argv,
     const std::filesystem::path& cwd) {
     return RunProcessInJobImpl(nullptr, argv, cwd);
+}
+
+DWORD RunPsecProcessInJob(
+    HANDLE security_environment,
+    const std::vector<std::wstring>& argv,
+    const std::filesystem::path& cwd) {
+    if (security_environment == nullptr || security_environment == INVALID_HANDLE_VALUE) {
+        throw std::invalid_argument("security environment handle is invalid");
+    }
+    return RunProcessInJobImpl(nullptr, argv, cwd, security_environment);
 }
 
 DWORD RunProcessWithLogonInJob(

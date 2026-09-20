@@ -8,6 +8,31 @@ import {
 
 const WINDOWS_HELPER = "C:\\mycli\\mycli-windows-sandbox.exe";
 
+test("PSEC lifecycle uses local setup and verifies cleanup without account operations", async () => {
+	let ready = false;
+	const actions: string[] = [];
+	const probes = {
+		platform: "win32" as const, isExecutable: () => true,
+		windowsHandshake: async () => ({ name: "mycli-windows-sandbox", protocolVersion: 2,
+			backend: "psec" as const, setupComplete: ready, sandboxReady: ready, managedStatePresent: ready }),
+		runWindowsOperation: async ({ action }: { readonly action: string }) => {
+			actions.push(action);
+			ready = action === "setup" || action === "repair";
+			return "completed" as const;
+		},
+	};
+	for (const action of ["setup", "reset", "repair", "uninstall"] as const) {
+		const preview = await runSandboxRecovery(action, false, probes);
+		assert.equal(preview.status, "confirmation_required");
+		assert.equal(preview.preview.privilege, "none");
+		assert.equal(preview.preview.effects.includes("initialize_windows_identity"), false);
+		assert.equal(preview.preview.effects.includes("stop_windows_sandbox_processes"),
+			action === "repair" || action === "uninstall");
+		assert.equal((await runSandboxRecovery(action, true, probes)).code, `${action}_completed`);
+	}
+	assert.deepEqual(actions, ["setup", "reset", "repair", "uninstall"]);
+});
+
 test("sandbox recovery plans manual dependencies and leaves non-Windows reset state untouched", () => {
 	const missingLinux: SandboxReadiness = {
 		state: "unavailable",

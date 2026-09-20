@@ -404,6 +404,10 @@ std::filesystem::path SandboxStateDirectory() {
     return StateDirectory();
 }
 
+void PrepareSandboxStateDirectory(const std::filesystem::path& directory, const std::wstring& owner_sid) {
+    PrepareStateDirectory(directory, owner_sid);
+}
+
 std::wstring TokenUserSidString(HANDLE token) { return SidStringFromToken(token); }
 
 std::vector<std::wstring> OwnedSandboxAccountSids(

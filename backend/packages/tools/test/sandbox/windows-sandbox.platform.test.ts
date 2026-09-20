@@ -112,6 +112,11 @@ test("Windows online and offline Shells keep independent IPv4, IPv6 and UDP poli
 		assert.equal(connections, 3);
 
 		const udp = createSocket(host.includes(":") ? "udp6" : "udp4");
+		let datagrams = 0;
+		udp.on("message", (_message, remote) => {
+			datagrams += 1;
+			udp.send("sandbox-ack", remote.port, remote.address);
+		});
 		udp.bind(0, host);
 		await once(udp, "listening");
 		t.after(() => new Promise<void>((resolve) => udp.close(() => resolve())));
@@ -120,6 +125,7 @@ test("Windows online and offline Shells keep independent IPv4, IPv6 and UDP poli
 		assertExit(await fixture.run(datagram), 0);
 		await received;
 		assertExit(await fixture.run(datagram, { policy: { ...fixture.policy, network: "disabled" } }), 37);
+		assert.equal(datagrams, 1, "offline UDP must never reach the receiver");
 	}
 });
 
@@ -152,6 +158,15 @@ test("Windows domain proxy blocks direct egress and other running Shells' proxy 
 	t.after(() => new Promise<void>((resolve) => { origin.closeAllConnections(); origin.close(() => resolve()); }));
 	const address = origin.address();
 	assert.ok(address && typeof address !== "string");
+	let directDatagrams = 0;
+	const udp = createSocket("udp4");
+	udp.on("message", (_message, remote) => {
+		directDatagrams += 1;
+		udp.send("sandbox-ack", remote.port, remote.address);
+	});
+	udp.bind(address.port, "127.0.0.1");
+	await once(udp, "listening");
+	t.after(() => new Promise<void>((resolve) => udp.close(() => resolve())));
 	const proxies: NetworkProxyLease[] = [];
 	const fixture = await createFixture(t, { networkProxyFactory: async (domains) => {
 		const proxy = await startNetworkProxy({ domains,
@@ -169,6 +184,7 @@ test("Windows domain proxy blocks direct egress and other running Shells' proxy 
 	assert.equal(hits, 1);
 	assertExit(await fixture.run(["connect", "127.0.0.1", String(address.port)], { policy }), 37);
 	assertExit(await fixture.run(["udp", "127.0.0.1", String(address.port)], { policy }), 37);
+	assert.equal(directDatagrams, 0, "proxy-only UDP must never reach the receiver");
 	const held = await fixture.run(["proxy-hold", "http://api.example.com/"], { policy, yieldTimeMs: 500 });
 	const firstProxy = proxies.at(-1);
 	assert.ok(firstProxy);
@@ -227,7 +243,7 @@ test("Windows denied reads block content and replacement, then reconcile a remov
 	assertExit(await fixture.run(["read", secret]), 0);
 });
 
-test("Windows active commands prevent a concurrent denied-read policy downgrade", windows, async (t) => {
+test("Windows per-command denied reads survive a concurrent policy change", windows, async (t) => {
 	const fixture = await createFixture(t);
 	const secret = join(fixture.root, "readable.txt");
 	const policy = { ...fixture.policy, deniedReadRoots: [secret] };
@@ -243,9 +259,11 @@ test("Windows active commands prevent a concurrent denied-read policy downgrade"
 		assert.ok(snapshot.terminalState === undefined || output.includes("hold:ready"), output);
 	}
 	assertExit(await fixture.run(["read", secret], { policy }), 23);
+	// PSEC carries the deny inside the running command's kernel policy, so a
+	// concurrent command that does not request it is admitted (Codex parity) and
+	// the held command keeps its own deny.
 	const downgrade = await fixture.run(["read", secret]);
-	assertExit(downgrade, 1);
-	assert.match(downgrade.modelOutput, /policy changed/u);
+	assertExit(downgrade, 0);
 	await fixture.manager.terminate(fixture.owner, id);
 	assertExit(await fixture.run(["read", secret]), 0);
 });
@@ -317,7 +335,11 @@ async function createFixture(t: TestContext, options: FixtureOptions = {}): Prom
 	const manager = new ShellSessionManager({
 		transportFactory: (request) => request.tty ? startNodePtyTransport(request) : startPipeTransport(request),
 	});
-	t.after(async () => { await manager.close(); await rm(root, { recursive: true, force: true }); });
+	t.after(async () => {
+		await manager.close();
+		// Windows can release a terminated job's cwd handles just after process exit.
+		await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+	});
 	const tool = new ShellTool({ workspaceRoot: root, manager, timeoutSeconds: 30,
 		profile: resolveShellProfile({ platform: "win32", shellPath: "powershell.exe" }),
 		env: { ...process.env, ...options.env, LANG: "mycli-sandbox-test" },

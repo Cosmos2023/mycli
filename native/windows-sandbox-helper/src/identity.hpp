@@ -45,5 +45,6 @@ DWORD RunAsSandboxIdentity(
 bool SandboxIdentityCredentialsExist(
     const std::filesystem::path& state_directory, SandboxIdentityKind kind);
 std::filesystem::path SandboxStateDirectory();
+void PrepareSandboxStateDirectory(const std::filesystem::path& directory, const std::wstring& owner_sid);
 
 }  // namespace mycli::sandbox

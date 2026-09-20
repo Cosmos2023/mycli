@@ -12,6 +12,8 @@ const WINDOWS_OPERATION_MAX_BYTES = 16_384;
 export type SandboxRecoveryAction = "setup" | "reset" | "repair" | "uninstall";
 export type SandboxRecoveryPrivilege = "none" | "windows_uac" | "manual_install";
 export type SandboxRecoveryEffect =
+	| "initialize_windows_psec"
+	| "verify_windows_enforcement"
 	| "initialize_windows_identity"
 	| "configure_windows_firewall"
 	| "clear_windows_setup_state"
@@ -159,6 +161,18 @@ export function planSandboxRecovery(
 	}
 	if (readiness.code === "handshake_failed") {
 		return terminalPlan(action, "failed", "handshake_failed", "none", []);
+	}
+	if (readiness.isolation === "windows_psec") {
+		if (action === "setup" && readiness.state === "ready") {
+			return terminalPlan(action, "not_needed", "already_ready", "none", []);
+		}
+		if (action === "setup" && readiness.code === "enforcement_unavailable") {
+			return terminalPlan(action, "manual_action_required", "enforcement_unavailable", "none", []);
+		}
+		return executablePlan(action, "none", action === "setup"
+			? ["verify_windows_enforcement", "initialize_windows_psec"]
+			: [...(action === "reset" ? [] : ["stop_windows_sandbox_processes"] as const), "clear_windows_setup_state",
+				...(action === "repair" ? ["verify_windows_enforcement", "initialize_windows_psec"] as const : [])]);
 	}
 	if (action === "repair" || action === "uninstall") {
 		return executablePlan(action, "windows_uac", [

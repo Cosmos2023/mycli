@@ -33,6 +33,7 @@ export type SandboxReadinessIsolation =
 	| "macos_seatbelt"
 	| "linux_bubblewrap"
 	| "windows_restricted_token"
+	| "windows_psec"
 	| "none";
 
 export interface SandboxReadiness {
@@ -53,6 +54,7 @@ export interface WindowsSandboxHandshake {
 	readonly setupComplete: boolean;
 	readonly sandboxReady: boolean;
 	readonly managedStatePresent?: boolean;
+	readonly backend?: "restricted_token" | "psec";
 }
 
 export interface SandboxReadinessProbes {
@@ -126,6 +128,7 @@ export async function inspectSandboxReadiness(
 		if (!validWindowsHandshakeShape(handshake) || handshake.name !== "mycli-windows-sandbox") {
 			return readiness(platform, "windows_restricted_token", "unavailable", "handshake_failed");
 		}
+		const isolation = handshake.backend === "psec" ? "windows_psec" : "windows_restricted_token";
 		const details = {
 			helperVersion: handshake.protocolVersion,
 			helperCompatible: handshake.protocolVersion === WINDOWS_SANDBOX_PROTOCOL_VERSION,
@@ -136,7 +139,7 @@ export async function inspectSandboxReadiness(
 		if (!details.helperCompatible) {
 			return readiness(
 				platform,
-				"windows_restricted_token",
+				isolation,
 				"unavailable",
 				"handshake_failed",
 				details,
@@ -145,17 +148,17 @@ export async function inspectSandboxReadiness(
 		if (!handshake.setupComplete) {
 			return readiness(
 				platform,
-				"windows_restricted_token",
+				isolation,
 				"setup_required",
 				"setup_incomplete",
 				details,
 			);
 		}
 		return handshake.sandboxReady
-			? readiness(platform, "windows_restricted_token", "ready", "ready", details)
+			? readiness(platform, isolation, "ready", "ready", details)
 			: readiness(
 				platform,
-				"windows_restricted_token",
+				isolation,
 				"unavailable",
 				"enforcement_unavailable",
 				details,
@@ -212,7 +215,8 @@ function runWindowsSandboxHandshake(
 					protocolVersion: value.protocol_version,
 					setupComplete: value.setup_complete,
 					sandboxReady: value.sandbox_ready,
-					...(value.managed_state_present === undefined ? {} : { managedStatePresent: value.managed_state_present }),
+						...(value.managed_state_present === undefined ? {} : { managedStatePresent: value.managed_state_present }),
+						...(value.backend === undefined ? {} : { backend: value.backend }),
 				};
 				if (!validWindowsHandshakeShape(handshake)) {
 					throw new TypeError("invalid sandbox handshake");
@@ -255,6 +259,7 @@ function validWindowsHandshakeShape(value: unknown): value is WindowsSandboxHand
 		&& typeof value.setupComplete === "boolean"
 		&& typeof value.sandboxReady === "boolean"
 		&& (value.managedStatePresent === undefined || typeof value.managedStatePresent === "boolean")
+		&& (value.backend === undefined || value.backend === "restricted_token" || value.backend === "psec")
 		&& (value.setupComplete || !value.sandboxReady);
 }
 

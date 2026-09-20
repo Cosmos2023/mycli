@@ -114,6 +114,9 @@ void PrepareSandboxRequest(const SandboxRequest& request, PSID account_sid) {
     if (!request.denied_read_globs.empty()) {
         throw std::runtime_error("denied-read globs must be resolved by the runtime");
     }
+    // Detect known host blockers before reserving paths or granting account access.
+    const auto capabilities = CapabilitiesForRequest(request, AccountScope(account_sid));
+    AuditPublicWritablePaths(request.cwd, request.writable_roots, capabilities);
     std::vector<std::filesystem::path> denied_paths;
     for (const auto& value : request.denied_read_roots) {
         const std::filesystem::path path{value};
@@ -129,8 +132,6 @@ void PrepareSandboxRequest(const SandboxRequest& request, PSID account_sid) {
             GrantReadableRoot(executable.parent_path(), account_sid);
         }
     }
-    const auto capabilities = CapabilitiesForRequest(request, AccountScope(account_sid));
-    AuditPublicWritablePaths(request.cwd, request.writable_roots, capabilities);
     if (request.mode != SandboxMode::kReadOnly) {
         for (std::size_t index = 0; index < request.writable_roots.size(); ++index) {
             const std::filesystem::path root{request.writable_roots[index]};

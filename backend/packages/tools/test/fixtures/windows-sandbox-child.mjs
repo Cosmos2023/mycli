@@ -35,10 +35,23 @@ try {
 		}
 		case "udp": {
 			const socket = createSocket(target.includes(":") ? "udp6" : "udp4");
-			socket.send("sandbox", Number(argument), target, (error) => {
-				console.log(error ? "network:denied" : "network:ok");
+			const timer = setTimeout(() => finish(37), 1_500);
+			let finished = false;
+			function finish(code) {
+				if (finished) return;
+				finished = true;
+				clearTimeout(timer);
+				console.log(code === 0 ? "network:ok" : "network:denied");
 				socket.close();
-				process.exitCode = error ? 37 : 0;
+				process.exitCode = code;
+			}
+			socket.on("error", () => finish(37));
+			socket.on("message", (message, remote) => {
+				if (remote.address === target && remote.port === Number(argument)
+					&& message.toString() === "sandbox-ack") finish(0);
+			});
+			socket.send("sandbox", Number(argument), target, (error) => {
+				if (error) finish(37);
 			});
 			break;
 		}

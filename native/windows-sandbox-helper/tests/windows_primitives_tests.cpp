@@ -15,6 +15,7 @@
 #include "audit.hpp"
 #include "desktop.hpp"
 #include "path-guard.hpp"
+#include "psec-policy.hpp"
 #include "state.hpp"
 #include "firewall.hpp"
 #include "identity.hpp"
@@ -69,6 +70,30 @@ class SavedDacl {
     PACL dacl_ = nullptr;
     bool restored_ = false;
 };
+
+std::vector<std::vector<BYTE>> ReadDaclEntries(const std::filesystem::path& path) {
+    PACL acl = nullptr;
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    const DWORD status = GetNamedSecurityInfoW(const_cast<LPWSTR>(path.c_str()),
+        SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, nullptr, nullptr, &acl, nullptr, &descriptor);
+    if (status != ERROR_SUCCESS) throw std::runtime_error("read test DACL failed");
+    std::vector<std::vector<BYTE>> entries;
+    try {
+        if (acl == nullptr) throw std::runtime_error("unexpected null test DACL");
+        for (DWORD index = 0; index < acl->AceCount; ++index) {
+            void* raw = nullptr;
+            if (GetAce(acl, index, &raw) == 0) throw std::runtime_error("read test ACE failed");
+            const auto* header = static_cast<const ACE_HEADER*>(raw);
+            const auto* bytes = static_cast<const BYTE*>(raw);
+            entries.emplace_back(bytes, bytes + header->AceSize);
+        }
+    } catch (...) {
+        LocalFree(descriptor);
+        throw;
+    }
+    LocalFree(descriptor);
+    return entries;
+}
 
 int RunTests(const std::filesystem::path& executable) {
     const auto stage = [](const char* name) {
@@ -142,12 +167,25 @@ int RunTests(const std::filesystem::path& executable) {
     }
 
     stage("path-pinning");
+    const auto pinned_parent = test_root / L"pinned-parent";
+    const auto pinned_leaf = pinned_parent / L"leaf";
+    const auto pinned_file = pinned_leaf / L"file.txt";
+    std::filesystem::create_directories(pinned_leaf);
+    { std::ofstream file{pinned_file}; file << "pinned"; }
     {
-        const mycli::sandbox::PathGuard guard{allowed};
-        if (MoveFileW(allowed.c_str(), (test_root / L"renamed").c_str()) != 0) {
-            throw std::runtime_error("ACL path was renamed while pinned");
+        const mycli::sandbox::PathGuard guard{pinned_file};
+        for (const auto& path : {pinned_parent, pinned_leaf, pinned_file}) {
+            auto renamed = path;
+            renamed += L"-renamed";
+            if (MoveFileW(path.c_str(), renamed.c_str()) != 0) {
+                throw std::runtime_error("ACL path was renamed while pinned");
+            }
+            if (GetLastError() != ERROR_SHARING_VIOLATION) {
+                throw std::runtime_error("ACL path rename failed for an unrelated reason");
+            }
         }
     }
+    std::filesystem::rename(pinned_parent, test_root / L"unpinned-parent");
     stage("journal-crash-recovery");
     {
         const auto journal_state = test_root / L"journal-state";
@@ -167,6 +205,28 @@ int RunTests(const std::filesystem::path& executable) {
             throw std::runtime_error("journal cleanup left a stale write grant");
         }
     }
+    stage("journal-deny-cleanup");
+    {
+        const auto fixture = test_root / L"cleanup-root";
+        const auto child = fixture / L"child";
+        const auto journal_state = test_root / L"cleanup-state";
+        std::filesystem::create_directories(child);
+        std::filesystem::create_directories(journal_state);
+        const auto unrelated = mycli::sandbox::DeriveCapabilitySid(fixture, L"unrelated-test");
+        const auto owned = mycli::sandbox::DeriveCapabilitySid(fixture, L"cleanup-test");
+        mycli::sandbox::GrantWritableRoot(fixture, unrelated.get());
+        mycli::sandbox::DenyWritePath(fixture, unrelated.get());
+        const auto parent_before = ReadDaclEntries(fixture);
+        const auto child_before = ReadDaclEntries(child);
+        mycli::sandbox::AclJournal journal{journal_state};
+        mycli::sandbox::GrantWritableRoot(fixture, owned.get());
+        mycli::sandbox::DenyReadPath(fixture, owned.get());
+        journal.Cleanup();
+        journal.Cleanup();
+        if (ReadDaclEntries(fixture) != parent_before || ReadDaclEntries(child) != child_before) {
+            throw std::runtime_error("journal cleanup left owned ACEs or changed unrelated ACEs");
+        }
+    }
     stage("active-policy-coordination");
     {
         const auto journal_state = test_root / L"active-state";
@@ -175,10 +235,81 @@ int RunTests(const std::filesystem::path& executable) {
         journal.Begin({(allowed / L"secret").wstring()});
         bool rejected = false;
         try { journal.Begin({}); } catch (const std::exception&) { rejected = true; }
+        bool scope_rejected = false;
+        try { journal.Begin({(allowed / L"secret").wstring()}, {L"different-write-policy"}); }
+        catch (const std::exception&) { scope_rejected = true; }
+        if (!scope_rejected) throw std::runtime_error("active filesystem policy change must be rejected");
         if (!rejected) throw std::runtime_error("active deny policy was weakened");
         rejected = false;
         try { journal.Cleanup(); } catch (const std::exception&) { rejected = true; }
         if (!rejected) throw std::runtime_error("live sandbox ACLs were removed");
+    }
+
+    stage("psec-reader-coordination");
+    {
+        const auto journal_state = test_root / L"reader-state";
+        std::filesystem::create_directories(journal_state);
+        mycli::sandbox::AclJournal journal{journal_state};
+        const std::vector<std::wstring> reader{L"psec", L"read:" + allowed.wstring()};
+        const std::vector<std::wstring> writer{L"psec", L"read:" + allowed.wstring(), L"write:" + allowed.wstring()};
+        for (const bool reader_first : {false, true}) {
+            journal.Begin({}, reader_first ? reader : writer);
+            journal.Begin({}, reader_first ? writer : reader);
+            journal.End();
+        }
+        journal.Begin({}, reader);
+        for (const std::vector<std::wstring> incompatible : {
+                std::vector<std::wstring>{L"psec", L"read:" + allowed.wstring(), L"write:" + test_root.wstring()},
+                std::vector<std::wstring>{L"psec", L"read:" + allowed.wstring(), L"write:" + (allowed / L"nested" / L".." / L"..").wstring()},
+                std::vector<std::wstring>{L"psec", L"read:" + allowed.wstring(), L"write:" + denied.wstring()},
+                std::vector<std::wstring>{L"psec", L"read:" + allowed.wstring(), L"write:" + allowed.wstring(), L"write:" + denied.wstring()},
+                std::vector<std::wstring>{L"psec", L"read:" + allowed.wstring(), L"write:" + allowed.wstring(), L"full"},
+                std::vector<std::wstring>{L"psec", L"read:" + allowed.wstring(), L"write:" + allowed.wstring(), L"deny:" + denied.wstring()}}) {
+            bool rejected = false;
+            try { journal.Begin({}, incompatible); }
+            catch (const std::exception&) { rejected = true; }
+            // Disjoint writers are independently safe, even without reader compatibility.
+            const bool disjoint = incompatible.size() == 3 && incompatible.back() == L"write:" + denied.wstring();
+            if (rejected == disjoint) throw std::runtime_error("PSEC reader coordination boundary");
+        }
+        journal.End();
+        const auto volume = allowed.root_path().wstring();
+        journal.Begin({}, {L"psec", L"read:" + volume});
+        bool rejected = false;
+        try { journal.Begin({}, {L"psec", L"read:" + volume, L"write:" + allowed.wstring()}); }
+        catch (const std::exception&) { rejected = true; }
+        if (!rejected) throw std::runtime_error("PSEC nonrecursive volume read was broadened");
+        journal.End();
+    }
+
+    stage("shared-policy-coordination");
+    {
+        const auto journal_state = test_root / L"shared-state";
+        std::filesystem::create_directories(journal_state);
+        const std::vector<std::wstring> workspace_scope{
+            L"psec", L"read:" + allowed.wstring(), L"write:" + allowed.wstring()};
+        const std::vector<std::wstring> nested_scope{
+            L"psec", L"read:" + allowed.wstring(), L"write:" + (allowed / L"nested").wstring()};
+        // PSEC admits divergent concurrent policies; the kernel policy is per command.
+        {
+            mycli::sandbox::AclJournal first{journal_state};
+            first.Begin({}, workspace_scope, mycli::sandbox::PolicyCoordination::kShared);
+        }
+        {
+            mycli::sandbox::AclJournal second{journal_state};
+            second.Begin({}, nested_scope, mycli::sandbox::PolicyCoordination::kShared);
+        }
+        // The legacy ACL backend still refuses to join an active shared lease.
+        bool rejected = false;
+        try {
+            mycli::sandbox::AclJournal exclusive{journal_state};
+            exclusive.Begin({});
+        } catch (const std::exception&) {
+            rejected = true;
+        }
+        if (!rejected) throw std::runtime_error("exclusive policy joined an active shared lease");
+        mycli::sandbox::AclJournal released{journal_state};
+        released.End();
     }
 
     stage("setup-state-reset");
@@ -314,8 +445,24 @@ int RunTests(const std::filesystem::path& executable) {
         .network = mycli::sandbox::NetworkPolicy::kDisabled,
         .mode = mycli::sandbox::SandboxMode::kWorkspaceWrite,
     };
-    if (mycli::sandbox::RunSandboxRequest(
-            policy_request, nullptr, account_sid.get()) == 0) {
+    const auto request_journal_path = test_root / L"request-journal";
+    std::filesystem::create_directories(request_journal_path);
+    DWORD policy_exit = 0;
+    {
+        mycli::sandbox::AclJournal request_journal{request_journal_path};
+        try {
+            policy_exit = mycli::sandbox::PsecAvailable()
+                ? mycli::sandbox::RunPsecRequest(policy_request)
+                : mycli::sandbox::RunSandboxRequest(policy_request, nullptr, account_sid.get());
+        } catch (...) {
+            policy_secret_dacl.Restore();
+            request_journal.Cleanup();
+            throw;
+        }
+        policy_secret_dacl.Restore();
+        request_journal.Cleanup();
+    }
+    if (policy_exit == 0) {
         std::cerr << "request-level denied-read policy failed\n";
         return 1;
     }

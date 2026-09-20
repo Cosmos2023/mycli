@@ -35,6 +35,15 @@ jobs:
           Copy-Item native/windows-sandbox-helper/build/Release/mycli-windows-sandbox.exe backend/packages/tools/native/windows/mycli-windows-sandbox.exe
       - name: Verify native protocol and restricted-token boundaries
         run: ctest --test-dir native/windows-sandbox-helper/build -C Release --output-on-failure
+      - name: Verify PSEC boundaries when selected by the host
+        shell: pwsh
+        run: |
+          $handshake = & native/windows-sandbox-helper/build/Release/mycli-windows-sandbox.exe --handshake | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw "Windows backend detection failed" }
+          if ($handshake.backend -eq "psec") {
+            & native/windows-sandbox-helper/build/Release/mycli-windows-sandbox-psec-tests.exe
+            if ($LASTEXITCODE -ne 0) { throw "PSEC enforcement tests failed" }
+          }
       - name: Initialize restricted identities and verify readiness
         shell: pwsh
         run: |
@@ -50,9 +59,7 @@ jobs:
         env:
           MYCLI_WINDOWS_SANDBOX_SETUP_TESTS: "1"
           MYCLI_WINDOWS_SANDBOX_MAINTENANCE_TESTS: "1"
-        run: >-
-          node --conditions=mycli-source --import tsx --test --test-reporter=spec
-          backend/packages/tools/test/sandbox/windows-sandbox.platform.test.ts
+        run: npm run test:windows-sandbox
       - name: Upload verified helper
         uses: actions/upload-artifact@v4
         with:

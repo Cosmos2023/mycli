@@ -6,6 +6,26 @@
 
 namespace mycli::sandbox {
 namespace {
+DWORD RemoveSandboxAces(PACL acl, PSID sid) {
+    // REVOKE_ACCESS leaves deny ACEs behind. Remove our allow/deny entries while
+    // preserving every unrelated ACE, including its order and inheritance flags.
+    for (DWORD index = acl->AceCount; index > 0; --index) {
+        void* raw = nullptr;
+        if (GetAce(acl, index - 1, &raw) == 0) return GetLastError();
+        const auto* header = static_cast<const ACE_HEADER*>(raw);
+        PSID trustee = nullptr;
+        if (header->AceType == ACCESS_ALLOWED_ACE_TYPE) {
+            trustee = &static_cast<ACCESS_ALLOWED_ACE*>(raw)->SidStart;
+        } else if (header->AceType == ACCESS_DENIED_ACE_TYPE) {
+            trustee = &static_cast<ACCESS_DENIED_ACE*>(raw)->SidStart;
+        }
+        if (trustee != nullptr && EqualSid(trustee, sid) != 0 && DeleteAce(acl, index - 1) == 0) {
+            return GetLastError();
+        }
+    }
+    return ERROR_SUCCESS;
+}
+
 bool HasPathAccess(const std::filesystem::path& path, PSID account_sid, DWORD permissions) {
     PACL acl = nullptr;
     PSECURITY_DESCRIPTOR descriptor = nullptr;
@@ -65,11 +85,14 @@ void UpdatePathAcl(
     access.Trustee.TrusteeType = TRUSTEE_IS_UNKNOWN;
     access.Trustee.ptstrName = static_cast<LPWSTR>(capability_sid);
     PACL updated_acl = nullptr;
-    status = SetEntriesInAclW(1, &access, old_acl, &updated_acl);
+    status = mode == REVOKE_ACCESS
+        ? RemoveSandboxAces(old_acl, capability_sid)
+        : SetEntriesInAclW(1, &access, old_acl, &updated_acl);
     if (status == ERROR_SUCCESS) {
         status = SetSecurityInfo(
             guard.leaf(), SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION, nullptr, nullptr, updated_acl, nullptr);
+            DACL_SECURITY_INFORMATION, nullptr, nullptr,
+            mode == REVOKE_ACCESS ? old_acl : updated_acl, nullptr);
     }
     if (updated_acl != nullptr) LocalFree(updated_acl);
     if (descriptor != nullptr) LocalFree(descriptor);

@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
 	executionPolicy,
+	freezeNetworkEgress,
 	inspectSandboxReadiness,
 	packagedWindowsSandboxHelper,
 	prepareSandboxedProcess,
@@ -18,6 +19,26 @@ test("Windows sandbox helper resolves from the package native directory", () => 
 		packagedWindowsSandboxHelper(),
 		fileURLToPath(new URL("../../native/windows/mycli-windows-sandbox.exe", import.meta.url)),
 	);
+});
+
+test("Windows permission payloads are bounded and preserve advanced policy options", async (t) => {
+	const workspace = await temporaryWorkspace(t);
+	const helper = "C:\\mycli\\mycli-windows-sandbox.exe";
+	const profile = { ...executionPolicy("workspace", workspace), workspaceRoot: workspace, cwd: workspace,
+		readableRoots: [workspace], readOnlyRoots: [workspace], allowLocalBinding: true, writableTemp: false };
+	const prepare = (value: typeof profile) => prepareSandboxedProcess(["cmd.exe", "/c", "echo ok"], value,
+		{ ...probes("win32", [helper]), windowsHelperPath: helper });
+	const short = JSON.parse(prepare(profile).args[1]!);
+	assert.deepEqual(short.readable_roots, [workspace]);
+	assert.deepEqual(short.readonly_roots, [workspace]);
+	assert.equal(short.allow_local_binding, true);
+	assert.equal(short.writable_tmp, false);
+	const large = prepare({ ...profile, readableRoots: Array.from({ length: 900 }, () => workspace) });
+	assert.deepEqual(large.args, ["--request-env"]);
+	const encoded = Array.from({ length: Number(large.env?.MYCLI_SANDBOX_REQUEST_COUNT) }, (_, i) => large.env?.[`MYCLI_SANDBOX_REQUEST_${i}`]).join("");
+	assert.equal(JSON.parse(Buffer.from(encoded, "base64").toString("utf8")).readable_roots.length, 900);
+	assert.throws(() => prepareSandboxedProcess(["cmd.exe", "x".repeat(1_000_001)], profile,
+		{ ...probes("win32", [helper]), windowsHelperPath: helper }), /payload limit/u);
 });
 
 test("full access preserves the original process argv", async (t) => {
@@ -63,14 +84,16 @@ test("domain-constrained launch without a proxy preserves filesystem access but 
 	assert.equal(linux.args.includes("--unshare-net"), true);
 
 	const helper = "C:\\mycli\\mycli-windows-sandbox.exe";
-	assert.throws(() => prepareSandboxedProcess(["cmd.exe", "/c", "echo ok"], {
+	const windows = prepareSandboxedProcess(["cmd.exe", "/c", "echo ok"], {
 		...policy,
 		workspaceRoot: workspace,
 		cwd: outside,
 	}, {
 		...probes("win32", [helper]),
 		windowsHelperPath: helper,
-	}), { kind: "sandbox_unavailable" });
+	});
+	assert.equal(JSON.parse(windows.args[1]!).filesystem, "unrestricted");
+	assert.equal(JSON.parse(windows.args[1]!).network, "disabled");
 });
 
 test("macOS admits only the host-owned proxy port for a constrained policy", async (t) => {
@@ -138,6 +161,44 @@ test("Windows proxy authority is an explicit endpoint and absent endpoints stay 
 		assert.throws(() => prepareSandboxedProcess(["cmd.exe"], profile, options, { port }),
 			{ kind: "network_proxy_unavailable" });
 	}
+});
+
+test("Windows structured egress rules travel in the sandbox request", async (t) => {
+	const workspace = await temporaryWorkspace(t);
+	const helper = "C:\\mycli\\mycli-windows-sandbox.exe";
+	const options = { ...probes("win32", [helper]), windowsHelperPath: helper };
+	const egress = freezeNetworkEgress({
+		default: "deny",
+		allow: [{
+			to: [{ cidr: "10.0.0.0/8", except: ["10.1.0.0/16"] }],
+			ports: [{ protocol: "tcp", port: 443, endPort: 444 }],
+		}],
+	});
+	const profile = {
+		...executionPolicy("workspace", workspace),
+		networkEgress: egress,
+		workspaceRoot: workspace,
+		cwd: workspace,
+	};
+	const launch = prepareSandboxedProcess(["cmd.exe", "/c", "echo ok"], profile, options);
+	const request = JSON.parse(launch.args[1]!);
+	assert.equal(request.network, "enabled");
+	assert.deepEqual(request.network_egress, {
+		default: "deny",
+		allow: [{
+			to: [{ cidr: "10.0.0.0/8", except: ["10.1.0.0/16"] }],
+			ports: [{ protocol: "tcp", port: 443, end_port: 444 }],
+		}],
+	});
+
+	assert.throws(() => prepareSandboxedProcess(["cmd.exe"], {
+		...profile,
+		networkDomains: ["api.example.com"],
+	}, options), { kind: "sandbox_unavailable" });
+	assert.throws(() => prepareSandboxedProcess(["cmd.exe"], profile, options, { port: 40_000 }),
+		{ kind: "network_proxy_unavailable" });
+	assert.throws(() => prepareSandboxedProcess(["cmd.exe"], { ...profile, network: "disabled" }, options),
+		{ kind: "sandbox_unavailable" });
 });
 
 test("macOS denies protected metadata paths before they exist", async (t) => {
@@ -218,7 +279,7 @@ test("Windows uses protocol version 2 with the injected restricted-token helper"
 	});
 
 	assert.equal(launch.executable, helper);
-	assert.equal(launch.isolation, "windows_restricted_token");
+	assert.equal(launch.isolation, "windows_native");
 	assert.equal(launch.args[0], "--request-json");
 	assert.deepEqual(JSON.parse(launch.args[1] ?? ""), {
 		protocol_version: 2,
@@ -368,10 +429,27 @@ test("Windows sandbox readiness fails closed for a missing or failed helper", as
 	})).code, "handshake_failed");
 });
 
+test("Windows readiness preserves PSEC identity and rejects unknown backends", async () => {
+	for (const backend of [undefined, "restricted_token", "psec", "unknown"]) {
+		for (const sandboxReady of [true, false]) {
+			const handshake = { name: "mycli-windows-sandbox", protocolVersion: 2,
+				setupComplete: true, sandboxReady };
+			if (backend !== undefined) Reflect.set(handshake, "backend", backend);
+			const result = await inspectSandboxReadiness({
+				platform: "win32", isExecutable: () => true,
+				windowsHandshake: async () => handshake,
+			});
+			assert.equal(result.code, backend === "unknown" ? "handshake_failed"
+				: sandboxReady ? "ready" : "enforcement_unavailable");
+			assert.equal(result.isolation, backend === "psec" ? "windows_psec" : "windows_restricted_token");
+		}
+	}
+});
+
 test("Linux fails closed when protected metadata is a writable symlink", async (t) => {
 	const workspace = await temporaryWorkspace(t);
 	const outside = await temporaryWorkspace(t);
-	await symlink(outside, join(workspace, ".git"));
+	await symlink(outside, join(workspace, ".git"), process.platform === "win32" ? "junction" : "dir");
 
 	assert.throws(() => prepareSandboxedProcess(["/usr/bin/true"], {
 		...executionPolicy("workspace", workspace),

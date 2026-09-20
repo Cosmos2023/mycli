@@ -33,8 +33,8 @@ does not approve domains or modify the run snapshot.
   alone receives filter-add rights to its account's sublayer; sandbox identities
   receive no WFP management permissions. Account-derived keys prevent another
   user's setup from replacing live filters.
-- Windows rejects arbitrary process read allowlists and unrestricted filesystem
-  policies combined with constrained networking before launch. It must not
+- Legacy Windows rejects custom process read roots and unrestricted filesystem
+  policies combined with constrained networking; PSEC supports them. It must not
   narrow or broaden these policies silently.
 - Empty lists and disabled network policy stay offline. Raw process launches
   without a proxy stay offline when the policy contains domains.
@@ -73,6 +73,20 @@ does not approve domains or modify the run snapshot.
   the runtime remains responsible for enforcing managed upper bounds.
 
 ## Limits
+
+Windows PSEC selects a per-process endpoint policy with default-deny egress and one allow
+for the owned `127.0.0.1/32` TCP port. `MXC-Loopback` alone is not authorization for all host
+loopback ports. Keep foreign proxy ports, IPv6 and UDP denied in default proxy mode. Explicit
+`allowLocalBinding=true` broadens only proxied loopback egress to 127.0.0.0/8 and ::1, all ports
+and protocols. This permits host services outside the domain proxy and must survive child policy
+narrowing. Offline policy still wins. Local bind and outbound loopback are verified; host ingress
+is blocked by the Windows Firewall `AppContainerLoopback` filter and is not an accepted capability.
+mycli matches Codex's no-elevation design: do not add a per-identity loopback exemption or LAN
+capability to bypass it.
+Offline PSEC has
+no network capabilities. The legacy account/WFP backend retains its existing contract above.
+UDP tests require an acknowledged datagram and check receiver counts: a successful unconnected
+send can be silently dropped by Windows and is not proof of a policy failure or network access.
 
 CONNECT is an opaque TCP tunnel. It checks the authority and destination address,
 not tunneled TLS SNI, encrypted HTTP Host, or application content. Allowed remote

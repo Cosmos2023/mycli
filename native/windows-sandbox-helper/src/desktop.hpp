@@ -11,6 +11,7 @@ class PrivateDesktop {
     explicit PrivateDesktop(PSID account_sid);
     ~PrivateDesktop();
     void AllowLogon(HANDLE process) const;
+    void AllowAppContainer(HANDLE process) const;
     PrivateDesktop(const PrivateDesktop&) = delete;
     PrivateDesktop& operator=(const PrivateDesktop&) = delete;
     [[nodiscard]] const std::wstring& name() const noexcept { return name_; }

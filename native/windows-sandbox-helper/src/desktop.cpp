@@ -112,6 +112,41 @@ void PrivateDesktop::AllowLogon(HANDLE process) const {
     }
 }
 
+void PrivateDesktop::AllowAppContainer(HANDLE process) const {
+    HANDLE raw_token = nullptr;
+    if (OpenProcessToken(process, TOKEN_QUERY, &raw_token) == 0) {
+        throw Win32Error("OpenProcessToken(PSEC desktop)");
+    }
+    const UniqueHandle token{raw_token};
+    DWORD size = 0;
+    GetTokenInformation(token.get(), TokenAppContainerSid, nullptr, 0, &size);
+    std::vector<std::byte> buffer(size);
+    if (GetTokenInformation(token.get(), TokenAppContainerSid, buffer.data(), size, &size) == 0) {
+        throw Win32Error("GetTokenInformation(PSEC desktop)");
+    }
+    const auto info = reinterpret_cast<const TOKEN_APPCONTAINER_INFORMATION*>(buffer.data());
+    if (info->TokenAppContainer == nullptr) throw std::runtime_error("PSEC process lacks container SID");
+    PACL old_acl = nullptr;
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    DWORD status = GetSecurityInfo(handle_, SE_WINDOW_OBJECT, DACL_SECURITY_INFORMATION,
+        nullptr, nullptr, &old_acl, nullptr, &descriptor);
+    if (status != ERROR_SUCCESS) throw std::runtime_error("read PSEC desktop ACL failed");
+    EXPLICIT_ACCESSW entry{};
+    entry.grfAccessPermissions = DESKTOP_READOBJECTS | DESKTOP_CREATEWINDOW |
+        DESKTOP_CREATEMENU | DESKTOP_ENUMERATE | DESKTOP_WRITEOBJECTS | READ_CONTROL;
+    entry.grfAccessMode = GRANT_ACCESS;
+    BuildTrusteeWithSidW(&entry.Trustee, info->TokenAppContainer);
+    PACL updated = nullptr;
+    status = SetEntriesInAclW(1, &entry, old_acl, &updated);
+    if (status == ERROR_SUCCESS) {
+        status = SetSecurityInfo(handle_, SE_WINDOW_OBJECT, DACL_SECURITY_INFORMATION,
+            nullptr, nullptr, updated, nullptr);
+    }
+    if (updated != nullptr) LocalFree(updated);
+    LocalFree(descriptor);
+    if (status != ERROR_SUCCESS) throw std::runtime_error("grant PSEC desktop access failed");
+}
+
 PrivateDesktop::~PrivateDesktop() {
     if (handle_ != nullptr) CloseDesktop(handle_);
 }
