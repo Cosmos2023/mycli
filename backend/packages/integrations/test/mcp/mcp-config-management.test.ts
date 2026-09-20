@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { parse } from "smol-toml";
-import { McpConfigStore, McpManagementService, discoverMcpConfig, parseMcpServerConfig } from "../../src/index.ts";
+import { McpConfigStore, discoverMcpConfig, parseMcpServerConfig } from "../../src/index.ts";
+import { McpManagementService } from "../../src/mcp/index.ts";
 
 test("MCP configuration supports separate deadlines, filters, approval precedence and environment headers", () => {
 	const config = parseMcpServerConfig("docs", { url: "https://example.com/mcp", cwd: "tools", required: true,

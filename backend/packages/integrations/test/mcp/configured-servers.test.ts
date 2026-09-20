@@ -3,7 +3,8 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { discoverConfiguredMcpServers, McpManagementService, mcpServerSelector, pluginMcpServerId } from "../../src/index.ts";
+import { discoverConfiguredMcpServers, mcpServerSelector, pluginMcpServerId } from "../../src/index.ts";
+import { McpManagementService } from "../../src/mcp/index.ts";
 
 test("configured MCP discovery shares plugin selectors, OAuth normalization, trust and override precedence", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-configured-mcp-"));

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { McpClient, parseMcpServerConfig } from "../../src/index.ts";
+import { parseMcpServerConfig } from "../../src/index.ts";
+import { McpClient } from "../../src/mcp/index.ts";
 import { policyMcpFetch } from "../../src/mcp/http-fetch.ts";
 import { McpRequestError } from "../../src/mcp/diagnostics.ts";
 

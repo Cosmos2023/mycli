@@ -3,10 +3,10 @@ import test from "node:test";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { McpRequestError } from "../../src/mcp/diagnostics.ts";
 import {
-	McpClient,
 	type McpProtocolClient,
 	type McpServerConfig,
 } from "../../src/index.ts";
+import { McpClient } from "../../src/mcp/index.ts";
 
 for (const phase of ["connect", "request"] as const) {
 	test(`MCP ${phase} timeout uses its own budget and never replays a timed-out call`, async (t) => {

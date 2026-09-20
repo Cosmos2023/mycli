@@ -5,10 +5,10 @@ import { join } from "node:path";
 import test from "node:test";
 import {
 	McpCatalogCache,
-	McpManager,
 	type McpManagedClient,
 	type McpServerConfig,
 } from "../../src/index.ts";
+import { McpManager } from "../../src/mcp/index.ts";
 
 test("resource listing queries clients after a cached startup and isolates failed servers", async (t) => {
 	let lists = 0;

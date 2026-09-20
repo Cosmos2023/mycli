@@ -4,11 +4,11 @@ import type { CanonicalToolCall } from "@mycli/core";
 import { ToolRouter } from "@mycli/tools";
 import { McpHttpError, McpRequestError } from "../../src/mcp/diagnostics.ts";
 import {
-	createMcpToolRegistration,
 	type McpClientContract,
 	type McpToolCallResult,
 	type McpToolDescriptor,
 } from "../../src/index.ts";
+import { createMcpToolRegistration } from "../../src/mcp/index.ts";
 
 test("creates stable MCP registrations and validates arguments through the shared router", async () => {
 	let callCount = 0;

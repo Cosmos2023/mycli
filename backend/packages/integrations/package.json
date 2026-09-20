@@ -8,13 +8,18 @@
     "dist",
     "assets"
   ],
-  "exports": {
-    ".": {
-      "mycli-source": "./src/index.ts",
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    }
+ "exports": {
+  ".": {
+   "mycli-source": "./src/index.ts",
+   "types": "./dist/index.d.ts",
+   "import": "./dist/index.js"
   },
+  "./mcp": {
+   "mycli-source": "./src/mcp/index.ts",
+   "types": "./dist/mcp/index.d.ts",
+   "import": "./dist/mcp/index.js"
+  }
+ },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "test": "node --import tsx --test \"test/**/*.test.ts\" --test-reporter=dot",

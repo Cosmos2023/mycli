@@ -8,6 +8,7 @@ import {
 	type ToolExecutionOptions,
 } from "@mycli/tools";
 import { describeMcpFailure, isMcpAbort, mcpFailureContext, mcpFailureErrorKind, mcpFailureText, type McpOperation } from "./diagnostics.ts";
+import { legacyOffsetSchema } from "./legacy-offset-schema.ts";
 import { boundMcpText, renderMcpContent } from "./result-content.ts";
 import type { McpResourceContent, McpResourceFailure, McpResourceService } from "./types.ts";
 
@@ -162,12 +163,6 @@ function nativeResourceOutput(server: string, uri: string, contents: readonly Mc
 		projected.push(row);
 	}
 	return JSON.stringify({ ...base, contents: projected, ...(truncated ? { truncated: true } : {}) });
-}
-
-function legacyOffsetSchema(schema: Readonly<Record<string, unknown>>): Readonly<Record<string, unknown>> {
-	const properties = schema.properties as Readonly<Record<string, unknown>>;
-	return { ...schema, properties: { ...Object.fromEntries(Object.entries(properties).filter(([key]) => key !== "cursor")),
-		offset: { type: "integer", minimum: 0 } }, required: [...(schema.required as readonly string[] ?? []), "offset"] };
 }
 
 function listArguments(args: Readonly<Record<string, unknown>>): { server?: string; cursor?: string } | undefined {

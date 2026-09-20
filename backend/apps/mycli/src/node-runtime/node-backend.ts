@@ -149,6 +149,8 @@ import {
 	ReadTool,
 	RequestPermissionsTool,
 	resolveShellProfile,
+	shellDialectGuidance,
+	SHELL_PATH_ENV_KEY,
 	ShellOutputTool,
 	ShellSessionManager,
 	ShellTool,
@@ -1310,6 +1312,8 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					provider_protocol: activeConfig.protocol,
 					shell: shellProfile.name,
 					shell_kind: shellProfile.kind,
+					shell_dialect: shellProfile.dialect,
+					shell_notes: shellDialectGuidance(shellProfile.dialect),
 				}),
 			}),
 				...(developerInstructions.length > 0 ? { developerInstructions } : {}),
@@ -2798,6 +2802,9 @@ function agentExecutionPolicySnapshot(
 			networkDomains: Object.freeze([...profile.networkDomains]),
 		}),
 		...(profile?.deniedReadRoots === undefined ? {} : { deniedReadRoots: Object.freeze([...profile.deniedReadRoots]) }),
+		...(profile?.readOnlyRoots === undefined ? {} : { readOnlyRoots: Object.freeze([...profile.readOnlyRoots]) }),
+		...(profile?.allowLocalBinding === undefined ? {} : { allowLocalBinding: profile.allowLocalBinding }),
+		...(profile?.writableTemp === undefined ? {} : { writableTemp: profile.writableTemp }),
 		...(profile?.deniedReadGlobs === undefined ? {} : { deniedReadGlobs: Object.freeze([...profile.deniedReadGlobs]) }),
 		...(profile?.readableRoots === undefined ? {} : {
 			readableRoots: Object.freeze([...profile.readableRoots]),
@@ -2828,6 +2835,9 @@ function inheritedAgentExecutionPolicyConstraints(
 			networkDomains: Object.freeze([...policy.networkDomains]),
 		}),
 		...(policy.deniedReadRoots === undefined ? {} : { deniedReadRoots: Object.freeze([...policy.deniedReadRoots]) }),
+		...(policy.readOnlyRoots === undefined ? {} : { readOnlyRoots: Object.freeze([...policy.readOnlyRoots]) }),
+		...(policy.allowLocalBinding === undefined ? {} : { allowLocalBinding: policy.allowLocalBinding }),
+		...(policy.writableTemp === undefined ? {} : { writableTemp: policy.writableTemp }),
 		...(policy.deniedReadGlobs === undefined ? {} : { deniedReadGlobs: Object.freeze([...policy.deniedReadGlobs]) }),
 		...(policy.readableRoots === undefined ? {} : {
 			readableRoots: Object.freeze([...policy.readableRoots]),
@@ -2841,6 +2851,11 @@ function inheritedAgentExecutionPolicyConstraints(
 const AGENT_ENVIRONMENT_KEYS = Object.freeze([
 	"HOME",
 	"USERPROFILE",
+	"LOCALAPPDATA",
+	"SYSTEMROOT",
+	"WINDIR",
+	"COMSPEC",
+	"PATHEXT",
 	"PATH",
 	"SHELL",
 	"TMPDIR",
@@ -2852,12 +2867,16 @@ const AGENT_ENVIRONMENT_KEYS = Object.freeze([
 	"COLORTERM",
 	"MYCLI_CI",
 	"MYCLI_RIPGREP_PATH_DIR",
+	SHELL_PATH_ENV_KEY,
 ]);
 const AGENT_ENVIRONMENT_VALUE_MAX_CHARS = 32_768;
 
 function agentEnvironmentSnapshot(env: NodeJS.ProcessEnv): Readonly<Record<string, string>> {
+	const source = process.platform === "win32"
+		? Object.fromEntries(Object.entries(env).map(([key, value]) => [key.toUpperCase(), value]))
+		: env;
 	return Object.freeze(Object.fromEntries(AGENT_ENVIRONMENT_KEYS.flatMap((key) => {
-		const value = env[key];
+		const value = source[key];
 		return typeof value === "string"
 			&& value.length > 0
 			&& value.length <= AGENT_ENVIRONMENT_VALUE_MAX_CHARS

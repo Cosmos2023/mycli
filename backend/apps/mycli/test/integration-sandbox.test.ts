@@ -3,7 +3,8 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { McpClient, parseMcpServerConfig } from "@mycli/integrations";
+import { parseMcpServerConfig } from "@mycli/integrations";
+import { McpClient } from "@mycli/integrations/mcp";
 import { prepareSandboxedProcess, ProcessSandboxError } from "@mycli/tools";
 import { mcpSandboxProfile } from "../src/node-runtime/integration-sandbox.ts";
 
@@ -42,7 +43,18 @@ test("MCP readable-root bounds cannot silently become unrestricted host executio
 	const root = await mkdtemp(join(tmpdir(), "mycli-mcp-read-bound-"));
 	t.after(() => rm(root, { recursive: true, force: true }));
 	const config = parseMcpServerConfig("browser", { command: process.execPath }, {});
-	const client = new McpClient({ config, sandboxProfile: mcpSandboxProfile(root, config, { source: "managed", readableRoots: [root] }) });
+	const profile = mcpSandboxProfile(root, config, { source: "managed", readableRoots: [root] });
+	if (process.platform === "win32") {
+		const probes = { platform: "win32" as const, windowsHelperPath: join(root, "helper.exe"), isExecutable: () => true };
+		const launch = prepareSandboxedProcess([process.execPath], profile, probes);
+		assert.equal(launch.isolation, "windows_native");
+		assert.equal(launch.executable, probes.windowsHelperPath);
+		assert.deepEqual(JSON.parse(launch.args[1]!).readable_roots, [root]);
+		assert.throws(() => prepareSandboxedProcess([process.execPath], profile, { ...probes, isExecutable: () => false }),
+			(error: unknown) => error instanceof ProcessSandboxError && error.kind === "sandbox_unavailable");
+		return;
+	}
+	const client = new McpClient({ config, sandboxProfile: profile });
 	t.after(() => client.close());
 	await assert.rejects(client.listTools(new AbortController().signal), /sandbox_unavailable/u);
 });

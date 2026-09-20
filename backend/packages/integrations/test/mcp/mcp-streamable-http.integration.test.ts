@@ -10,9 +10,9 @@ import {
 	ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import {
-	McpClient,
 	type McpServerConfig,
 } from "../../src/index.ts";
+import { McpClient } from "../../src/mcp/index.ts";
 
 test("MCP Streamable HTTP uses the SDK and configured headers", { timeout: 10_000 }, async (t) => {
 	let headerCount = 0;

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { removeFixtureDirectoryAfterTests } from "../../../packages/storage/test/fixtures/directory-cleanup.ts";
 import { existsSync } from "node:fs";
 import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer, type ServerResponse } from "node:http";
@@ -8,6 +9,7 @@ import { createInterface } from "node:readline";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { ConfigError, WorkspaceTrustStore } from "@mycli/config";
+import { createShellEnvironment } from "@mycli/tools";
 import { parseJsonRpcMessage, type RuntimeStateRecord } from "@mycli/contracts";
 import { fingerprintSubmission, PROVIDER_IDS, rootAgentPath } from "@mycli/core";
 import {
@@ -42,6 +44,7 @@ import {
 	writeResponsesText,
 	writeResponsesTool,
 } from "./support/responses-sse.ts";
+import { shellCommand } from "./support/shell-command.ts";
 
 function finalMessageCount(messages: readonly Record<string, unknown>[]): number {
 	return messages.filter((message) => {
@@ -59,7 +62,7 @@ test("Node backend round trips curated provider readiness rows and trace identit
 		mkdir(join(home, ".mycli", "traces"), { recursive: true }),
 		mkdir(workspace, { recursive: true }),
 	]);
-	t.after(() => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	const providers = [
 		["openrouter", "OpenRouter", "openrouter/auto"],
 		["groq", "Groq", "openai/gpt-oss-120b"],
@@ -174,7 +177,7 @@ test("Node backend rejects invalid managed execution policy before runtime start
 		"[execution_policy]",
 		'network = "unrestricted"',
 	].join("\n"), "utf8");
-	t.after(() => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 
 	await assert.rejects(startNodeBackend({
 		cwd: workspace,
@@ -196,7 +199,7 @@ test("Node backend becomes ready before an uncached MCP discovery completes", as
 		`args = ["-e", "setInterval(() => {}, 1000)"]`,
 		"timeout_seconds = 10",
 	].join("\n"), "utf8");
-	t.after(() => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 
 	const startup = startNodeBackend({
 		cwd: workspace,
@@ -233,7 +236,7 @@ test("Node backend does not await update refresh and closes only after aborted w
 	const home = join(root, "home");
 	const workspace = join(root, "workspace");
 	await Promise.all([mkdir(home), mkdir(workspace)]);
-	t.after(() => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 
 	let requestStarted!: () => void;
 	const started = new Promise<void>((resolve) => { requestStarted = resolve; });
@@ -282,7 +285,7 @@ test("Node backend startup update opt-out performs no network request", async (t
 		"[updates]",
 		"check_on_startup = false",
 	].join("\n"), "utf8");
-	t.after(() => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	let requests = 0;
 	const backend = await startNodeBackend({
 		cwd: workspace,
@@ -304,7 +307,7 @@ test("Node backend advertises a refreshed update only on the next startup", asyn
 	const home = join(root, "home");
 	const workspace = join(root, "workspace");
 	await Promise.all([mkdir(home), mkdir(workspace)]);
-	t.after(() => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	let requests = 0;
 	const updateFetch = (async () => {
 		requests += 1;
@@ -712,6 +715,11 @@ test("Worker-backed root composes sessions, provider streaming, transcripts, and
 		`shell_kind: ${process.platform === "win32" ? "cmd" : "posix"}`,
 		"u",
 	));
+	assert.match(modelInput, new RegExp(
+		`shell_dialect: ${process.platform === "win32" ? "cmd" : "posix-sh"}`,
+		"u",
+	));
+	assert.match(modelInput, /shell_notes: [^"]+syntax/u);
 	assert.equal(modelInput.includes(process.platform === "win32" ? "cmd.exe" : "/bin/sh"), false);
 	assert.deepEqual(
 		providerToolNames(capture.requestBody?.tools),
@@ -1829,7 +1837,7 @@ test("Node backend composes skills subagents and bounded resource discovery", as
 		"PRIVATE SKILL BODY THAT MUST NOT CROSS RESOURCE LIST",
 	].join("\n"), "utf8");
 	await new WorkspaceTrustStore({ homeDir: home }).save(workspace, "trusted");
-	t.after(async () => { await rm(root, { recursive: true, force: true }); });
+	removeFixtureDirectoryAfterTests(t, root);
 
 	const backend = await startNodeBackend({
 		cwd: workspace,
@@ -1849,7 +1857,9 @@ test("Node backend composes skills subagents and bounded resource discovery", as
 		messages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
 	});
 	await waitFor(() => event(messages, "runtime.ready"));
-	await waitFor(() => event(messages, "extension.updated"));
+	// Without configured MCP servers there is no asynchronous discovery to wait
+	// for; the manifest is already current once the runtime is ready.
+	await new Promise<void>((resolve) => setImmediate(resolve));
 
 	writeRequest(backend, "manifest", "extension.manifest", {});
 	const manifestResponse = await waitFor(() => response(messages, "manifest"));
@@ -1912,7 +1922,7 @@ test("resumed sessions gate integrations using the persisted workspace trust", a
 	} finally {
 		seed.close();
 	}
-	t.after(async () => { await rm(root, { recursive: true, force: true }); });
+	removeFixtureDirectoryAfterTests(t, root);
 
 	const backend = await startNodeBackend({
 		cwd: launchWorkspace,
@@ -2486,7 +2496,8 @@ test("Node backend runs a root turn with isolated concurrent child Workers", {
 			"utf8",
 		),
 	]);
-	const command = `"${process.execPath}" concurrent-child.cjs`;
+	const { LOCALAPPDATA: localAppData, ...shellEnvironment } = createShellEnvironment({ cwd: workspace }).env;
+	const command = shellCommand(process.execPath, ["concurrent-child.cjs"], shellEnvironment);
 	const parentRequests: Record<string, unknown>[] = [];
 	const askerRequests: Record<string, unknown>[] = [];
 	const readerRequests: Record<string, unknown>[] = [];
@@ -2640,6 +2651,8 @@ test("Node backend runs a root turn with isolated concurrent child Workers", {
 		cwd: workspace,
 		args: ["--session", "concurrent-parent", "--model", "gpt-test"],
 		env: {
+			...shellEnvironment,
+			...(localAppData === undefined ? {} : { LocalAppData: localAppData }),
 			HOME: home,
 			MYCLI_API_KEY: "test-key",
 			MYCLI_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
@@ -2713,6 +2726,10 @@ test("Node backend runs a root turn with isolated concurrent child Workers", {
 	try {
 		const tasks = store.subagentTasks.list("concurrent-parent");
 		assert.equal(tasks.length, 2);
+		for (const child of store.agentThreads.list({ rootThreadId: "concurrent-parent" })) {
+			assert.equal(child.spawnConfig?.environment.MYCLI_API_KEY, undefined);
+			if (process.platform === "win32") assert.equal(child.spawnConfig?.environment.LOCALAPPDATA, localAppData);
+		}
 		const asker = tasks.find((task) => task.payload.description?.includes("shell approval"));
 		const reader = tasks.find((task) => task.payload.description?.includes("concurrent.txt"));
 		assert.equal(asker?.status, "completed");
@@ -2757,7 +2774,8 @@ test("Node backend approves a child Shell sandbox escalation and resumes the sam
 		"process.stdout.write('child-approved\\n');\n",
 		"utf8",
 	);
-	const command = `"${process.execPath}" child-command.cjs`;
+	const shellEnvironment = createShellEnvironment({ cwd: workspace }).env;
+	const command = shellCommand(process.execPath, ["child-command.cjs"], shellEnvironment);
 	const justification = "Run the requested child command with the required access.";
 	const parentRequests: Record<string, unknown>[] = [];
 	const childRequests: Record<string, unknown>[] = [];
@@ -2824,6 +2842,7 @@ test("Node backend approves a child Shell sandbox escalation and resumes the sam
 		cwd: workspace,
 		args: ["--session", "child-approval-parent", "--model", "gpt-test"],
 		env: {
+			...shellEnvironment,
 			HOME: home,
 			MYCLI_API_KEY: "test-key",
 			MYCLI_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
@@ -2954,7 +2973,8 @@ test("Node backend gives a Full Access child the frozen parent policy without ap
 		"process.stdout.write('child-full-access-ok\\n');\n",
 		"utf8",
 	);
-	const command = `"${process.execPath}" child-full-access.cjs`;
+	const shellEnvironment = createShellEnvironment({ cwd: workspace }).env;
+	const command = shellCommand(process.execPath, ["child-full-access.cjs"], shellEnvironment);
 	const parentRequests: Record<string, unknown>[] = [];
 	const childRequests: Record<string, unknown>[] = [];
 	const server = createServer((request, response) => {
@@ -3007,6 +3027,7 @@ test("Node backend gives a Full Access child the frozen parent policy without ap
 		cwd: workspace,
 		args: ["--session", "full-access-child-parent", "--model", "gpt-test"],
 		env: {
+			...shellEnvironment,
 			HOME: home,
 			MYCLI_API_KEY: "test-key",
 			MYCLI_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
@@ -3446,6 +3467,10 @@ test("Node backend triggers a durable follow-up turn without fabricating child u
 			MYCLI_THINKING_ENABLED: "false",
 			MYCLI_STREAM_MAX_RETRIES: "0",
 			MYCLI_AGENT_EXECUTION_ADAPTER: "worker",
+			// This test asserts the exact provider round count of the follow-up
+			// flow, so keep the base prompt below the compaction threshold.
+			MYCLI_MAX_PROMPT_TOKENS: "128000",
+			MYCLI_COMPACTION_TOKEN_LIMIT: "128000",
 		},
 	});
 	const messages: Array<Record<string, unknown>> = [];
@@ -3718,7 +3743,7 @@ test("Node backend repairs a terminal subagent notification and does not duplica
 	const home = join(root, "home");
 	const workspace = join(root, "workspace");
 	await Promise.all([mkdir(home), mkdir(workspace)]);
-	t.after(async () => { await rm(root, { recursive: true, force: true }); });
+	removeFixtureDirectoryAfterTests(t, root);
 	const dbPath = join(home, ".mycli", "sessions.db");
 	const seed = openRuntimeSessionStore({ dbPath });
 	try {
@@ -3835,7 +3860,7 @@ test("Node backend repairs a terminal subagent notification and does not duplica
 		1,
 	);
 	assert.match(serializedInput, /Recovered durable child report\./u);
-	assert.match(serializedInput, /<output-file>[^<]+\/tasks\/durable-child\/output\.txt<\/output-file>/u);
+	assert.ok(serializedInput.includes(JSON.stringify(`<output-file>${outputPath}</output-file>`).slice(1, -1)));
 
 	writeRequest(second, "shutdown-second-recovery", "shutdown", {});
 	assert.equal(await second.completion, 0);
@@ -3855,7 +3880,7 @@ test("Node backend resumes a session whose completed subagent has a blank report
 	const home = join(root, "home");
 	const workspace = join(root, "workspace");
 	await Promise.all([mkdir(home), mkdir(workspace)]);
-	t.after(async () => { await rm(root, { recursive: true, force: true }); });
+	removeFixtureDirectoryAfterTests(t, root);
 	const dbPath = join(home, ".mycli", "sessions.db");
 	const parentSessionId = "blank-report-parent";
 	const childSessionId = "blank-report-child";
@@ -4144,7 +4169,7 @@ test("Node backend persists workspace trust across process restarts", async (t) 
 	const workspace = join(root, "workspace");
 	await mkdir(home);
 	await mkdir(workspace);
-	t.after(async () => { await rm(root, { recursive: true, force: true }); });
+	removeFixtureDirectoryAfterTests(t, root);
 	const options = {
 		cwd: workspace,
 		args: ["--session", "trust-session", "--model", "gpt-test"],
@@ -4215,7 +4240,7 @@ test("Node backend atomically activates and removes project configuration with w
 		"---",
 		"private project instructions",
 	].join("\n"), "utf8");
-	t.after(async () => { await rm(root, { recursive: true, force: true }); });
+	removeFixtureDirectoryAfterTests(t, root);
 	const options = {
 		cwd: workspace,
 		args: ["--session", "config-trust-session"],
@@ -4482,7 +4507,7 @@ test("Node backend applies a launch profile to new and resumed sessions without 
 		'tui_theme = "light"\n[model]\nname = "profile-model"\n',
 		"utf8",
 	);
-	t.after(() => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	const options = {
 		cwd: workspace,
 		args: ["--session", "profile-runtime-session", "--profile", "work"],
@@ -4737,7 +4762,7 @@ test("Node backend interrupts an orphaned claimed approval effect without replay
 	const workspace = join(root, "workspace");
 	await mkdir(home);
 	await mkdir(workspace);
-	t.after(async () => { await rm(root, { recursive: true, force: true }); });
+	removeFixtureDirectoryAfterTests(t, root);
 	const dbPath = join(home, ".mycli", "sessions.db");
 	const seed = openRuntimeSessionStore({ dbPath });
 	try {
@@ -4850,7 +4875,7 @@ test("Node backend drains a durable queued follow-up once after restart", async 
 	const workspace = join(root, "workspace");
 	await mkdir(home);
 	await mkdir(workspace);
-	t.after(async () => { await rm(root, { recursive: true, force: true }); });
+	removeFixtureDirectoryAfterTests(t, root);
 	const options = {
 		cwd: workspace,
 		args: ["--session", "queue-session", "--model", "gpt-test"],
@@ -4946,7 +4971,7 @@ test("Worker-backed root retains provider-free slash commands in the coordinator
 		"x".repeat(5 * 1024 * 1024 + 1),
 		"utf8",
 	);
-	t.after(async () => { await rm(root, { recursive: true, force: true }); });
+	removeFixtureDirectoryAfterTests(t, root);
 
 	const backend = await startNodeBackend({
 		cwd: workspace,
@@ -5044,7 +5069,7 @@ test("Node backend reports v14 content blobs complete and collects explicit orph
 	const home = join(root, "home");
 	const workspace = join(root, "workspace");
 	await Promise.all([mkdir(home), mkdir(workspace)]);
-	t.after(async () => { await rm(root, { recursive: true, force: true }); });
+	removeFixtureDirectoryAfterTests(t, root);
 	const dbPath = join(home, ".mycli", "sessions.db");
 	const seed = openRuntimeSessionStore({ dbPath });
 	seed.importLegacyConversation({
@@ -5516,7 +5541,7 @@ test("Node backend persists canonical TUI control state without exposing credent
 		"",
 	].join("\n"), "utf8");
 	await writeFile(join(workspace, "src", "README.md"), "control fixture\n", "utf8");
-	t.after(async () => { await rm(root, { recursive: true, force: true }); });
+	removeFixtureDirectoryAfterTests(t, root);
 	const options = {
 		cwd: workspace,
 		args: ["--session", "control-session"],
@@ -5812,7 +5837,7 @@ test("Node backend restores model effort and mode from each session preference",
 			},
 		},
 	}, null, 2)}\n`, "utf8");
-	t.after(async () => { await rm(root, { recursive: true, force: true }); });
+	removeFixtureDirectoryAfterTests(t, root);
 	const options = {
 		cwd: workspace,
 		args: ["--session", "session-a"],
@@ -6006,7 +6031,7 @@ test("Node backend separates session model choices from user defaults", async (t
 		"",
 	].join("\n");
 	await writeFile(configPath, initialConfig, "utf8");
-	t.after(async () => { await rm(root, { recursive: true, force: true }); });
+	removeFixtureDirectoryAfterTests(t, root);
 	const options = {
 		cwd: workspace,
 		args: ["--session", "scope-session"],
@@ -6323,7 +6348,9 @@ function runningShellId(input: unknown): string | undefined {
 function assertApprovedShellOutcome(value: unknown, successMarker: string): void {
 	const serialized = typeof value === "string" ? value : JSON.stringify(value) ?? "";
 	if (serialized.includes(successMarker)) return;
-	assert.equal(process.platform, "linux");
+	const outputs: unknown = Array.isArray(value) ? value.filter((item: unknown) =>
+		typeof item === "object" && item !== null && "type" in item && item.type === "function_call_output") : value;
+	assert.equal(process.platform, "linux", JSON.stringify(outputs));
 	assert.match(
 		serialized,
 		/bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted/u,

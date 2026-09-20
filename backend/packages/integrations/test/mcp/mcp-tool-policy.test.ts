@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ApprovalPolicy } from "@mycli/tools";
-import { createMcpToolRegistration, McpManager, parseMcpServerConfig, type McpManagedClient, type McpToolDescriptor } from "../../src/index.ts";
+import { parseMcpServerConfig, type McpManagedClient, type McpToolDescriptor } from "../../src/index.ts";
+import { createMcpToolRegistration, McpManager } from "../../src/mcp/index.ts";
 
 const tools: readonly McpToolDescriptor[] = ["read", "write", "hidden"].map((name) => ({ serverId: "docs", name, description: "fixture tool",
 	inputSchema: { type: "object", properties: {} }, supportsParallelToolCalls: true, annotations: { readOnlyHint: true, destructiveHint: false } }));

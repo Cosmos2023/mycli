@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { removeFixtureDirectoryAfterTests } from "../../../packages/storage/test/fixtures/directory-cleanup.ts";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -6,7 +7,8 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import test from "node:test";
 import { WorkspaceTrustStore } from "@mycli/config";
-import { createMcpToolRegistration, McpManager, type McpManagerDiscovery, type McpToolCallResult } from "@mycli/integrations";
+import { type McpManagerDiscovery, type McpToolCallResult } from "@mycli/integrations";
+import { createMcpToolRegistration, McpManager } from "@mycli/integrations/mcp";
 import { builtinToolManifest } from "@mycli/tools";
 import { createRuntimeIntegrationComposition } from "../src/node-runtime/integration-composition.ts";
 import { startTestNodeBackend } from "./support/offline-update-fetch.ts";
@@ -14,7 +16,7 @@ import { responsesTextEvents, responsesToolBatchEvents, responsesToolEvents } fr
 
 test("MCP catalog publishes connection results and fences refreshes after workspace reload", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-mcp-catalog-"));
-	t.after(() => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	const workspaceRoot = join(root, "workspace");
 	const homeDir = join(root, "home");
 	await mkdir(join(workspaceRoot, ".mycli"), { recursive: true });
@@ -58,7 +60,9 @@ test("MCP catalog publishes connection results and fences refreshes after worksp
 	assert.equal(composition.resources.some((row) => row.type === "plugin"), false);
 	await composition.reloadProjectConfiguration({ workspaceRoot, enabled: false });
 	await composition.reloadProjectConfiguration({ workspaceRoot, enabled: true });
-	assert.equal(refreshes.length, 3);
+	// Disabling the project configuration removes every MCP server, so that
+	// reload discovers nothing and never starts a manager refresh.
+	assert.equal(refreshes.length, 2);
 	const stale = refreshes.at(-1)!;
 	await composition.reloadProjectConfiguration({ workspaceRoot, enabled: false });
 	const version = composition.version;

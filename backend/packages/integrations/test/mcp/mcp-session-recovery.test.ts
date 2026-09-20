@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { McpClient, type McpServerConfig } from "../../src/index.ts";
+import { type McpServerConfig } from "../../src/index.ts";
+import { McpClient } from "../../src/mcp/index.ts";
 import { McpRequestError } from "../../src/mcp/diagnostics.ts";
 
 test("expired Streamable HTTP sessions initialize again and replay the rejected call once", async (t) => {

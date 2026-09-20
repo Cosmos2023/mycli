@@ -9,10 +9,7 @@ import {
 	pluginBundleContributions,
 	HookManager,
 	IntegrationLifecycleStack,
-	McpClient,
 	McpCatalogCache,
-	McpManager,
-	McpRequiredServerError,
 	normalizeIntegrationToolNames,
 	type McpManagerDiscovery,
 	type McpResourceService,
@@ -49,6 +46,7 @@ import {
 } from "./integration-sandbox.ts";
 import { mcpCatalogResources, pluginCatalogResources, type McpCatalogPhase } from "./integration-resource-catalog.ts";
 import { loadRuntimeIntegrationConfiguration, type RuntimeIntegrationConfiguration } from "./integration-configuration.ts";
+import { isMcpRequiredServerError, loadMcpRuntime } from "./mcp-runtime.ts";
 
 import { createRuntimeSubagentServices, type RuntimeSubagentServices } from "./runtime-subagent-services.ts";
 import type { SubagentController } from "@mycli/integrations";
@@ -212,7 +210,7 @@ export async function createIntegrationComposition(
 				contribution = await source.start(controller.signal);
 			} catch (error) {
 				await lifecycles.close().catch(() => undefined);
-				if (error instanceof McpRequiredServerError) throw error;
+				if (isMcpRequiredServerError(error)) throw error;
 				throw new Error("integration_start_failed");
 			}
 			contributions.push(contribution);
@@ -578,7 +576,7 @@ async function createRuntimeIntegrationContent(input: {
 	const { options } = input;
 	const mcpRefreshController = new AbortController();
 	let skillRegistry: SkillRegistry | undefined;
-	let mcpManager: McpManager | undefined;
+	let mcpResourceService: McpResourceService | undefined;
 	let pluginRuntime: PluginRuntime | undefined;
 	let unsubscribePlugins: (() => void) | undefined;
 	let startMcpRefresh: ((
@@ -618,6 +616,14 @@ async function createRuntimeIntegrationContent(input: {
 						const config = configuration.mcp;
 						const servers = config.servers;
 						const invalidRequired = [...config.diagnostics.filter((issue) => issue.required).map((issue) => issue.serverId), ...config.requiredPluginFailures];
+						if (servers.length === 0 && invalidRequired.length === 0) {
+							// Nothing to discover: keep the MCP SDK out of the startup path.
+							mcpResourceService = emptyMcpResourceService();
+							if (input.reportStartup) options.onStartupStage?.("mcp_cache_ready");
+							return mcpContribution(servers, config.diagnostics, emptyMcpDiscovery(),
+								input.waitForMcpDiscovery ? "ready" : "cached");
+						}
+						const { McpClient, McpManager, McpRequiredServerError } = await loadMcpRuntime();
 						if (invalidRequired.length) throw new McpRequiredServerError(invalidRequired);
 						const manager = new McpManager({
 							configs: servers,
@@ -632,7 +638,7 @@ async function createRuntimeIntegrationContent(input: {
 								sandboxProfile: mcpSandboxProfile(input.workspaceRoot, server, options.managedExecutionPolicy),
 							}),
 						});
-						mcpManager = manager;
+						mcpResourceService = manager;
 						let cached: McpManagerDiscovery | undefined;
 						try {
 							cached = await manager.loadCached(discoverySignal);
@@ -716,7 +722,7 @@ async function createRuntimeIntegrationContent(input: {
 		mcpRefreshController.abort();
 		throw error;
 	}
-	if (!skillRegistry || !mcpManager || !pluginRuntime) {
+	if (!skillRegistry || !mcpResourceService || !pluginRuntime) {
 		mcpRefreshController.abort();
 		await composition.close().catch(() => undefined);
 		throw new Error("integration_start_failed");
@@ -725,7 +731,7 @@ async function createRuntimeIntegrationContent(input: {
 		workspaceRoot: input.workspaceRoot,
 		configuration,
 		configurationFingerprint: configuration.fingerprint,
-		mcpResourceService: mcpManager,
+		mcpResourceService,
 		composition,
 		projectConfigurationEnabled: input.projectConfigurationEnabled,
 		hookDiscovery,
@@ -842,6 +848,25 @@ function runtimeIntegrationSnapshot(input: {
 		resources: Object.freeze([...input.resources]),
 		diagnostics: Object.freeze([...input.diagnostics]),
 		manifest: combinedToolManifest(input.builtinManifest, registrations),
+	});
+}
+
+function emptyMcpDiscovery(): McpManagerDiscovery {
+	return Object.freeze({ registrations: Object.freeze([]), resources: Object.freeze([]), servers: Object.freeze([]) });
+}
+
+// Resource calls without a configured MCP server behave like a manager without
+// matching servers, without loading the MCP runtime.
+function emptyMcpResourceService(): McpResourceService {
+	return Object.freeze({
+		listResources: async (signal: AbortSignal) => { signal.throwIfAborted(); return { resources: [], failures: [] }; },
+		listResourcesPage: async () => { throw new Error("unknown_mcp_server"); },
+		listResourceTemplates: async (signal: AbortSignal, serverId?: string) => {
+			signal.throwIfAborted();
+			if (serverId !== undefined) throw new Error("unknown_mcp_server");
+			return { resourceTemplates: [], failures: [] };
+		},
+		readResource: async () => { throw new Error("unknown_mcp_server"); },
 	});
 }
 

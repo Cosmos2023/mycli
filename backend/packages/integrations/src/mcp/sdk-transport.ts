@@ -44,8 +44,8 @@ export async function createMcpTransport(options: McpTransportOptions, signal: A
 				...(config.sandbox?.mode === "read-only" ? { mode: "read-only", filesystem: "read_only", writableRoots: [] } : {}),
 				network: config.sandbox?.network === "disabled" ? "disabled" : options.sandboxProfile.network };
 			let launchProfile = profile;
-			// Current process launchers cannot enforce arbitrary read allowlists.
-			if (profile.readableRoots !== undefined) throw new ProcessSandboxError("sandbox_unavailable", "MCP process read restrictions cannot be enforced on this platform.");
+			// Only the Windows PSEC backend supports custom process read roots.
+			if (profile.readableRoots !== undefined && process.platform !== "win32") throw new ProcessSandboxError("sandbox_unavailable", "MCP process read restrictions cannot be enforced on this platform.");
 			if (profile.network === "enabled" && profile.networkDomains !== undefined) {
 				if (profile.networkDomains.length === 0) launchProfile = { ...profile, network: "disabled" };
 				else {
@@ -56,7 +56,7 @@ export async function createMcpTransport(options: McpTransportOptions, signal: A
 			signal.throwIfAborted();
 			const launch = prepareSandboxedProcess([config.command, ...config.args], launchProfile, {}, proxy);
 			const stdio = new StdioClientTransport({ command: launch.executable, args: [...launch.args],
-				env: Object.fromEntries(Object.entries({ ...config.env, ...proxy?.env }).flatMap(([key, value]) => value === undefined ? [] : [[key, value]])), stderr: "pipe", cwd, maxBufferSize: 1_048_576 });
+				env: Object.fromEntries(Object.entries({ ...config.env, ...proxy?.env, ...launch.env }).flatMap(([key, value]) => value === undefined ? [] : [[key, value]])), stderr: "pipe", cwd, maxBufferSize: 1_048_576 });
 			stdio.stderr?.on("data", () => undefined);
 			transport = stdio;
 		} else {

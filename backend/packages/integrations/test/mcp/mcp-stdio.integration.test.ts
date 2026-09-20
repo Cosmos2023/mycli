@@ -4,12 +4,28 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { inspectSandboxReadiness } from "@mycli/tools";
 import {
-	McpClient,
 	type McpServerConfig,
 } from "../../src/index.ts";
+import { McpClient } from "../../src/mcp/index.ts";
 
 const fixturePath = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "mcp-stdio-server.mjs");
+
+test("MCP stdio forwards a large PSEC policy through the real SDK", {
+	skip: process.platform !== "win32", timeout: 20_000,
+}, async (t) => {
+	const readiness = await inspectSandboxReadiness();
+	if (readiness.isolation !== "windows_psec") { t.skip("requires PSEC"); return; }
+	assert.equal(readiness.state, "ready");
+	const root = await mkdtemp(join(tmpdir(), "mycli-mcp-psec-"));
+	const client = new McpClient({ config: stdioConfig(join(root, "server.pid"), 10_000), cwd: root,
+		sandboxProfile: { ...fullAccessSandbox(root), mode: "workspace-write", filesystem: "workspace_write", network: "disabled",
+			readableRoots: [join(import.meta.dirname, "../../../../.."), ...Array.from({ length: 899 }, () => root)] } });
+	t.after(async () => { await client.close(); await rm(root, { recursive: true, force: true }); });
+	assert.deepEqual((await client.listTools(new AbortController().signal)).map((tool) => tool.name), ["echo", "wait"]);
+	assert.equal((await client.callTool("echo", { text: "large-policy" }, new AbortController().signal)).content[0]?.text, "echo:large-policy");
+});
 
 test("resource-only MCP servers remain discoverable through the real SDK", { timeout: 10_000 }, async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-mcp-resources-only-"));

@@ -10,8 +10,9 @@ import { McpOAuthStore } from "../../src/mcp/oauth-store.ts";
 import { authenticatedMcpFetch } from "../../src/mcp/oauth-fetch.ts";
 import { diagnosticMcpFetch, policyMcpFetch } from "../../src/mcp/http-fetch.ts";
 import { parseMcpServerConfig } from "../../src/mcp/config.ts";
-import { createMcpToolRegistration, discoverConfiguredMcpServers, IntegrationToolApprovalStore,
-	McpManagementService, PluginPackageManager, PluginRuntime, type McpServerConfig } from "../../src/index.ts";
+import { discoverConfiguredMcpServers, IntegrationToolApprovalStore,
+	PluginPackageManager, PluginRuntime, type McpServerConfig } from "../../src/index.ts";
+import { createMcpToolRegistration, McpManagementService } from "../../src/mcp/index.ts";
 
 test("plugin MCP login and logout share runtime identity across immutable package updates", { timeout: 10_000 }, async (t) => {
 	const f = await fixture(t);

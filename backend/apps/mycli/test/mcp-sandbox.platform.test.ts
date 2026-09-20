@@ -6,7 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { McpClient, parseMcpServerConfig } from "@mycli/integrations";
+import { parseMcpServerConfig } from "@mycli/integrations";
+import { McpClient } from "@mycli/integrations/mcp";
 import { mcpSandboxProfile } from "../src/node-runtime/integration-sandbox.ts";
 
 const fixturePath = fileURLToPath(new URL("../../../packages/integrations/test/fixtures/mcp-policy-server.mjs", import.meta.url));

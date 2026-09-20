@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { describeMcpFailure, McpHttpError, McpRequestError } from "../../src/mcp/diagnostics.ts";
 import { ToolRouter, TOOL_SEARCH_TOOL_DEFINITION, type ToolExecutionOptions } from "@mycli/tools";
-import { ListMcpResourcesTool, ListMcpResourceTemplatesTool, ReadMcpResourceTool, type McpResourceService } from "../../src/index.ts";
+import { type McpResourceService } from "../../src/index.ts";
+import { ListMcpResourcesTool, ListMcpResourceTemplatesTool, ReadMcpResourceTool } from "../../src/mcp/index.ts";
 
 const OPTIONS: ToolExecutionOptions = { signal: new AbortController().signal, ownerSessionId: "session", callId: "resource", publishLifecycle: () => undefined };
 const IMAGE = "aW1hZ2U=";

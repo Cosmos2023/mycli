@@ -2,11 +2,13 @@ import { createRunExecutionSnapshot } from "@mycli/runtime";
 import { captureChildIntegrationAuthority, inheritedIntegrationRegistrations } from "../src/node-runtime/child-integration-authority.ts";
 import { createRuntimeSubagentServices } from "../src/node-runtime/runtime-subagent-services.ts";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { removeFixtureDirectoryAfterTests } from "../../../packages/storage/test/fixtures/directory-cleanup.ts";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
-import { McpClient, McpRequiredServerError, PluginPackageManager, pluginMcpServerId } from "@mycli/integrations";
+import { PluginPackageManager, pluginMcpServerId } from "@mycli/integrations";
+import { McpClient, McpRequiredServerError } from "@mycli/integrations/mcp";
 import { builtinToolManifest } from "@mycli/tools";
 import { createRuntimeIntegrationComposition, type CreateRuntimeIntegrationCompositionOptions, type RuntimeIntegrationComposition } from "../src/node-runtime/integration-composition.ts";
 
@@ -186,7 +188,7 @@ test("child clients retain parent configuration and reject changed tool authorit
 
 async function fixture(t: TestContext) {
 	const root = await mkdtemp(join(tmpdir(), "mycli-plugin-lifecycle-"));
-	t.after(() => rm(root, { recursive: true, force: true }));
+	removeFixtureDirectoryAfterTests(t, root);
 	const homeDir = join(root, "home");
 	const workspaceRoot = join(root, "workspace");
 	const source = join(root, "source");

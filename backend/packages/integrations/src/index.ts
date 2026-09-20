@@ -60,7 +60,6 @@ export type {
 	HookShellKind,
 	HookWorkingDirectory,
 } from "./hooks/types.ts";
-export { McpClient } from "./mcp/client.ts";
 export type { McpClientOptions } from "./mcp/client.ts";
 export { McpCatalogCache } from "./mcp/catalog-cache.ts";
 export type {
@@ -73,27 +72,23 @@ export { discoverConfiguredMcpServers, mcpServerSelector } from "./mcp/configure
 export { pluginMcpServers, pluginMcpServerId } from "./plugins/mcp-servers.ts";
 export { McpConfigStore } from "./mcp/config-store.ts";
 export type { DiscoverMcpConfigOptions } from "./mcp/config.ts";
-export {
-	classifyMcpFailure,
-	isMcpAbort,
-	mcpFailureErrorKind,
-} from "./mcp/diagnostics.ts";
 export type { McpFailureCategory } from "./mcp/diagnostics.ts";
-export { LegacyHttpTransport } from "./mcp/legacy-http-transport.ts";
 export type { LegacyHttpTransportOptions } from "./mcp/legacy-http-transport.ts";
-export { McpManagementService } from "./mcp/management.ts";
 export type {
 	McpManagementResponse,
 	McpManagementRow,
 	McpManagementServiceOptions,
 } from "./mcp/management.ts";
-export { McpManager } from "./mcp/manager.ts";
 export type {
 	McpManagerDiscovery,
 	McpManagerOptions,
 } from "./mcp/manager.ts";
 export { McpResourceAdapter } from "./mcp/resource-adapter.ts";
-export { createMcpToolRegistration } from "./mcp/tool-adapter.ts";
+export {
+	ListMcpResourcesTool,
+	ListMcpResourceTemplatesTool,
+	ReadMcpResourceTool,
+} from "./mcp/lazy-resource-tools.ts";
 export type {
 	McpClientContract,
 	McpConfigDiagnostic,
@@ -266,13 +261,8 @@ export {
 	SUBAGENT_NOTIFICATION_MAX_BYTES,
 	SUBAGENT_NOTIFICATION_RESULT_MAX_CHARS,
 } from "./subagents/task-notification.ts";
-export { ListMcpResourcesTool, ListMcpResourceTemplatesTool, ReadMcpResourceTool } from "./mcp/resource-tools.ts";
 export type { McpResourceService, McpResourceListing, McpResourcePage, McpResourceTemplateDescriptor,
 	McpResourceTemplatePage, McpResourceTemplateListing } from "./mcp/types.ts";
-export { McpRequiredServerError } from "./mcp/manager.ts";
-export { loginMcpOAuth } from "./mcp/oauth-login.ts";
-export { McpOAuthStore, McpOAuthError } from "./mcp/oauth-store.ts";
-export { policyMcpFetch } from "./mcp/http-fetch.ts";
 export type { McpElicitationPrompt, McpElicitationHandler, McpInvocationContext } from "./mcp/elicitation.ts";
 
 export { HookBrowserService, HookSelectionError, configuredHookIdentity, configuredHookEnablement, pluginHookIdentity } from "./hooks/browser-service.ts";

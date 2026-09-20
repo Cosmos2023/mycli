@@ -1,10 +1,8 @@
 import {
 	HookManagementService,
-	McpClient,
-	McpManagementService,
-	policyMcpFetch,
 	PluginManagementService,
 } from "@mycli/integrations";
+import { McpClient, McpManagementService, policyMcpFetch } from "@mycli/integrations/mcp";
 import {
 	CachedUpdateService,
 	loadManagedExecutionPolicy,

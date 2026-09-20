@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
-	McpManagementService,
 	type McpManagedClient,
 } from "../../src/index.ts";
+import { McpManagementService } from "../../src/mcp/index.ts";
 
 test("returns provider-free MCP management rows and closes discovery clients", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-mcp-management-"));

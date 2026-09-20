@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createMcpToolRegistration, normalizeIntegrationToolNames } from "../../src/index.ts";
+import { normalizeIntegrationToolNames } from "../../src/index.ts";
+import { createMcpToolRegistration } from "../../src/mcp/index.ts";
 import { ToolRouter } from "@mycli/tools";
 
 test("normalized aliases remain distinct and route to raw tools regardless of discovery order", async () => {
