@@ -275,6 +275,9 @@ async function scenarioFixture(
 	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 	const address = server.address();
 	assert.ok(address && typeof address === "object");
+	const closeServer = (): Promise<void> => new Promise<void>((resolve, reject) => {
+		server.close((error) => error ? reject(error) : resolve());
+	});
 	const backend = await startNodeBackend({
 		cwd: workspace,
 		args: ["--session", sessionId, "--model", "gpt-test"],
@@ -294,6 +297,11 @@ async function scenarioFixture(
 			MYCLI_MAX_PROMPT_TOKENS: "100000",
 			MYCLI_COMPACTION_TOKEN_LIMIT: "80000",
 		},
+	}).catch(async (error: unknown) => {
+		// A rejected start would otherwise leave the mock provider server open and
+		// keep this test process alive after the assertion failure.
+		await closeServer().catch(() => undefined);
+		throw error;
 	});
 	const messages: JsonObject[] = [];
 	createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => {

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createInterface } from "node:readline";
 import test from "node:test";
+import { Worker } from "node:worker_threads";
 import { startSupervisedNodeBackend } from "../src/node-runtime/node-backend-supervisor.ts";
 
 type JsonObject = Record<string, unknown>;
@@ -76,6 +77,21 @@ test("supervisor aborts stalled startup and closes the owned Worker", { timeout:
 	const reason = new Error("startup canceled");
 	controller.abort(reason);
 	await assert.rejects(started, (error: unknown) => error === reason);
+});
+
+test("supervisor closes the Worker it created when startup fails", { timeout: 5_000 }, async (t) => {
+	const terminated: Worker[] = [];
+	const terminate = Worker.prototype.terminate;
+	t.mock.method(Worker.prototype, "terminate", function (this: Worker) {
+		terminated.push(this);
+		return terminate.call(this);
+	});
+	await assert.rejects(startSupervisedNodeBackend({
+		cwd: process.cwd(), env: {}, args: [],
+		workerUrl: new URL("./fixtures/node-backend-start-failure-worker.mjs", import.meta.url),
+	}), /node_backend_worker_start_failed/);
+	assert.equal(terminated.length, 1);
+	await Promise.all(terminated.map((worker) => worker.terminate().then(() => undefined, () => undefined)));
 });
 
 test("targeted Agent Worker interruption keeps the coordinator generation", async (t) => {
