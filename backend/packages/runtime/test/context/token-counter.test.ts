@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { TokenCounter } from "../../src/context/token-counter.ts";
+import { TOKEN_COUNT_WINDOW_CHARS, TokenCounter } from "../../src/context/token-counter.ts";
 
 const PYTHON_O200K_CORPUS = Object.freeze([
 	{ name: "ascii", text: "hello world", tokens: 2 },
@@ -83,4 +83,67 @@ test("caches encoder counts without retaining more than the configured bound", (
 	assert.equal(counter.count("two"), 3);
 	assert.equal(counter.count("one"), 3);
 	assert.equal(calls, 3);
+});
+
+function recordingCounter(calls: string[]): TokenCounter {
+	return new TokenCounter({
+		maxCache: 0,
+		loadEncoder: () => ({
+			encode: (text) => {
+				calls.push(text);
+				return [...text].map((_, index) => index);
+			},
+		}),
+	});
+}
+
+test("keeps ordinary text and whitespace-free JSON in one exact call", () => {
+	const calls: string[] = [];
+	const counter = recordingCounter(calls);
+	const source = "const value = 1;\n".repeat(200);
+	const json = JSON.stringify(Array.from({ length: 600 }, (_, index) => ({ index, name: "item" + index })));
+
+	assert.equal(counter.count(source), source.length);
+	assert.equal(counter.count(json), json.length);
+	assert.equal(calls.length, 2);
+	assert.deepEqual(calls, [source, json]);
+});
+
+test("bounds every encoder call and hands over the text unchanged", () => {
+	const calls: string[] = [];
+	const counter = recordingCounter(calls);
+	const text = "中".repeat(5_000);
+
+	assert.equal(counter.count(text), 5_000);
+	assert.ok(calls.length > 1, "expected the run to be counted in several windows");
+	for (const call of calls) {
+		assert.ok(call.length <= TOKEN_COUNT_WINDOW_CHARS, `window of ${call.length} exceeds the bound`);
+	}
+	assert.equal(calls.join(""), text);
+});
+
+test("never splits a surrogate pair when a window has to be cut", () => {
+	const calls: string[] = [];
+	const counter = recordingCounter(calls);
+	const text = "😀".repeat(2_000);
+
+	assert.equal(counter.count(text), 2_000);
+	assert.equal(calls.join(""), text);
+	for (const call of calls) {
+		assert.ok(call.length <= TOKEN_COUNT_WINDOW_CHARS, `window of ${call.length} exceeds the bound`);
+	}
+});
+
+test("counts an unbroken CJK run without stalling", () => {
+	const counter = new TokenCounter({ maxCache: 0 });
+	// Python o200k_base counts this string as 8100 tokens; one unguarded encode
+	// call takes about 97 seconds and the windowed count stays within 2%.
+	const text = "这是一个用于测试的中文句子内容".repeat(900).slice(0, 13_500);
+
+	const started = performance.now();
+	const tokens = counter.count(text);
+	const elapsed = performance.now() - started;
+
+	assert.ok(Math.abs(tokens - 8_100) / 8_100 < 0.02, `expected within 2% of 8100 tokens, received ${tokens}`);
+	assert.ok(elapsed < 10_000, `expected a bounded count, took ${elapsed.toFixed(0)}ms`);
 });

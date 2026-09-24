@@ -57,6 +57,7 @@ These documents are reference material for comparing mycli with Hermes/Codex-sty
 - [parity/2026-09-21-shell-guidance-in-tool-description.md](./parity/2026-09-21-shell-guidance-in-tool-description.md): environment context keeps shell facts while the Shell tool description carries platform command rules, matching Codex.
 - [parity/2026-09-21-compaction-limit-scope.md](./parity/2026-09-21-compaction-limit-scope.md): the compaction trigger can scope to post-prefix tokens so an uncompressible base context stops forcing per-turn compaction.
 - [parity/2026-09-24-subagent-report-bounding.md](./parity/2026-09-24-subagent-report-bounding.md): an oversized child report is trimmed with a visible marker and the artifact path instead of a silent cut.
+- [parity/2026-09-24-bounded-token-counting.md](./parity/2026-09-24-bounded-token-counting.md): token counting windows unbroken runs so a CJK paragraph without punctuation stops stalling the count, with the encoder comparison recorded.
 - [parity/codex-alignment-roadmap.md](./parity/codex-alignment-roadmap.md): roadmap for moving mycli's core runtime architecture toward Codex-style execution, timeline, tool runtime, and policy boundaries.
 - [parity/codex-alignment-phases-p9-p13.md](./parity/codex-alignment-phases-p9-p13.md): executable P9-P13 phase plan for Codex-style runtime alignment, with compact rehydration explicitly out of scope.
 - [parity/hermes-agent-gap-analysis.md](./parity/hermes-agent-gap-analysis.md): broader Hermes-agent gap analysis.
