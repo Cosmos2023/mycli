@@ -42,20 +42,42 @@ test("terminal input without echo stays visible once alongside the original Shel
 	assert.doesNotMatch(display, /WriteStdin/u);
 });
 
-test("terminal waits follow their call ownership and only retain polls of live processes", () => {
+test("repeated terminal waits stay on one status line and record a single wait row", () => {
 	let state = lifecycle(shellState(), "tool.start", "poll-1", POLL);
 	assert.equal(state.liveStatus?.text, "Waiting for background terminal");
 	assert.equal(state.liveStatus?.message, "node wait.cjs");
 	assert.equal(projectRuntimeState(state).tools.length, 0);
 	state = reduceRuntimeEvent(state, "tool.complete", { call_id: "other", name: "Read", success: true });
-	assert.equal(state.liveStatus?.callId, "poll-1");
+	assert.equal(state.liveStatus?.kind, "waiting_background_terminal");
 	state = lifecycle(state, "tool.start", "poll-2", POLL);
 	state = lifecycle(state, "tool.complete", "poll-2", { ...POLL, interaction_succeeded: true, process_running: true });
-	assert.equal(state.liveStatus?.callId, "poll-1");
-	assert.match(rendered(state), /Waited for background terminal/u);
+	assert.equal(state.liveStatus?.kind, "waiting_background_terminal");
+	assert.doesNotMatch(rendered(state), /Waited for background terminal/u);
+	assert.equal(projectRuntimeState(state).tools.filter((tool) => tool.terminalInteraction).length, 0);
 	state = lifecycle(state, "tool.complete", "poll-1", { ...POLL, interaction_succeeded: true, process_running: false });
 	assert.equal(state.liveStatus?.kind, "running");
-	assert.equal(projectRuntimeState(state).tools.filter((tool) => tool.terminalInteraction).length, 1);
+	const waits = projectRuntimeState(state).tools.filter((tool) => tool.terminalInteraction);
+	assert.equal(waits.length, 1);
+	assert.match(rendered(state), /Waited for background terminal/u);
+});
+
+test("a replayed poll completion cannot add a second wait row", () => {
+	let state = lifecycle(shellState(), "tool.start", "poll-1", POLL);
+	state = lifecycle(state, "tool.complete", "poll-1", { ...POLL, interaction_succeeded: true, process_running: false });
+	const settled = rendered(state);
+	assert.equal((settled.match(/Waited for background terminal/gu) ?? []).length, 1);
+	state = lifecycle(state, "tool.complete", "poll-1", { ...POLL, interaction_succeeded: true, process_running: false });
+	assert.equal(rendered(state), settled);
+});
+
+test("a failed poll settles the wait with a visible failure row", () => {
+	let state = lifecycle(shellState(), "tool.start", "poll-1", POLL);
+	state = lifecycle(state, "tool.failed", "poll-1", { ...POLL, interaction_succeeded: false });
+	const display = rendered(state);
+	assert.equal(state.liveStatus?.kind, "running");
+	assert.equal(state.terminalWaitStreak, null);
+	assert.match(display, /Terminal interaction failed/u);
+	assert.doesNotMatch(display, /Waiting for background terminal/u);
 });
 
 test("Ctrl+C remains an interaction when the process exits, while write failures stay visible", () => {
@@ -85,7 +107,8 @@ test("terminal interaction history survives transcript reload and rejects old-se
 	const interrupted = reduceRuntimeEvent(waiting, "turn.completed", { turn_id: "turn-1", turn_state: "interrupted" });
 	assert.equal(interrupted.liveStatus?.kind, "interrupted");
 	assert.doesNotMatch(rendered(interrupted), /Waiting for background terminal/u);
-	assert.match(rendered(interrupted), /Terminal interaction interrupted/u);
+	// The interrupted turn still records the wait it interrupted, matching Codex's flush cell.
+	assert.match(rendered(interrupted), /Waited for background terminal.*node wait\.cjs/u);
 });
 
 test("terminal interaction rendering fits narrow terminals and sanitizes terminal controls", () => {
@@ -122,7 +145,12 @@ for (const nativeScrollback of [false, true]) {
 		state = lifecycle(state, "tool.start", "poll-1", POLL);
 		assert.match(await frame(), /Waiting for background terminal/u);
 		state = lifecycle(state, "tool.complete", "poll-1", { ...POLL, interaction_succeeded: true, process_running: true });
-		assert.match(await frame(), /Waited for background terminal/u);
+		const stillWaiting = await frame();
+		assert.match(stillWaiting, /Waiting for background terminal/u);
+		assert.doesNotMatch(stillWaiting, /Waited for background terminal/u);
+		state = lifecycle(state, "tool.start", "poll-2", POLL);
+		state = lifecycle(state, "tool.complete", "poll-2", { ...POLL, interaction_succeeded: true, process_running: true });
+		assert.doesNotMatch(await frame(), /Waited for background terminal/u);
 		state = lifecycle(state, "tool.start", "poll-ended", POLL);
 		await frame();
 		state = lifecycle(state, "tool.complete", "poll-ended", { ...POLL, interaction_succeeded: true, process_running: false });

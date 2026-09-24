@@ -40,10 +40,12 @@ function runtimeStateFromTranscriptPage(
 			: item,
 	);
 	const transcript = coalesceResumedShellOutputItems(
-		coalesceLegacyToolItems(mergeTranscriptItemsById(
-			mode === "prepend" ? resumedItems : state.transcript,
-			mode === "prepend" ? state.transcript : resumedItems,
-		)),
+		coalesceResumedTerminalWaits(
+			coalesceLegacyToolItems(mergeTranscriptItemsById(
+				mode === "prepend" ? resumedItems : state.transcript,
+				mode === "prepend" ? state.transcript : resumedItems,
+			)),
+		),
 	);
 	const latestPlanUpdate = [...transcript].reverse().find((item) => item.type === "plan_update");
 	return mergeProviderAttemptHistory({
@@ -95,6 +97,39 @@ function coalesceResumedShellOutputItems(items: RuntimeTranscriptItem[]): Runtim
 			continue;
 		}
 		coalesced.push(item);
+	}
+	return coalesced;
+}
+
+/**
+ * Resumed transcripts keep one wait row per run of polls instead of one row per poll, mirroring
+ * the waiter the live reducer records when a background-terminal wait ends.
+ */
+function coalesceResumedTerminalWaits(items: RuntimeTranscriptItem[]): RuntimeTranscriptItem[] {
+	const coalesced: RuntimeTranscriptItem[] = [];
+	const trailingWaits = new Map<string, number>();
+	for (const item of items) {
+		if (item.type === "user" || item.type === "turn_completed") trailingWaits.clear();
+		if (!isToolTranscriptItem(item)) {
+			coalesced.push(item);
+			continue;
+		}
+		const record = toolRecordFromTranscriptItem(item);
+		const interaction = record.terminal_interaction;
+		if (interaction?.kind !== "poll") {
+			if (interaction?.kind === "input") trailingWaits.delete(interaction.shell_id);
+			const finishedShellId = record.shell?.terminal_state ? record.shell.shell_id : undefined;
+			if (finishedShellId) trailingWaits.delete(finishedShellId);
+			coalesced.push(item);
+			continue;
+		}
+		const existing = trailingWaits.get(interaction.shell_id);
+		if (existing === undefined) {
+			trailingWaits.set(interaction.shell_id, coalesced.push(item) - 1);
+			continue;
+		}
+		// Keep the newest poll of the run so the collapsed row carries the freshest interaction.
+		coalesced[existing] = item;
 	}
 	return coalesced;
 }

@@ -5,7 +5,6 @@ import {
 } from "@mycli/contracts";
 import { booleanValue, nextId, numberValue, recordValue, stringValue, textValue } from "./payload-values.ts";
 import type {
-	RuntimeLiveStatus,
 	RuntimeShellProcess,
 	RuntimeShellState,
 	RuntimeTranscriptItem,
@@ -258,27 +257,6 @@ export function isShellOutputLifecycle(params: Record<string, unknown>): boolean
 	const name = stringValue(params.name) ?? stringValue(params.tool_name) ?? "";
 	const normalized = name.trim().toLowerCase().replace(/[_-]/g, "");
 	return normalized === "shelloutput" || normalized === "bashoutput" || normalized === "writestdin";
-}
-
-export function isEmptyWriteStdinPoll(params: Record<string, unknown>): boolean {
-	const name = stringValue(params.name) ?? stringValue(params.tool_name) ?? "";
-	return name.trim().toLowerCase().replace(/[_-]/g, "") === "writestdin" && params.empty_poll === true;
-}
-
-export function activeTerminalWait(items: RuntimeTranscriptItem[]): RuntimeLiveStatus | undefined {
-	for (let index = items.length - 1; index >= 0; index -= 1) {
-		const item = items[index]!;
-		if (item.type === "user" || item.type === "turn_completed") break;
-		if (item.type !== "tool_summary" && item.type !== "tool_detail") continue;
-		const record = toolRecordFromTranscriptItem(item);
-		if (record.status !== "running" || record.terminal_interaction?.kind !== "poll") continue;
-		return {
-			state: "running", kind: "waiting_background_terminal", text: "Waiting for background terminal",
-			...(record.call_id ? { callId: record.call_id } : {}),
-			...(record.terminal_interaction.command_preview ? { message: record.terminal_interaction.command_preview } : {}),
-		};
-	}
-	return undefined;
 }
 
 export function removeToolLifecycleItem(items: RuntimeTranscriptItem[], params: Record<string, unknown>): RuntimeTranscriptItem[] {

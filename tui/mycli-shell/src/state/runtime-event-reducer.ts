@@ -72,11 +72,15 @@ import {
 import { planUpdateFromPayload, taskProgressFromPlanUpdate } from "./transcript-plans.ts";
 import { upsertTranscriptItem } from "./transcript-records.ts";
 import {
-	activeTerminalWait,
 	applyShellBootstrap,
 	applyShellLifecycle,
-	isEmptyWriteStdinPoll,
 } from "./transcript-shell.ts";
+import {
+	extendTerminalWait,
+	flushTerminalWait,
+	shellWaitTarget,
+	terminalWaitFlushTiming,
+} from "./terminal-wait.ts";
 import { transcriptItemFromSubagent, upsertSubagentTranscriptItem } from "./transcript-subagents.ts";
 import {
 	applyToolLifecycle,
@@ -113,12 +117,15 @@ export function reduceDecodedRuntimeEventWithOutcome(
 	if (!runtimeEventBelongsToActiveOwner(state, event)) {
 		return { state, applied: false };
 	}
+	const waitTiming = terminalWaitFlushTiming(state, event.method, event.params);
+	const prepared = waitTiming === "before" ? flushTerminalWait(state) : state;
 	const nextState = reduceRuntimeLifecycle(
-		state,
-		reduceRuntimeEventUnchecked(state, event),
+		prepared,
+		reduceRuntimeEventUnchecked(prepared, event),
 		event,
 	);
-	return { state: nextState, applied: nextState !== state };
+	const settled = waitTiming === "after" ? flushTerminalWait(nextState) : nextState;
+	return { state: settled, applied: settled !== state };
 }
 
 function reduceRuntimeEventUnchecked(
@@ -449,35 +456,48 @@ function reduceRuntimeEventUnchecked(
 		};
 	}
 	if (method === "tool.start" || method === "tool.progress" || method === "tool.complete" || method === "tool.failed") {
+		const interaction = projectTerminalInteraction(params.terminal_interaction ?? recordValue(params.tool_record).terminal_interaction);
 		const transcript =
 			method === "tool.start" && state.activeAssistantItemId
 				? sealAssistantStream(state.transcript, state.activeAssistantItemId)
 				: state.transcript;
-		const emptyShellPoll = method === "tool.start" && isEmptyWriteStdinPoll(params);
+		if (interaction?.kind === "poll") {
+			// Codex parity: polls only refresh the wait status line. The wait itself is recorded
+			// once, when it ends, so repeated polls never stack transcript rows.
+			const waiting = state.terminalWaitStreak;
+			// A poll lifecycle that continues without an observed start (replayed or duplicated
+			// completion) must not invent a second wait row.
+			if (!waiting && method !== "tool.start" && method !== "tool.progress") return state;
+			const target = shellWaitTarget(transcript, interaction.shell_id);
+			// Codex ignores polls for a process that already exited: no status, no wait row.
+			if (!waiting && target.finished) {
+				return method === "tool.start"
+					? { ...state, activeAssistantItemId: null, transcript }
+					: state;
+			}
+			const callId = stringValue(params.call_id);
+			const commandPreview = interaction.command_preview ?? target.commandPreview;
+			const settled = method === "tool.failed"
+				|| interaction.interaction_succeeded === false
+				|| (method === "tool.complete" && interaction.process_running === false);
+			const extended = extendTerminalWait(
+				{
+					...state,
+					activeAssistantItemId: method === "tool.start" ? null : state.activeAssistantItemId,
+					transcript,
+				},
+				{
+					shellId: interaction.shell_id,
+					...(callId ? { callId } : {}),
+					interaction: commandPreview ? { ...interaction, command_preview: commandPreview } : interaction,
+				},
+			);
+			return settled ? flushTerminalWait(extended) : extended;
+		}
 		const updatedTranscript = applyToolLifecycle(transcript, method, params);
-		const interaction = projectTerminalInteraction(params.terminal_interaction ?? recordValue(params.tool_record).terminal_interaction);
-		const activeWait = interaction?.kind === "poll" || state.liveStatus?.kind === "waiting_background_terminal"
-			? activeTerminalWait(updatedTranscript) : undefined;
-		const shellId = stringValue(params.shell_id) ?? stringValue(params.session_id);
-		const waitingCommand = shellId ? state.backgroundShells[shellId]?.commandPreview : undefined;
-		const leavingBackgroundWait =
-			(method === "tool.complete" || method === "tool.failed") &&
-			state.liveStatus?.kind === "waiting_background_terminal" &&
-			(state.liveStatus.callId === undefined || state.liveStatus.callId === stringValue(params.call_id));
 		return {
 			...state,
 			activeAssistantItemId: method === "tool.start" ? null : state.activeAssistantItemId,
-			liveStatus: activeWait ?? (emptyShellPoll
-				? {
-					state: "running",
-					kind: "waiting_background_terminal",
-					text: "Waiting for background terminal",
-					...(stringValue(params.call_id) ? { callId: stringValue(params.call_id)! } : {}),
-					...(waitingCommand ? { message: waitingCommand } : {}),
-				}
-				: leavingBackgroundWait
-					? { state: "running", kind: "running", text: "Running" }
-					: state.liveStatus),
 			transcript: updatedTranscript,
 		};
 	}
@@ -1001,6 +1021,7 @@ function reduceRuntimeEventUnchecked(
 			queueActivity: null,
 			retryRestoreStatus: null,
 			backgroundShells: {},
+			terminalWaitStreak: null,
 			backgroundShellCount: 0,
 			shellEventSequences: {},
 			transcript: [],

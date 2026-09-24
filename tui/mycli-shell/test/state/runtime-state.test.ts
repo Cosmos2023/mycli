@@ -73,6 +73,12 @@ const SEMANTIC_TOOL_NAMES = [
 	"wait_agent",
 ] as const;
 
+function pollWaitRows(state: RuntimeShellState) {
+	return state.transcript
+		.map((item) => item.tool_record)
+		.filter((record) => record?.terminal_interaction?.kind === "poll");
+}
+
 function countedTranscriptWithTail(tail: RuntimeShellState["transcript"][number]): {
 	transcript: RuntimeShellState["transcript"];
 	countedTranscript: RuntimeShellState["transcript"];
@@ -5558,7 +5564,7 @@ test("WriteStdin poll merges into yielded Shell without a second card", () => {
 	assert.equal(shell.tools.some((tool) => tool.name === "WriteStdin"), false);
 });
 
-test("empty WriteStdin poll uses background wait status without a polling card", () => {
+test("repeated empty WriteStdin polls refresh one wait status line and record the wait once", () => {
 	let state = reduceRuntimeEvent(initialRuntimeState(), "turn.started", { turn_id: "turn-1" });
 	state = reduceRuntimeEvent(state, "shell.started", {
 		shell_id: "shell-1",
@@ -5568,34 +5574,106 @@ test("empty WriteStdin poll uses background wait status without a polling card",
 		command_preview: "python train.py",
 	});
 
-	state = reduceRuntimeEvent(state, "tool.start", {
-		tool_id: "poll-tool",
-		call_id: "poll-call",
-		name: "WriteStdin",
-		session_id: "shell-1",
-		empty_poll: true,
-	});
-
-	assert.equal(state.liveStatus?.kind, "waiting_background_terminal");
-	assert.equal(state.liveStatus?.text, "Waiting for background terminal");
-	assert.equal(state.liveStatus?.message, "python train.py");
-	assert.equal(state.transcript.some((item) => item.id === "poll-tool"), false);
+	for (const callId of ["poll-1", "poll-2", "poll-3"]) {
+		state = reduceRuntimeEvent(state, "tool.start", {
+			tool_id: `tool-${callId}`,
+			call_id: callId,
+			name: "WriteStdin",
+			session_id: "shell-1",
+			terminal_interaction: { shell_id: "shell-1", kind: "poll" },
+		});
+		state = reduceRuntimeEvent(state, "tool.complete", {
+			tool_id: `tool-${callId}`,
+			call_id: callId,
+			name: "WriteStdin",
+			session_id: "shell-1",
+			success: true,
+			terminal_interaction: {
+				shell_id: "shell-1", kind: "poll", command_preview: "python train.py",
+				interaction_succeeded: true, process_running: true,
+			},
+			raw_payload: { shell_id: "shell-1", status: "running", output: "step 1\n" },
+		});
+		assert.equal(state.liveStatus?.kind, "waiting_background_terminal");
+		assert.equal(state.liveStatus?.text, "Waiting for background terminal");
+		assert.equal(state.liveStatus?.message, "python train.py");
+		assert.equal(state.transcript.some((item) => item.id === `tool-${callId}`), false);
+	}
 	assert.equal(
 		(projectRuntimeState(state).footer as { turnRunning?: boolean }).turnRunning,
 		true,
 	);
+	assert.equal(pollWaitRows(state).length, 0);
 
-	state = reduceRuntimeEvent(state, "tool.complete", {
-		tool_id: "poll-tool",
-		call_id: "poll-call",
-		name: "WriteStdin",
-		session_id: "shell-1",
-		empty_poll: true,
-		raw_payload: { shell_id: "shell-1", status: "running", output: "step 1\n" },
-	});
+	state = reduceRuntimeEvent(state, "message.delta", { text: "Training finished." });
 
+	const rows = pollWaitRows(state);
+	assert.equal(rows.length, 1);
+	assert.equal(rows[0]?.status, "success");
+	assert.equal(rows[0]?.terminal_interaction?.command_preview, "python train.py");
 	assert.equal(state.liveStatus?.kind, "running");
-	assert.equal(state.transcript.some((item) => item.id === "poll-tool"), false);
+	assert.equal(state.terminalWaitStreak, null);
+
+	// A new poll after the flush opens a fresh wait that ends when the process does.
+	state = reduceRuntimeEvent(state, "tool.start", {
+		call_id: "poll-4",
+		name: "WriteStdin",
+		terminal_interaction: { shell_id: "shell-1", kind: "poll" },
+	});
+	assert.equal(state.liveStatus?.kind, "waiting_background_terminal");
+	state = reduceRuntimeEvent(state, "tool.complete", {
+		call_id: "poll-4",
+		name: "WriteStdin",
+		success: true,
+		terminal_interaction: {
+			shell_id: "shell-1", kind: "poll", command_preview: "python train.py",
+			interaction_succeeded: true, process_running: false,
+		},
+	});
+	assert.equal(state.liveStatus?.kind, "running");
+	assert.equal(state.terminalWaitStreak, null);
+	assert.equal(pollWaitRows(state).length, 2);
+});
+
+test("resumed transcripts collapse a run of background-terminal polls into one wait row", () => {
+	const pollItem = (callId: string) => ({
+		id: `poll-item-${callId}`,
+		type: "tool_summary",
+		text: "WriteStdin",
+		metadata: {
+			tool_name: "WriteStdin",
+			call_id: callId,
+			status: "done",
+			success: true,
+			terminal_interaction: {
+				shell_id: "shell-1", kind: "poll", command_preview: "python train.py",
+				interaction_succeeded: true, process_running: true,
+			},
+		},
+	});
+	const state = runtimeStateFromTranscript(initialRuntimeState(), { items: [
+		{ id: "shell-row", type: "tool_summary", text: "Shell python train.py", metadata: {
+			tool_name: "Shell", shell_id: "shell-1", call_id: "shell-call", command_preview: "python train.py",
+			background: true, process_state: "running_background", status: "running",
+		} },
+		pollItem("poll-a"),
+		pollItem("poll-b"),
+		pollItem("poll-c"),
+		{ id: "input-row", type: "tool_summary", text: "WriteStdin", metadata: {
+			tool_name: "WriteStdin", call_id: "input-1", status: "done", success: true,
+			terminal_interaction: {
+				shell_id: "shell-1", kind: "input", input_preview: '"y\\n"',
+				interaction_succeeded: true, process_running: true,
+			},
+		} },
+		pollItem("poll-d"),
+	] });
+
+	const waits = projectRuntimeState(state).tools.filter((tool) => tool.terminalInteraction?.kind === "poll");
+	assert.equal(waits.length, 2);
+	assert.equal(waits[0]?.terminalInteraction?.command_preview, "python train.py");
+	assert.equal(waits[1]?.terminalInteraction?.kind, "poll");
+	assert.equal(waits[1]?.terminalInteraction?.shell_id, "shell-1");
 });
 
 test("terminal shell state rejects later running events", () => {

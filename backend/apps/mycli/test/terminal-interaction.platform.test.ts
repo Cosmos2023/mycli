@@ -17,11 +17,14 @@ import {
 	projectRuntimeState,
 } from "../../../../tui/mycli-shell/src/state/runtime-projection.ts";
 import {
-	reduceRuntimeEvent,
+	reduceDecodedRuntimeEventWithOutcome,
 } from "../../../../tui/mycli-shell/src/state/runtime-event-reducer.ts";
 import {
 	runtimeStateFromTranscript,
 } from "../../../../tui/mycli-shell/src/state/transcript-history.ts";
+import {
+	GatewayEventDeduper,
+} from "../../../../tui/mycli-shell/src/transport/gateway-events.ts";
 
 test("Worker terminal interactions reach the TUI and survive backend restart", { timeout: 30_000 }, async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-terminal-interaction-"));
@@ -93,9 +96,13 @@ test("Worker terminal interactions reach the TUI and survive backend restart", {
 	} };
 	backend = await startTestNodeBackend(options);
 	let observedWait = false;
+	// The runtime emits each event both directly and as a runtime.event envelope; the TUI drops
+	// the duplicate, so the assertion state must reduce through the same deduper.
+	const deduper = new GatewayEventDeduper();
 	client = new GatewayClient({ ...backend.transport, log: (event) => {
 		events.push(event);
-		state = reduceRuntimeEvent(state, event.method, event.params);
+		const decoded = deduper.consume(event);
+		if (decoded) state = reduceDecodedRuntimeEventWithOutcome(state, decoded).state;
 		observedWait ||= state.liveStatus?.kind === "waiting_background_terminal";
 	} });
 	client.start();
@@ -114,7 +121,11 @@ test("Worker terminal interactions reach the TUI and survive backend restart", {
 	assert.equal(requestCount, 6);
 	assert.equal(observedWait, true);
 	const interactions = projectRuntimeState(state).tools.filter((tool) => tool.terminalInteraction);
-	assert.deepEqual(interactions.map((tool) => tool.terminalInteraction?.kind), ["poll", "input", "input"]);
+	assert.deepEqual(
+		interactions.map((tool) => tool.terminalInteraction?.kind),
+		["poll", "input", "input"],
+		JSON.stringify(interactions.map((tool) => tool.terminalInteraction)),
+	);
 	assert.ok(interactions.every((tool) => tool.terminalInteraction?.interaction_succeeded === true),
 		JSON.stringify(interactions));
 	assert.ok(interactions.every((tool) => tool.terminalInteraction?.command_preview?.includes("interactive.cjs")));
@@ -131,8 +142,15 @@ test("Worker terminal interactions reach the TUI and survive backend restart", {
 	await client.waitForEvent("runtime.ready");
 	const transcript = await client.request("transcript.load", {});
 	const restored = projectRuntimeState(runtimeStateFromTranscript(initialRuntimeState(), transcript));
-	assert.deepEqual(restored.tools.filter((tool) => tool.terminalInteraction).map((tool) => tool.terminalInteraction),
+	const restoredInteractions = restored.tools
+		.filter((tool) => tool.terminalInteraction)
+		.map((tool) => tool.terminalInteraction);
+	// Resumed history keeps the same collapsed wait rows; the trailing poll of the already
+	// finished shell is ignored live (as Codex does) but stays in the persisted transcript.
+	assert.deepEqual(restoredInteractions.slice(0, interactions.length),
 		interactions.map((tool) => tool.terminalInteraction));
+	assert.deepEqual(restoredInteractions.slice(interactions.length).map((interaction) => interaction?.kind), ["poll"]);
+	assert.equal(restoredInteractions.at(-1)?.process_running, false);
 	assert.equal(restored.bash.length, 1);
 });
 

@@ -266,9 +266,8 @@ function normalizeToolName(name: string): string {
 
 export function suppressGenericToolRow(tool: MycliShellTool): boolean {
 	const interaction = tool.terminalInteraction;
-	if (interaction?.kind === "poll" && (tool.status === "running"
-		|| (interaction.interaction_succeeded === true && interaction.process_running === false)
-		|| (tool.status === "success" && interaction.process_running !== true))) return true;
+	// Live polls live in the status line; settled polls are the wait rows the reducer records.
+	if (interaction?.kind === "poll" && tool.status === "running") return true;
 	return tool.status !== "error"
 		&& tool.status !== "cancelled"
 		&& SEMANTIC_TOOL_ROW_NAMES.has(normalizeToolName(tool.name));

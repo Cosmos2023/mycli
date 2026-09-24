@@ -13,7 +13,11 @@ import type {
 	MycliShellVisualSettings,
 } from "../model.ts";
 
-import type { GatewayTranscriptItem, ProviderAttemptRecord } from "@mycli/contracts";
+import type {
+	GatewayTerminalInteraction,
+	GatewayTranscriptItem,
+	ProviderAttemptRecord,
+} from "@mycli/contracts";
 
 export type RuntimeTranscriptItem = Pick<GatewayTranscriptItem, "id" | "type" | "text">
 & Partial<Pick<GatewayTranscriptItem, "folded" | "metadata" | "tool_record" | "turn_id">> & {
@@ -46,6 +50,16 @@ export type RuntimeShellProcess = {
 	shellKind?: string;
 	shellEdition?: string;
 };
+
+/**
+ * Consecutive polls for background output collapse into one wait: polls refresh the status line
+ * and the transcript records the wait once, when it ends.
+ */
+export type RuntimeTerminalWait = Readonly<{
+	shellId: string;
+	callId?: string;
+	interaction: GatewayTerminalInteraction;
+}>;
 
 export type RuntimeQueuedInputPreview = {
 	queueId?: string;
@@ -139,6 +153,7 @@ export type RuntimeShellState = {
 	resources: MycliShellResource[];
 	permissions: MycliShellPermissionState | null;
 	backgroundShells: Record<string, RuntimeShellProcess>;
+	terminalWaitStreak: RuntimeTerminalWait | null;
 	backgroundShellCount: number;
 	shellEventSequences: Record<string, number>;
 };
@@ -197,6 +212,7 @@ export function initialRuntimeState(): RuntimeShellState {
 		resources: [],
 		permissions: null,
 		backgroundShells: {},
+		terminalWaitStreak: null,
 		backgroundShellCount: 0,
 		shellEventSequences: {},
 	};
