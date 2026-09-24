@@ -472,6 +472,7 @@ test("ProviderAgentLoop records TTFB, TTFT, TBT, event counts, and UTF-8 bytes",
 		reasoningBytes: 3,
 		textBytes: 5,
 		success: true,
+		usage: { total_tokens: 5 },
 	}]);
 });
 

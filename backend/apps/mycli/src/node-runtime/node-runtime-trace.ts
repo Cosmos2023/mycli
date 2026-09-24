@@ -121,6 +121,7 @@ export function runtimeDiagnosticTraceEvent(
 				reasoning_bytes: event.reasoningBytes,
 				text_bytes: event.textBytes,
 				success: event.success,
+				...(event.usage ? traceUsage(event.usage) : {}),
 				...(event.failureKind ? { failure_kind: event.failureKind } : {}),
 				...(event.failure ? modelFailureTracePayload({
 					error_context: event.failure.errorContext,
@@ -343,6 +344,7 @@ function modelStreamTracePayload(
 		text_bytes: boundedTraceCount(value.text_bytes),
 		success: typeof value.success === "boolean" ? value.success : undefined,
 		failure_kind: boundedTraceToken(value.failure_kind, 64),
+		...traceUsage(value),
 		...modelFailureTracePayload(value),
 	});
 }

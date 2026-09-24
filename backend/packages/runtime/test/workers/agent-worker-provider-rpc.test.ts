@@ -516,6 +516,26 @@ test("Worker timing fields round trip, stay optional, and reject invalid duratio
 	assert.deepEqual(parseAgentWorkerProviderResponse(frame), frame);
 });
 
+test("Worker diagnostics carry per-request token usage and reject unsafe values", () => {
+	const frame = providerDiagnosticFrame();
+	const usage = { input_tokens: 1_200, cached_tokens: 1_100, output_tokens: 40 };
+	const withUsage = { ...frame, diagnostic: { ...frame.diagnostic, usage } };
+
+	assert.deepEqual(parseAgentWorkerProviderResponse(withUsage), withUsage);
+	for (const invalid of [
+		{ input_tokens: -1 },
+		{ input_tokens: Number.NaN },
+		{ input_tokens: Number.POSITIVE_INFINITY },
+		{ input_tokens: "1200" },
+		{ "bad key": 1 },
+	]) {
+		assert.throws(() => parseAgentWorkerProviderResponse({
+			...frame,
+			diagnostic: { ...frame.diagnostic, usage: invalid },
+		}), AgentWorkerProviderRpcError);
+	}
+});
+
 test("Worker diagnostic failures retain bounded safe detail and reject inconsistent outcomes", () => {
 	const frame = providerDiagnosticFrame();
 	frame.diagnostic.success = false;

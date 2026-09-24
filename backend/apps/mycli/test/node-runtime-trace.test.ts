@@ -12,6 +12,35 @@ import {
 	nodeTraceRows,
 } from "../src/node-runtime/node-runtime-trace.ts";
 
+test("provider trace records per-request token usage and drops unsafe numbers", async (t) => {
+	const home = await mkdtemp(join(tmpdir(), "mycli-usage-trace-"));
+	removeFixtureDirectoryAfterTests(t, home);
+	const store = openRuntimeSessionStore({ dbPath: join(home, "sessions.db") });
+	t.after(() => store.close());
+	appendNodeTrace(home, "usage-session", runtimeDiagnosticTraceEvent({
+		kind: "model_stream_diagnostics", turnId: "turn-1", provider: "deepseek", protocol: "chat_completions",
+		model: "deepseek-chat", attempt: 1, elapsedMs: 120, textDeltaIntervalCount: 0,
+		providerEventCount: 3, reasoningEventCount: 0, textEventCount: 1, providerStateEventCount: 0,
+		toolCallEventCount: 0, usageEventCount: 1, completedEventCount: 1, reasoningBytes: 0,
+		textBytes: 5, success: true,
+		usage: {
+			input_tokens: 1_200, cached_tokens: 1_100, output_tokens: 40, total_tokens: 1_240,
+			// Unsafe or unknown values are dropped by the usage projection.
+			cache_write_tokens: -5, prompt_tokens_details: 3,
+		},
+	}));
+	const rows = nodeTraceRows(store, home, "usage-session");
+
+	assert.equal(rows.length, 1);
+	const payload = rows[0]!.payload as Record<string, unknown>;
+	assert.equal(payload.input_tokens, 1_200);
+	assert.equal(payload.cached_tokens, 1_100);
+	assert.equal(payload.output_tokens, 40);
+	assert.equal(payload.total_tokens, 1_240);
+	assert.equal("cache_write_tokens" in payload, false);
+	assert.equal("prompt_tokens_details" in payload, false);
+});
+
 test("provider trace writer and reader retain safe retry evidence without raw errors", async (t) => {
 	const home = await mkdtemp(join(tmpdir(), "mycli-failure-trace-"));
 	removeFixtureDirectoryAfterTests(t, home);

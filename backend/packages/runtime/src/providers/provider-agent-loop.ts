@@ -248,6 +248,8 @@ export class ProviderAgentLoop {
 						diagnostics,
 						input.monotonicClock?.() ?? performance.now(),
 						true,
+						undefined,
+						usage,
 					),
 				);
 				return {
@@ -274,6 +276,7 @@ export class ProviderAgentLoop {
 						input.monotonicClock?.() ?? performance.now(),
 						false,
 						failure,
+						usage,
 					),
 				);
 				const retryAllowed = providerAttemptRetryAllowed(failure, {
@@ -462,6 +465,7 @@ function finishProviderDiagnostics(
 	finishedAt: number,
 	success: boolean,
 	failure?: ProviderAgentLoopFailure,
+	usage?: ProviderUsage,
 ): ProviderStreamDiagnostics {
 	return Object.freeze({
 		attempt: diagnostics.attempt,
@@ -492,6 +496,7 @@ function finishProviderDiagnostics(
 		reasoningBytes: diagnostics.reasoningBytes,
 		textBytes: diagnostics.textBytes,
 		success,
+		...(usage && Object.keys(usage).length > 0 ? { usage } : {}),
 		...(failure ? { failureKind: failure.code, failure } : {}),
 	});
 }

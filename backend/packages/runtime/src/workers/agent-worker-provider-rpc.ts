@@ -361,7 +361,7 @@ function parseProviderStreamDiagnostics(value: unknown): ProviderStreamDiagnosti
 		"success",
 	], ["ttfbMs", "ttftMs", "tbtMs", "maxTbtMs", "failureKind", "failure",
 		"lastTextDeltaMs", "responseTerminalMs", "sdkTerminalMs", "completedEventMs",
-		"streamSettledMs", "terminalPersistMs", "textTailMs"], "provider stream diagnostic");
+		"streamSettledMs", "terminalPersistMs", "textTailMs", "usage"], "provider stream diagnostic");
 	const failure = hasOwn(diagnostic, "failure") ? parseProviderFailure(diagnostic.failure) : undefined;
 	if (failure && (diagnostic.success !== false
 		|| (hasOwn(diagnostic, "failureKind") && diagnostic.failureKind !== failure.code))) {
@@ -441,6 +441,7 @@ function parseProviderStreamDiagnostics(value: unknown): ProviderStreamDiagnosti
 		),
 		textBytes: diagnosticCount(diagnostic.textBytes, "provider diagnostic text bytes"),
 		success: booleanValue(diagnostic.success, "provider diagnostic success flag"),
+		...(hasOwn(diagnostic, "usage") ? { usage: parseUsage(diagnostic.usage) } : {}),
 		...(hasOwn(diagnostic, "failureKind") ? {
 			failureKind: oneOf(
 				diagnostic.failureKind,

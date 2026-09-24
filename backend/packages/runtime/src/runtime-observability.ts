@@ -26,6 +26,8 @@ export interface ProviderStreamDiagnostics {
 	readonly reasoningBytes: number;
 	readonly textBytes: number;
 	readonly success: boolean;
+	/** Provider-reported usage for this single request, when the stream reported any. */
+	readonly usage?: ProviderUsage;
 	readonly failureKind?: RuntimeErrorCode;
 	readonly failure?: RuntimeFailure;
 }
