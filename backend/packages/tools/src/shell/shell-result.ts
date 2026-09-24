@@ -46,21 +46,31 @@ export function formatShellResult(input: ShellResultInput): FormattedShellResult
 		? `Process running with session ID ${shellId}`
 		: `Process exited with code ${input.exitCode ?? -1}`;
 	const heading = running ? "Live output:" : "Final output:";
-	const lines = [
+	const statusLines = [
 		`Chunk ID: ${chunkId}`,
 		`Wall time: ${input.wallTimeSeconds.toFixed(2)} seconds`,
 		status,
 		heading,
 	];
-	if (input.output) lines.push(input.output);
-	const original = lines.join("\n");
-	const bounded = headTail(original, input.maxOutputTokens * 4);
+	const statusText = statusLines.join("\n");
+	const original = input.output ? `${statusText}\n${input.output}` : statusText;
+	const originalTokenCount = Math.ceil(original.length / 4);
+	// The fixed status lines stay outside the truncation budget so the exit code and session id can
+	// never be trimmed away; the budget applies to the command output only.
+	const outputBudget = Math.max(0, input.maxOutputTokens * 4 - statusText.length - 1);
+	const bounded = headTail(input.output, outputBudget, originalTokenCount);
+	const modelOutput = !input.output
+		? statusText
+		: outputBudget === 0
+			? `${statusText}\n[output omitted; original ~${originalTokenCount} tokens]`
+			: `${statusText}\n${bounded.text}`;
+	const retainedOutputChars = outputBudget === 0 ? 0 : bounded.retainedChars;
 	return Object.freeze({
-		modelOutput: bounded.text,
-		originalTokenCount: Math.ceil(original.length / 4),
+		modelOutput,
+		originalTokenCount,
 		originalChars: original.length,
-		retainedChars: bounded.retainedChars,
-		omittedChars: original.length - bounded.retainedChars,
+		retainedChars: statusText.length + (input.output ? 1 + retainedOutputChars : 0),
+		omittedChars: original.length - (statusText.length + (input.output ? 1 + retainedOutputChars : 0)),
 	});
 }
 
@@ -69,14 +79,14 @@ interface BoundedText {
 	readonly retainedChars: number;
 }
 
-function headTail(value: string, maxChars: number): BoundedText {
+function headTail(value: string, maxChars: number, originalTokenCount: number): BoundedText {
 	if (value.length <= maxChars) return { text: value, retainedChars: value.length };
 	if (maxChars === 0) return { text: "", retainedChars: 0 };
 
-	const fullMarker = omissionMarker(value.length);
+	const fullMarker = omissionMarker(value.length, originalTokenCount);
 	const compactMarker = "[chars omitted]";
 	const marker = maxChars - fullMarker.length >= 2
-		? stableCountedMarker(value.length, maxChars)
+		? stableCountedMarker(value.length, maxChars, originalTokenCount)
 		: maxChars - compactMarker.length >= 2
 			? compactMarker
 			: ".".slice(0, maxChars);
@@ -90,20 +100,20 @@ function headTail(value: string, maxChars: number): BoundedText {
 	};
 }
 
-function stableCountedMarker(originalChars: number, maxChars: number): string {
+function stableCountedMarker(originalChars: number, maxChars: number, originalTokenCount: number): string {
 	let omittedChars = originalChars;
 	for (let iteration = 0; iteration < 4; iteration += 1) {
-		const marker = omissionMarker(omittedChars);
+		const marker = omissionMarker(omittedChars, originalTokenCount);
 		const retainedChars = Math.max(0, maxChars - marker.length);
 		const nextOmitted = originalChars - retainedChars;
 		if (nextOmitted === omittedChars) return marker;
 		omittedChars = nextOmitted;
 	}
-	return omissionMarker(omittedChars);
+	return omissionMarker(omittedChars, originalTokenCount);
 }
 
-function omissionMarker(omittedChars: number): string {
-	return `\n... [${omittedChars} chars omitted] ...\n`;
+function omissionMarker(omittedChars: number, originalTokenCount: number): string {
+	return `\n... [${omittedChars} chars omitted; original ~${originalTokenCount} tokens] ...\n`;
 }
 
 function nonEmptyBounded(value: string, name: string, maxChars: number): string {

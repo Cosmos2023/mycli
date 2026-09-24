@@ -29,7 +29,7 @@
 | `context.compaction_tail_max_tokens` | `integer` | `20000` | 是 | `context.compaction_tail_max_tokens` | 限制压缩后保留的用户消息文本（默认 20000 token）；边界消息截断时附带标记。 |
 | `context.compaction_tail_turns` | `integer` | `2` | 是 | `context.compaction_tail_turns` | 旧版兼容设置；本地上下文压缩不再使用。 |
 | `context.compaction_token_limit` | `integer` | `9600` | 是 | `context.compaction_token_limit` | 设置用于触发压缩的提示词 token 上限。 |
-| `context.compression_threshold_tokens` | `integer` | `8000` | 是 | `context.compression_threshold_tokens` | 设置在重放前压缩超大工具结果的大小阈值。 |
+| `context.compression_threshold_tokens` | `integer` | `8000` | 是 | `context.compression_threshold_tokens` | 限制单条模型可见的工具结果大小（按每 token 四字节估算，上限 8000 字符）；更长的结果会在写入会话前截断并带省略标记。 |
 | `features.request_permissions_tool` | `boolean` | `false` | 是 | `features.request_permissions_tool` | 当前运行时支持时，暴露结构化权限请求工具。 |
 | `memory.enabled` | `boolean` | `false` | 是 | `memory.enabled` | 为当前 Agent 运行时启用持久记忆发现和注入。 |
 | `model.api_base_url` | `string` | `"https://api.openai.com/v1"` | 是 | `model.api_base_url` | 设置配置的 provider 使用的 HTTP(S) API 端点。 |

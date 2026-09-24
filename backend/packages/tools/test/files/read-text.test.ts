@@ -22,6 +22,7 @@ test("reads a one-based bounded range with continuation metadata", async (t) => 
 	assert.equal(result.totalLines, 5);
 	assert.equal(result.shownLines, 2);
 	assert.equal(result.truncated, true);
+	assert.equal(result.capped, false);
 	assert.equal(result.requestedLimit, 2);
 	assert.equal(result.effectiveLimit, 2);
 	assert.equal(result.limitClamped, false);
@@ -55,6 +56,26 @@ test("handles empty files, zero limits, CRLF, and clamps at 500 lines", async (t
 	assert.equal(clamped.effectiveLimit, 500);
 	assert.equal(clamped.shownLines, 500);
 	assert.equal(clamped.limitClamped, true);
+});
+
+test("stops at the character budget and keeps the continuation offset honest", async (t) => {
+	const lines = Array.from({ length: 20 }, (_, index) => `line-${index + 1}`);
+	const fixture = await textFixture(t, `${lines.join("\n")}\n`, "budget.txt");
+	const result = await readTextWindow()(fixture.path, {
+		offset: 1,
+		limit: 20,
+		signal: new AbortController().signal,
+		maxChars: 60,
+	});
+
+	assert.equal(result.capped, true);
+	assert.equal(result.truncated, true);
+	assert.ok(result.shownLines > 0, "capping must still return a usable window");
+	assert.ok(result.shownLines < lines.length, `expected fewer than ${lines.length} lines`);
+	assert.equal(result.content.includes(lines[result.shownLines]), false);
+	assert.match(result.content,
+		new RegExp(`\\.\\.\\. \\(output capped, showing ${result.shownLines} of ${lines.length} lines; `
+			+ `use offset=${1 + result.shownLines} with limit to continue\\)`, "u"));
 });
 
 test("preserves multibyte UTF-8 and truncates individual long lines", async (t) => {
@@ -95,6 +116,7 @@ interface TextResult {
 	readonly totalLines: number;
 	readonly shownLines: number;
 	readonly truncated: boolean;
+	readonly capped: boolean;
 	readonly requestedLimit: number;
 	readonly effectiveLimit: number;
 	readonly limitClamped: boolean;
@@ -104,6 +126,7 @@ type Reader = (path: string, options: {
 	readonly offset: number;
 	readonly limit: number;
 	readonly signal: AbortSignal;
+	readonly maxChars?: number;
 }) => Promise<TextResult>;
 
 function readTextWindow(): Reader {

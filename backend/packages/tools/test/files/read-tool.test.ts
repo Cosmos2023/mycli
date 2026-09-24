@@ -188,6 +188,29 @@ test("uses structured CSV output and caps every model result at 8000 characters"
 	assert.equal(text.modelOutput.endsWith("Note: file read complete."), true);
 });
 
+test("a capped read names the first line it did not return", async (t) => {
+	const fixture = await workspaceFixture(t);
+	const lines = Array.from({ length: 400 }, (_, index) => `line-${String(index + 1).padStart(3, "0")} ${"x".repeat(50)}`);
+	await writeFile(join(fixture.root, "big.txt"), `${lines.join("\n")}\n`, "utf8");
+	const read = createReadTool(fixture.root);
+	const result = await read.execute({ file_path: "big.txt", offset: 1, limit: 400 }, {
+		signal: new AbortController().signal,
+	});
+
+	assert.equal(result.success, true);
+	assert.ok(result.modelOutput.length <= 8_000, `output was ${result.modelOutput.length} characters`);
+	assert.equal(result.metadata.capped, true);
+	assert.doesNotMatch(result.modelOutput, /file read complete/u);
+	assert.match(result.modelOutput, /Note: output capped at 8000 characters/u);
+	const shownLines = Number(result.metadata.shownLines);
+	assert.ok(shownLines > 0 && shownLines < lines.length);
+	const noteOffset = Number(/offset=(\d+)/u.exec(result.modelOutput)?.[1]);
+	assert.equal(noteOffset, 1 + shownLines);
+	// The line the note points at must be one the model has not seen yet.
+	assert.equal(result.modelOutput.includes(lines[shownLines]!), false,
+		`the note points at a line that was already returned: ${lines[shownLines]}`);
+});
+
 interface AdapterResult {
 	readonly success: boolean;
 	readonly summary: string;

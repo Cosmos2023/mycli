@@ -28,6 +28,9 @@ import {
 } from "./read-text.ts";
 
 const MAX_MODEL_OUTPUT_CHARS = 8_000;
+/** Reserve for the fixed envelope lines and the trailing note inside {@link MAX_MODEL_OUTPUT_CHARS}. */
+const MODEL_OUTPUT_ENVELOPE_RESERVE_CHARS = 512;
+const READ_CONTENT_BUDGET_CHARS = MAX_MODEL_OUTPUT_CHARS - MODEL_OUTPUT_ENVELOPE_RESERVE_CHARS;
 const UNSUPPORTED_STRUCTURED_EXTENSIONS = new Set([
 	".docx",
 	".ipynb",
@@ -100,9 +103,14 @@ export class ReadTool implements ToolAdapter {
 		}
 
 		try {
-			const payload = extension === ".csv" || extension === ".tsv"
-				? await readDelimitedFile(target, { offset, limit, signal: options.signal })
-				: await readTextWindow(target, { offset, limit, signal: options.signal });
+		const payload = extension === ".csv" || extension === ".tsv"
+			? await readDelimitedFile(target, { offset, limit, signal: options.signal })
+			: await readTextWindow(target, {
+				offset,
+				limit,
+				signal: options.signal,
+				maxChars: READ_CONTENT_BUDGET_CHARS,
+			});
 			const snapshot = {
 				sha256: payload.sha256,
 				mtimeNs: payload.mtimeNs,
@@ -125,7 +133,7 @@ export class ReadTool implements ToolAdapter {
 						`Path: ${path}`,
 						rangeText(offset, payload.shownLines, payload.totalLines),
 						"Status: unchanged duplicate",
-					], "Note: file is unchanged for this offset/limit; reuse the previous content."),
+					], "Note: file is unchanged for this offset/limit; reuse the previous content.").text,
 					metadata: { ...metadata, dedup: true },
 				};
 			}
@@ -156,9 +164,7 @@ function textSuccess(
 	payload: Awaited<ReturnType<typeof readTextWindow>>,
 	metadata: Readonly<Record<string, unknown>>,
 ): ToolAdapterResult {
-	const note = payload.truncated
-		? `Note: output truncated; use Read with offset=${offset + payload.shownLines} and limit to continue.`
-		: "Note: file read complete.";
+	const note = readNote(offset, payload);
 	return {
 		success: true,
 		summary: `Read ${path}`,
@@ -166,9 +172,29 @@ function textSuccess(
 			"Read succeeded",
 			`Path: ${path}`,
 			rangeText(offset, payload.shownLines, payload.totalLines),
-		], note, stripContinuation(payload.content)),
+		], note, stripContinuation(payload.content)).text,
 		metadata,
 	};
+}
+
+/**
+ * The note is the model's only signal about what it did not receive. `offset + shownLines` is the
+ * first line that was not returned because the window scan stops at the byte budget, so a capped
+ * read can never point past lines the model never saw.
+ */
+function readNote(
+	offset: number,
+	payload: Pick<Awaited<ReturnType<typeof readTextWindow>>, "capped" | "truncated" | "shownLines">,
+): string {
+	const nextOffset = offset + payload.shownLines;
+	if (payload.capped) {
+		return `Note: output capped at ${MAX_MODEL_OUTPUT_CHARS} characters; showing ${payload.shownLines} lines. `
+			+ `Use Read with offset=${nextOffset} and a smaller limit to continue.`;
+	}
+	if (payload.truncated) {
+		return `Note: output truncated; use Read with offset=${nextOffset} and limit to continue.`;
+	}
+	return "Note: file read complete.";
 }
 
 function delimitedSuccess(
@@ -177,18 +203,22 @@ function delimitedSuccess(
 	payload: Awaited<ReturnType<typeof readDelimitedFile>>,
 	metadata: Readonly<Record<string, unknown>>,
 ): ToolAdapterResult {
+	const prefix = [
+		"Read succeeded",
+		`Path: ${path}`,
+		`Columns: ${payload.headers.join(", ")}`,
+		`Rows: ${payload.rows}`,
+	];
+	const body = boundedOutput(prefix, "", payload.content);
 	const note = payload.truncated
 		? `Note: output truncated; use Read with offset=${offset + payload.shownLines} and limit to continue.`
-		: "Note: file read complete.";
+		: body.contentCut
+			? `Note: output capped at ${MAX_MODEL_OUTPUT_CHARS} characters; re-read a smaller row range to see more.`
+			: "Note: file read complete.";
 	return {
 		success: true,
 		summary: `Read ${path}`,
-		modelOutput: boundedOutput([
-			"Read succeeded",
-			`Path: ${path}`,
-			`Columns: ${payload.headers.join(", ")}`,
-			`Rows: ${payload.rows}`,
-		], note, payload.content),
+		modelOutput: `${body.text}\n${note}`.slice(0, MAX_MODEL_OUTPUT_CHARS),
 		metadata: {
 			...metadata,
 			rows: payload.rows,
@@ -213,6 +243,7 @@ function readMetadata(
 		totalLines: payload.totalLines,
 		shownLines: payload.shownLines,
 		truncated: payload.truncated,
+		...("capped" in payload && payload.capped ? { capped: true } : {}),
 		...(payload.truncated ? { nextOffset: offset + payload.shownLines } : {}),
 		requestedLimit: payload.requestedLimit,
 		effectiveLimit: payload.effectiveLimit,
@@ -224,23 +255,29 @@ function readMetadata(
 	};
 }
 
-function boundedOutput(parts: readonly string[], note: string, content = ""): string {
+function boundedOutput(
+	parts: readonly string[],
+	note: string,
+	content = "",
+): { text: string; contentCut: boolean } {
 	const prefix = parts.filter(Boolean).join("\n");
 	if (!content.trim()) {
-		return `${prefix}\n${note}`.slice(0, MAX_MODEL_OUTPUT_CHARS);
+		return { text: `${prefix}\n${note}`.slice(0, MAX_MODEL_OUTPUT_CHARS), contentCut: false };
 	}
 	const fixed = `${prefix}\nOutput:\n\n${note}`;
 	const budget = Math.max(0, MAX_MODEL_OUTPUT_CHARS - fixed.length);
 	const normalized = content.trimEnd();
-	const rendered = normalized.length <= budget
+	const cut = normalized.length > budget;
+	const rendered = !cut
 		? normalized
 		: `${normalized.slice(0, Math.max(0, budget - 3)).trimEnd()}...`;
-	return `${prefix}\nOutput:\n${rendered}\n${note}`;
+	return { text: `${prefix}\nOutput:\n${rendered}\n${note}`, contentCut: cut };
 }
 
 function stripContinuation(content: string): string {
 	const lines = content.trimEnd().split("\n");
-	if (lines.at(-1)?.startsWith("... (output truncated, showing ")) {
+	const last = lines.at(-1);
+	if (last?.startsWith("... (output truncated, showing ") || last?.startsWith("... (output capped, showing ")) {
 		lines.pop();
 	}
 	return lines.join("\n");
@@ -269,7 +306,7 @@ function failure(path: string, errorKind: string, message: string): ToolAdapterR
 			`Path: ${path}`,
 			`Error kind: ${errorKind}`,
 			`Error: ${message}`,
-		], ""),
+		], "").text,
 		errorKind,
 		metadata: { path, errorKind },
 	};

@@ -1214,6 +1214,41 @@ test("continues after a failed Read result and exposes the failure event", async
 	});
 });
 
+test("the configured compression threshold bounds the recorded tool output", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const provider = scriptedProvider(trace, [], [
+		[
+			{ type: "tool_call", callId: "call-1", name: "Read", argumentsJson: READ_ARGUMENTS },
+			{ type: "completed", responseId: "resp-tools-threshold" },
+		],
+		[
+			{ type: "text_delta", text: "Summarized the file." },
+			{ type: "completed", responseId: "resp-final-threshold" },
+		],
+	]);
+	const huge = "x".repeat(2_000);
+
+	const result = await createRuntime({
+		store,
+		provider,
+		runtimeConfig: config({ compressionThresholdTokens: 100 }),
+		toolRouter: new FakeRouter(trace, {
+			...successResult("call-1"),
+			modelOutput: huge,
+			summary: "Read a large file",
+		}),
+	}).submit(submission(), () => undefined, { signal: new AbortController().signal });
+
+	assert.equal(result.status, "completed");
+	const stored = store.toolResults[0]?.result;
+	assert.ok(stored);
+	assert.equal(stored.toolName, "Read");
+	assert.ok(stored.output.length <= 400, `recorded output was ${stored.output.length} characters`);
+	assert.ok(stored.output.startsWith("Warning: truncated output (original token count: "));
+	assert.equal(stored.output.includes(huge), false);
+});
+
 test("emits a terminal tool lifecycle event when tool execution is interrupted", async () => {
 	const trace: string[] = [];
 	const store = new FakeStore(trace);

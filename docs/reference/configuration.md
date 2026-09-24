@@ -27,7 +27,7 @@ profile, user, system, legacy user, then built-in defaults. Credentials belong i
 | `context.compaction_tail_max_tokens` | `integer` | `20000` | yes | `context.compaction_tail_max_tokens` | Caps retained user-message text after compaction (default 20000 tokens); the boundary message is truncated with a marker. |
 | `context.compaction_tail_turns` | `integer` | `2` | yes | `context.compaction_tail_turns` | Legacy compatibility setting; unused by local context compaction. |
 | `context.compaction_token_limit` | `integer` | `9600` | yes | `context.compaction_token_limit` | Sets the prompt-token ceiling used to trigger compaction. |
-| `context.compression_threshold_tokens` | `integer` | `8000` | yes | `context.compression_threshold_tokens` | Sets the size threshold at which oversized tool results are compressed before replay. |
+| `context.compression_threshold_tokens` | `integer` | `8000` | yes | `context.compression_threshold_tokens` | Caps one model-visible tool result (estimated at four bytes per token, capped at 8000 characters); longer results are truncated with a marker before they are recorded. |
 | `features.request_permissions_tool` | `boolean` | `false` | yes | `features.request_permissions_tool` | Exposes the structured permission-request tool when the active runtime supports it. |
 | `memory.enabled` | `boolean` | `false` | yes | `memory.enabled` | Enables durable memory discovery and injection for the active agent runtime. |
 | `model.api_base_url` | `string` | `"https://api.openai.com/v1"` | yes | `model.api_base_url` | Sets the HTTP(S) API endpoint used by the configured provider. |

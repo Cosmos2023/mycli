@@ -13,6 +13,12 @@ export type ReadContentErrorKind =
 	| "interrupted"
 	| "read_failed";
 
+interface Selection {
+	readonly lines: string[];
+	chars: number;
+	capped: boolean;
+}
+
 export class ReadContentError extends Error {
 	readonly kind: ReadContentErrorKind;
 
@@ -27,6 +33,12 @@ export interface ReadTextWindowOptions {
 	readonly offset: number;
 	readonly limit: number;
 	readonly signal: AbortSignal;
+	/**
+	 * Character budget for the selected lines. When the next line would exceed it, the scan stops
+	 * adding lines and reports `capped`, so the caller's continuation offset always points at the
+	 * first line that was not returned.
+	 */
+	readonly maxChars?: number;
 }
 
 export interface TextReadResult {
@@ -39,6 +51,7 @@ export interface TextReadResult {
 	readonly totalLines: number;
 	readonly shownLines: number;
 	readonly truncated: boolean;
+	readonly capped: boolean;
 	readonly requestedLimit: number;
 	readonly effectiveLimit: number;
 	readonly limitClamped: boolean;
@@ -52,7 +65,10 @@ export async function readTextWindow(
 	const offset = Math.max(1, Math.trunc(options.offset));
 	const requestedLimit = Math.trunc(options.limit);
 	const effectiveLimit = Math.min(Math.max(0, requestedLimit), MAX_READ_LIMIT);
-	const selectedLines: string[] = [];
+	const maxChars = options.maxChars === undefined
+		? Number.POSITIVE_INFINITY
+		: Math.max(0, Math.trunc(options.maxChars));
+	const selection: Selection = { lines: [], chars: 0, capped: false };
 	const digest = createHash("sha256");
 	const decoder = new TextDecoder("utf-8", { fatal: true });
 	let pending = "";
@@ -80,7 +96,7 @@ export async function readTextWindow(
 			const pieces = (pending + decoded).split("\n");
 			pending = pieces.pop() ?? "";
 			for (const line of pieces) {
-				selectLine(line, offset, effectiveLimit, totalLines, selectedLines);
+				selectLine(line, offset, effectiveLimit, totalLines, selection, maxChars);
 				totalLines += 1;
 			}
 		}
@@ -88,18 +104,21 @@ export async function readTextWindow(
 		totalChars += tail.length;
 		pending += tail;
 		if (pending) {
-			selectLine(pending, offset, effectiveLimit, totalLines, selectedLines);
+			selectLine(pending, offset, effectiveLimit, totalLines, selection, maxChars);
 			totalLines += 1;
 		}
 		if (looksBinary(sample)) {
 			throw new ReadContentError("binary_file");
 		}
-		const truncated = offset - 1 + selectedLines.length < totalLines;
-		let content = formatLines(selectedLines);
-		if (truncated) {
-			const nextOffset = offset + selectedLines.length;
-			content += `... (output truncated, showing ${selectedLines.length} of ${totalLines} lines; `
-				+ `use offset=${nextOffset} with limit to continue)\n`;
+		const truncated = offset - 1 + selection.lines.length < totalLines;
+		let content = formatLines(selection.lines);
+		if (truncated || selection.capped) {
+			const nextOffset = offset + selection.lines.length;
+			content += selection.capped
+				? `... (output capped, showing ${selection.lines.length} of ${totalLines} lines; `
+					+ `use offset=${nextOffset} with limit to continue)\n`
+				: `... (output truncated, showing ${selection.lines.length} of ${totalLines} lines; `
+					+ `use offset=${nextOffset} with limit to continue)\n`;
 		}
 		return {
 			content,
@@ -109,8 +128,9 @@ export async function readTextWindow(
 			capturedAt: new Date().toISOString(),
 			totalChars,
 			totalLines,
-			shownLines: selectedLines.length,
+			shownLines: selection.lines.length,
 			truncated,
+			capped: selection.capped,
 			requestedLimit,
 			effectiveLimit,
 			limitClamped: requestedLimit !== effectiveLimit,
@@ -139,22 +159,35 @@ function selectLine(
 	offset: number,
 	limit: number,
 	zeroBasedLine: number,
-	selectedLines: string[],
+	selection: Selection,
+	maxChars: number,
 ): void {
 	const lineNumber = zeroBasedLine + 1;
-	if (lineNumber < offset || selectedLines.length >= limit) {
+	if (lineNumber < offset || selection.lines.length >= limit || selection.capped) return;
+	const normalized = line.endsWith("\r") ? line.slice(0, -1) : line;
+	const rendered = normalized.length > MAX_LINE_CHARS
+		? `${normalized.slice(0, MAX_LINE_CHARS)} [... truncated]`
+		: normalized;
+	const cost = rendered.length + 1;
+	if (selection.chars + cost <= maxChars) {
+		selection.lines.push(rendered);
+		selection.chars += cost;
 		return;
 	}
-	selectedLines.push(line.endsWith("\r") ? line.slice(0, -1) : line);
+	// Never return an empty window when the first selected line alone overflows the budget: keep a
+	// bounded slice of it, then stop. This keeps the continuation offset honest.
+	if (selection.lines.length === 0 && maxChars > 0) {
+		selection.lines.push(rendered.slice(0, Math.max(0, maxChars - 1)));
+		selection.chars += Math.min(rendered.length, Math.max(0, maxChars - 1)) + 1;
+	}
+	selection.capped = true;
 }
 
 function formatLines(lines: readonly string[]): string {
 	if (lines.length === 0) {
 		return "";
 	}
-	return `${lines.map((line) => line.length > MAX_LINE_CHARS
-		? `${line.slice(0, MAX_LINE_CHARS)} [... truncated]`
-		: line).join("\n")}\n`;
+	return `${lines.join("\n")}\n`;
 }
 
 function looksBinary(sample: Uint8Array): boolean {

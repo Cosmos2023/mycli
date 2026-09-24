@@ -52,7 +52,29 @@ test("Shell result reports resumable live output without command or stdin", () =
 	assert.equal(result.modelOutput.includes(input.chars), false);
 });
 
-test("five-token Shell result uses stable head-tail truncation", () => {
+test("Shell truncation keeps the status lines and reports what it dropped", () => {
+	const output = "abcdefghijklmnopqrstuvwxyz".repeat(4);
+	const result = formatShellResult({
+		chunkId: "12345678",
+		wallTimeSeconds: 1,
+		shellId: "a1b2c3d4",
+		terminalState: "completed",
+		exitCode: 0,
+		output,
+		maxOutputTokens: 40,
+	});
+
+	assert.match(result.modelOutput,
+		/^Chunk ID: 12345678\nWall time: 1\.00 seconds\nProcess exited with code 0\nFinal output:\n/u);
+	assert.match(result.modelOutput, /chars omitted; original ~\d+ tokens/u);
+	assert.equal(result.modelOutput.includes("abcdefgh"), true);
+	assert.equal(result.modelOutput.trimEnd().endsWith("yz"), true);
+	assert.ok(result.modelOutput.length <= 40 * 4, `output was ${result.modelOutput.length} characters`);
+	assert.equal(result.originalTokenCount, Math.ceil(result.originalChars / 4));
+	assert.equal(result.omittedChars, result.originalChars - result.retainedChars);
+});
+
+test("a budget smaller than the status lines still reports the omitted output", () => {
 	const output = "abcdefghijklmnopqrstuvwxyz";
 	const result = formatShellResult({
 		chunkId: "12345678",
@@ -64,12 +86,9 @@ test("five-token Shell result uses stable head-tail truncation", () => {
 		maxOutputTokens: 5,
 	});
 
-	assert.equal(result.modelOutput.length, 20);
-	assert.equal(result.modelOutput.startsWith("Chu"), true);
-	assert.equal(result.modelOutput.endsWith("yz"), true);
-	assert.equal(result.modelOutput.includes("[chars omitted]"), true);
-	assert.equal(result.originalTokenCount, Math.ceil(result.originalChars / 4));
-	assert.equal(result.retainedChars, 5);
+	assert.match(result.modelOutput, /Chunk ID: 12345678\n/u);
+	assert.match(result.modelOutput, /Process exited with code 0\n/u);
+	assert.match(result.modelOutput, /\[output omitted; original ~\d+ tokens\]/u);
+	assert.equal(result.modelOutput.includes(output), false);
 	assert.equal(result.omittedChars, result.originalChars - result.retainedChars);
-	assert.equal(output, "abcdefghijklmnopqrstuvwxyz");
 });

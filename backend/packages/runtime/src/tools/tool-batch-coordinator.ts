@@ -30,6 +30,7 @@ import {
 	type ToolRouterContract,
 } from "@mycli/tools";
 import { canRequestOriginalImageDetail } from "@mycli/config";
+import { canonicalToolResult, modelOutputMaxCharsFromTokens } from "./model-output-budget.ts";
 import type {
 	ApprovalSuspensionInput,
 	PendingApprovalContinuation,
@@ -73,7 +74,8 @@ export interface ToolBatchSubmission {
 export interface ToolBatchRuntimeContext {
 	readonly submission: ToolBatchSubmission;
 	readonly turnId: string;
-	readonly config: Pick<NodeRuntimeConfig, "protocol"> & Partial<Pick<NodeRuntimeConfig, "model" | "supportsImages">>;
+	readonly config: Pick<NodeRuntimeConfig, "protocol">
+		& Partial<Pick<NodeRuntimeConfig, "model" | "supportsImages" | "compressionThresholdTokens">>;
 	readonly collaborationMode: string;
 	readonly executionPolicy?: ExecutionPolicy;
 	readonly runSnapshot: RunExecutionSnapshot;
@@ -663,7 +665,12 @@ export class ToolBatchCoordinator {
 			return running;
 		}
 
-		const contextItem = this.#persistToolResult(submission.clientTurnId, turnId, result);
+		const contextItem = this.#persistToolResult(
+			submission.clientTurnId,
+			turnId,
+			result,
+			modelOutputMaxCharsFromTokens(context.config.compressionThresholdTokens),
+		);
 		if (contextItem) deferredContextItems.push(contextItem);
 		if (executed) {
 			this.#options.approvalPolicy?.recordResult?.(
@@ -797,12 +804,13 @@ export class ToolBatchCoordinator {
 		clientTurnId: string,
 		turnId: string,
 		result: ToolExecutionResult,
+		modelOutputMaxChars: number,
 	): Omit<AppendContextItemInput, "sessionId"> | undefined {
 		const contextItem = this.#options.contextItemCoordinator?.contextItemFor({ turnId, result });
 		this.#options.store.appendToolResult({
 			sessionId: this.#options.sessionId,
 			clientTurnId,
-			result: toCanonicalResult(result),
+			result: canonicalToolResult(result, modelOutputMaxChars),
 			summary: result.summary,
 			metadata: result.metadata,
 			...(result.errorKind ? { errorKind: result.errorKind } : {}),
@@ -954,14 +962,4 @@ function hookDeniedResult(
 		...(errorContext ? { errorContext } : {}),
 		metadata: Object.freeze(errorContext ? { error_context: errorContext } : {}),
 	});
-}
-
-function toCanonicalResult(result: ToolExecutionResult) {
-	return {
-		callId: result.callId,
-		toolName: result.toolName,
-		output: result.modelOutput,
-		...(result.images?.length ? { images: result.images } : {}),
-		success: result.success,
-	};
 }

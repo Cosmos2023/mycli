@@ -107,7 +107,7 @@
 # Sets the prompt-token ceiling used to trigger compaction.
 # compaction_token_limit = 9600
 
-# Sets the size threshold at which oversized tool results are compressed before replay.
+# Caps one model-visible tool result (estimated at four bytes per token, capped at 8000 characters); longer results are truncated with a marker before they are recorded.
 # compression_threshold_tokens = 8000
 
 [features]
