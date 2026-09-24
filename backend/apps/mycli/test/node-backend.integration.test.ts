@@ -3392,6 +3392,120 @@ test("Node backend delivers background subagent completion through wait_agent wi
 	}
 });
 
+test("Node backend delivers an oversized child report with a visible truncation marker", {
+	timeout: 10_000,
+}, async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-node-oversized-child-report-"));
+	const home = join(root, "home");
+	const workspace = join(root, "workspace");
+	await Promise.all([mkdir(home), mkdir(workspace)]);
+	const parentRequests: Record<string, unknown>[] = [];
+	const childReport = [
+		"Findings:",
+		...Array.from(
+			{ length: 900 },
+			(_, index) => `detail line ${index + 1}: the inspection found no blocking issue in module ${index + 1}.`,
+		),
+		"CHILD-TAIL",
+	].join("\n");
+	const server = createServer((request, response) => {
+		let body = "";
+		request.setEncoding("utf8");
+		request.on("data", (chunk) => { body += chunk; });
+		request.on("end", () => {
+			const payload = JSON.parse(body) as Record<string, unknown>;
+			response.writeHead(200, { "content-type": "text/event-stream" });
+			if (isSubagentRequest(payload)) {
+				writeResponsesText(response, childReport, "resp-oversized-child");
+			} else {
+				parentRequests.push(payload);
+				if (parentRequests.length === 1) {
+					writeResponsesTool(response, "call-oversized-task", "spawn_agent", {
+						task_name: "inspect",
+						message: "Inspect with a long report.",
+					}, "resp-oversized-task");
+				} else if (parentRequests.length === 2) {
+					writeResponsesTool(response, "call-oversized-wait", "wait_agent", {
+						timeout_ms: 5_000,
+					}, "resp-oversized-wait");
+				} else {
+					writeResponsesText(
+						response,
+						"Parent integrated the bounded report.",
+						"resp-oversized-parent-final",
+					);
+				}
+			}
+			response.end("data: [DONE]\n\n");
+		});
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	t.after(async () => {
+		await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+		await rm(root, { recursive: true, force: true });
+	});
+	const address = server.address();
+	assert.ok(address && typeof address === "object");
+
+	const backend = await startNodeBackend({
+		cwd: workspace,
+		args: ["--session", "oversized-parent", "--model", "gpt-test"],
+		env: {
+			HOME: home,
+			MYCLI_API_KEY: "test-key",
+			MYCLI_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
+			MYCLI_PROVIDER: "openai",
+			MYCLI_PROTOCOL: "responses",
+			MYCLI_THINKING_ENABLED: "false",
+			MYCLI_STREAM_MAX_RETRIES: "0",
+			MYCLI_AGENT_EXECUTION_ADAPTER: "worker",
+		},
+	});
+	const messages: Array<Record<string, unknown>> = [];
+	createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => {
+		messages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>);
+	});
+	await waitFor(() => event(messages, "runtime.ready"));
+	writeRequest(backend, "oversized-turn", "turn.submit", {
+		message: "Run a background subagent and wait for it.",
+		client_turn_id: "oversized-parent-turn",
+		client_user_message_id: "oversized-parent-message",
+	});
+	await waitFor(() => messages.find((message) => (
+		message.method === "message.complete"
+		&& paramValue(message, "final") === true
+		&& paramValue(message, "text") === "Parent integrated the bounded report."
+	)), 7_000);
+
+	const mailboxRequest = parentRequests.find((request) => (
+		JSON.stringify(request.input).includes("<agent-mailbox>")
+	));
+	assert.ok(mailboxRequest);
+	const delivered = JSON.stringify(mailboxRequest.input);
+	assert.match(delivered, /<agent-mailbox>/u);
+	assert.match(delivered, /\[report truncated: showing \d+ of \d+ characters\./u);
+	assert.equal(delivered.includes("CHILD-TAIL"), false);
+
+	const store = openRuntimeSessionStore({ dbPath: join(home, ".mycli", "sessions.db") });
+	try {
+		const task = store.subagentTasks.list("oversized-parent")[0];
+		assert.ok(task);
+		const outputPath = join(home, ".mycli", "sessions", "oversized-parent", "tasks", task.childSessionId, "output.txt");
+		const storedReport = await readFile(outputPath, "utf8");
+		assert.equal(storedReport.endsWith("CHILD-TAIL"), true);
+		assert.ok(Buffer.byteLength(delivered, "utf8") < Buffer.byteLength(storedReport, "utf8"));
+		assert.match(delivered, /Full report: /u);
+		// The path crosses two JSON layers: the provider request and the mailbox payload.
+		const unescaped = delivered.replaceAll("\\\\", "\\").replaceAll("\\\\", "\\");
+		assert.equal(unescaped.includes(outputPath), true);
+	} finally {
+		store.close();
+	}
+
+	writeRequest(backend, "shutdown-oversized", "shutdown", {});
+	assert.equal(await backend.completion, 0);
+});
+
 test("Node backend triggers a durable follow-up turn without fabricating child user input", {
 	timeout: 15_000,
 }, async (t) => {

@@ -261,6 +261,10 @@ export {
 	SUBAGENT_NOTIFICATION_MAX_BYTES,
 	SUBAGENT_NOTIFICATION_RESULT_MAX_CHARS,
 } from "./subagents/task-notification.ts";
+export {
+	boundSubagentReport,
+	type BoundSubagentReportOptions,
+} from "./subagents/report-bounding.ts";
 export type { McpResourceService, McpResourceListing, McpResourcePage, McpResourceTemplateDescriptor,
 	McpResourceTemplatePage, McpResourceTemplateListing } from "./mcp/types.ts";
 export type { McpElicitationPrompt, McpElicitationHandler, McpInvocationContext } from "./mcp/elicitation.ts";

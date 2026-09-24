@@ -257,7 +257,10 @@ export type {
 	AgentLifecycleTransition,
 	SQLiteAgentLifecycleRepositoryOptions,
 } from "./agents/agent-lifecycle-store.ts";
-export { SQLiteAgentMailboxRepository } from "./agents/agent-mailbox-store.ts";
+export {
+	AGENT_MAILBOX_COMPLETION_REPORT_MAX_CHARS,
+	SQLiteAgentMailboxRepository,
+} from "./agents/agent-mailbox-store.ts";
 export type {
 	AgentMailboxEnqueueResult,
 	AgentMailboxListQuery,

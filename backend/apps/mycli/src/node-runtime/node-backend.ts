@@ -69,6 +69,8 @@ import {
 } from "@mycli/core";
 import {
 	IntegrationToolApprovalStore,
+	boundSubagentReport,
+	SUBAGENT_NOTIFICATION_MAX_BYTES,
 	skillInvocationArtifactFromMetadata,
 	ListMcpResourcesTool,
 	ReadMcpResourceTool,
@@ -122,6 +124,7 @@ import type {
 	RunExecutionSnapshot,
 } from "@mycli/runtime";
 import {
+	AGENT_MAILBOX_COMPLETION_REPORT_MAX_CHARS,
 	SessionArtifactStore,
 	SnapshotStateError,
 	openRuntimeSessionStore,
@@ -263,6 +266,15 @@ import {
 	terminalSubagentOutput,
 	virtualSession,
 } from "./node-session-bootstrap.ts";
+
+// The queue rejects a steering record above SUBAGENT_NOTIFICATION_MAX_BYTES, and the
+// mailbox wraps the report in a JSON envelope. Keep headroom for both so that an
+// oversized report is trimmed with a visible marker instead of being rejected.
+const SUBAGENT_COMPLETION_REPORT_MAX_BYTES = SUBAGENT_NOTIFICATION_MAX_BYTES - 4_096;
+
+function jsonEncodedLength(value: string): number {
+	return Buffer.byteLength(JSON.stringify(value), "utf8");
+}
 
 export interface NodeBackend {
 	readonly transport: GatewayTransport;
@@ -658,6 +670,10 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 		if (!thread || !thread.spawnConfig || !isTerminalSubagentStatus(task.status)) return;
 		const context = resolveAgentRouteContext(task.parentSessionId);
 		if (!context) return;
+		const outputFile = sessionArtifacts.taskOutputPath(
+			task.parentSessionId,
+			task.childSessionId,
+		);
 		await agentMailbox.send({
 			sender: Object.freeze({
 				threadId: thread.threadId,
@@ -673,7 +689,12 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			payload: Object.freeze({
 				kind: "completion",
 				status: task.status,
-				report: terminalSubagentOutput(task).slice(0, 32_768),
+				report: boundSubagentReport(terminalSubagentOutput(task), {
+					maxChars: AGENT_MAILBOX_COMPLETION_REPORT_MAX_CHARS,
+					maxBytes: SUBAGENT_COMPLETION_REPORT_MAX_BYTES,
+					...(outputFile ? { outputFile } : {}),
+					encodedLength: jsonEncodedLength,
+				}),
 				...(task.payload.outputReference ? {
 					outputReference: task.payload.outputReference.slice(0, 4_096),
 				} : {}),

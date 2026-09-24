@@ -3,6 +3,7 @@ import {
 	SUBAGENT_TASK_OUTPUT_REFERENCE_MAX_CHARS,
 	type SubagentTaskRecord,
 } from "@mycli/storage";
+import { boundSubagentReport } from "./report-bounding.ts";
 
 export const SUBAGENT_NOTIFICATION_RESULT_MAX_CHARS = 32_000;
 export const SUBAGENT_NOTIFICATION_MAX_BYTES = DEFAULT_QUEUE_CAPACITY.maxTextBytes;
@@ -12,7 +13,7 @@ export function serializeSubagentTaskNotification(
 	options: { readonly outputFile?: string } = {},
 ): string | undefined {
 	if (record.status === "queued" || record.status === "running") return undefined;
-	const result = terminalResult(record).slice(0, SUBAGENT_NOTIFICATION_RESULT_MAX_CHARS);
+	const result = terminalResult(record);
 	const summary = (result.split(/\r?\n/u, 1)[0]?.trim() || `Subagent ${record.status}`).slice(0, 500);
 	const outputFile = options.outputFile?.slice(0, SUBAGENT_TASK_OUTPUT_REFERENCE_MAX_CHARS);
 	const beforeResult = [
@@ -37,9 +38,15 @@ export function serializeSubagentTaskNotification(
 		0,
 		SUBAGENT_NOTIFICATION_MAX_BYTES - Buffer.byteLength(fixed, "utf8"),
 	);
+	const boundedResult = boundSubagentReport(result, {
+		maxChars: SUBAGENT_NOTIFICATION_RESULT_MAX_CHARS,
+		maxBytes: resultByteBudget,
+		...(outputFile ? { outputFile } : {}),
+		encodedLength: (value) => Buffer.byteLength(escapeXml(value), "utf8"),
+	});
 	return [
 		...beforeResult,
-		`<result>${escapeXmlWithinBytes(result, resultByteBudget)}</result>`,
+		`<result>${escapeXmlWithinBytes(boundedResult, resultByteBudget)}</result>`,
 		...afterResult,
 	].join("\n");
 }

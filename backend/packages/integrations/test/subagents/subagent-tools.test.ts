@@ -13,6 +13,7 @@ import {
 	ListAgentsTool,
 	SPAWN_AGENT_TOOL_DEFINITION,
 	SpawnAgentTool,
+	boundSubagentReport,
 	serializeSubagentTaskNotification,
 	SUBAGENT_NOTIFICATION_MAX_BYTES,
 	SUBAGENT_NOTIFICATION_RESULT_MAX_CHARS,
@@ -48,6 +49,10 @@ test("terminal task notifications are bounded escaped and omit non-terminal reco
 	assert.match(notification, /<task-id>task&lt;&amp;&gt;<\/task-id>/u);
 	assert.match(notification, /<agent>subagent<\/agent>/u);
 	assert.match(notification, /<output-file>\/home\/user\/\.mycli\/sessions\/parent\/tasks\/child-1\/output\.txt<\/output-file>/u);
+	assert.match(
+		notification,
+		/\[report truncated: showing \d+ of \d+ characters\. Full report: \/home\/user\/\.mycli\/sessions\/parent\/tasks\/child-1\/output\.txt\]<\/result>/u,
+	);
 	assert.equal(notification.includes("<done>"), false);
 	assert.ok(notification.length < SUBAGENT_NOTIFICATION_RESULT_MAX_CHARS + 1_000);
 	const expansionHeavy = serializeSubagentTaskNotification({
@@ -67,6 +72,42 @@ test("terminal task notifications are bounded escaped and omit non-terminal reco
 		...record,
 		status: "running",
 	}), undefined);
+});
+
+test("oversized reports end with a truncation marker naming the artifact", () => {
+	const report = `${"a".repeat(40_000)}TAIL`;
+	const bounded = boundSubagentReport(report, {
+		maxChars: 32_768,
+		outputFile: "/home/user/.mycli/sessions/parent/tasks/child-1/output.txt",
+	});
+
+	assert.ok(bounded.length <= 32_768);
+	assert.equal(bounded.startsWith("a".repeat(1_000)), true);
+	assert.equal(bounded.includes("TAIL"), false);
+	assert.match(
+		bounded,
+		/\n\n\[report truncated: showing \d+ of 40004 characters\. Full report: \/home\/user\/\.mycli\/sessions\/parent\/tasks\/child-1\/output\.txt\]$/u,
+	);
+});
+
+test("truncated reports stay inside the encoded byte budget", () => {
+	const bounded = boundSubagentReport("\u6c49".repeat(40_000), {
+		maxChars: 32_768,
+		maxBytes: 61_440,
+		outputFile: "/tmp/task/output.txt",
+		encodedLength: (value) => Buffer.byteLength(JSON.stringify(value), "utf8"),
+	});
+
+	assert.ok(bounded.length <= 32_768);
+	assert.ok(Buffer.byteLength(JSON.stringify(bounded), "utf8") <= 61_440);
+	assert.equal(bounded.startsWith("\u6c49"), true);
+	assert.match(bounded, /\[report truncated: showing \d+ of 40000 characters\./u);
+});
+
+test("reports inside the budget are delivered unchanged", () => {
+	const report = "short report";
+	assert.equal(boundSubagentReport(report, { maxChars: 32_768 }), report);
+	assert.equal(boundSubagentReport(report, { maxChars: 32_768, maxBytes: 1_024 }), report);
 });
 
 test("spawn_agent is the only exported child-spawn tool", () => {

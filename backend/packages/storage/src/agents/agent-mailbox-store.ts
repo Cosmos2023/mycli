@@ -105,7 +105,8 @@ const DEDUPE_KEY_PATTERN = /^sha256:[a-f0-9]{64}$/u;
 const MAILBOX_LIST_MAX = 10_000;
 const IDENTIFIER_MAX_CHARS = 256;
 const MESSAGE_TEXT_MAX_CHARS = 65_536;
-const COMPLETION_REPORT_MAX_CHARS = 32_768;
+/** Delivery cap for a completion report; callers bound reports before sending. */
+export const AGENT_MAILBOX_COMPLETION_REPORT_MAX_CHARS = 32_768;
 const OUTPUT_REFERENCE_MAX_CHARS = 4_096;
 
 export class SQLiteAgentMailboxRepository implements AgentMailboxStore {
@@ -359,7 +360,7 @@ function payloadValue(value: unknown): AgentMailboxPayload {
 	return Object.freeze({
 		kind: "completion",
 		status,
-		report: boundedPayloadText(value.report, "completion report", COMPLETION_REPORT_MAX_CHARS),
+		report: boundedPayloadText(value.report, "completion report", AGENT_MAILBOX_COMPLETION_REPORT_MAX_CHARS),
 		...(value.outputReference === undefined ? {} : {
 			outputReference: boundedIdentity(
 				value.outputReference,
