@@ -105,6 +105,12 @@ const DEFINITIONS: readonly RuntimeSettingDefinition[] = Object.freeze([
 		(config) => config.compactionTriggerRatiosByModel,
 	),
 	writable(
+		"context.compaction_limit_scope",
+		"compaction_limit_scope",
+		"string",
+		(config) => config.compactionLimitScope,
+	),
+	writable(
 		"context.compaction_rehydration_file_max_item_tokens",
 		"compaction_rehydration_file_max_item_tokens",
 		"integer",
@@ -216,6 +222,7 @@ const RUNTIME_SETTING_DESCRIPTIONS: Readonly<Record<string, string>> = Object.fr
 	"context.compaction_l4_summarizer_model": "Selects an optional model override for compaction summaries.",
 	"context.compaction_l4_trigger_ratio": "Starts automatic compaction when estimated prompt use reaches this fraction of the active context window.",
 	"context.compaction_l4_trigger_ratios_by_model": "Reports per-model compaction trigger overrides; this structured setting is read-only through config commands.",
+	"context.compaction_limit_scope": "Selects whether the compaction trigger counts the full prompt or only the tokens added after the carried prefix.",
 	"context.compaction_rehydration_file_max_item_tokens": "Legacy compatibility setting; unused by local context compaction.",
 	"context.compaction_rehydration_file_max_total_tokens": "Legacy compatibility setting; unused by local context compaction.",
 	"context.compaction_rehydration_max_files": "Legacy compatibility setting; unused by local context compaction.",
@@ -245,6 +252,7 @@ const RUNTIME_SETTING_DESCRIPTIONS: Readonly<Record<string, string>> = Object.fr
 });
 
 const RUNTIME_ALLOWED_VALUES: Readonly<Record<string, readonly string[]>> = Object.freeze({
+	"context.compaction_limit_scope": Object.freeze(["total", "body_after_prefix"]),
 	"model.provider": PROVIDER_IDS,
 	"model.protocol": Object.freeze(["responses", "chat_completions", "anthropic_messages"]),
 	"reasoning.effort": Object.freeze(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]),

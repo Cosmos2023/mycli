@@ -914,6 +914,7 @@ test("loads compaction defaults with memory disabled", async (t) => {
 	assert.equal(resolved.compressionThresholdTokens, 8_000);
 	assert.equal(resolved.compactionTokenLimit, 9_600);
 	assert.equal(resolved.compactionReservedOutputTokens, 13_000);
+	assert.equal(resolved.compactionLimitScope, "body_after_prefix");
 	assert.equal(resolved.compactionTailTurns, 2);
 	assert.equal(resolved.compactionTailMaxTokens, 20_000);
 	assert.equal(resolved.compactionTriggerRatio, 0.9);
@@ -926,6 +927,37 @@ test("loads compaction defaults with memory disabled", async (t) => {
 	assert.equal(resolved.compactionRehydrationFileMaxTotalTokens, 50_000);
 	assert.equal(resolved.compactionRehydrationFileMaxItemTokens, 5_000);
 	assert.equal(resolved.compactionRehydrationMaxFiles, 5);
+});
+
+test("loads the compaction limit scope from config and the environment", async (t) => {
+	const { homeDir, workspaceRoot } = await configTree(t);
+	await writeToml(join(homeDir, ".mycli", "config.toml"), [
+		"[context]",
+		"compaction_limit_scope = \"total\"",
+	]);
+
+	const configured = await resolveConfig({ homeDir, workspaceRoot, env: {} });
+	const fromEnvironment = await resolveConfig({
+		homeDir,
+		workspaceRoot,
+		env: { MYCLI_COMPACTION_LIMIT_SCOPE: "Body-After-Prefix" },
+	});
+
+	assert.equal(configured.compactionLimitScope, "total");
+	assert.equal(fromEnvironment.compactionLimitScope, "body_after_prefix");
+});
+
+test("rejects an unsupported compaction limit scope", async (t) => {
+	const { homeDir, workspaceRoot } = await configTree(t);
+	await writeToml(join(homeDir, ".mycli", "config.toml"), [
+		"[context]",
+		"compaction_limit_scope = \"everything\"",
+	]);
+
+	await assert.rejects(
+		() => resolveConfig({ homeDir, workspaceRoot, env: {} }),
+		/error: unsupported compaction limit scope/,
+	);
 });
 
 test("loads the canonical startup update opt-out", async (t) => {

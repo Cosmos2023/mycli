@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type {
 	CacheRetention,
+	CompactionLimitScope,
 	ProtocolId,
 	ProviderRouteId,
 	ProviderNativeTransportSnapshot,
@@ -83,6 +84,7 @@ export interface NodeRuntimeConfig {
 	readonly compressionThresholdTokens: number;
 	readonly compactionTokenLimit: number;
 	readonly compactionReservedOutputTokens: number;
+	readonly compactionLimitScope: CompactionLimitScope;
 	readonly compactionTailTurns: number;
 	readonly compactionTailMaxTokens: number;
 	readonly compactionTriggerRatio: number;
@@ -106,6 +108,7 @@ export const NODE_RUNTIME_CONTEXT_DEFAULTS = Object.freeze({
 	compressionThresholdTokens: 8_000,
 	compactionTokenLimit: 9_600,
 	compactionReservedOutputTokens: 13_000,
+	compactionLimitScope: "body_after_prefix" as const,
 	compactionTailTurns: 2,
 	compactionTailMaxTokens: 20_000,
 	compactionTriggerRatio: 0.9,
@@ -126,6 +129,7 @@ export const NODE_RUNTIME_CONTEXT_DEFAULTS = Object.freeze({
 	| "compressionThresholdTokens"
 	| "compactionTokenLimit"
 	| "compactionReservedOutputTokens"
+	| "compactionLimitScope"
 	| "compactionTailTurns"
 	| "compactionTailMaxTokens"
 	| "compactionTriggerRatio"
@@ -526,6 +530,12 @@ async function resolveConfigFromSources(
 		compactionBufferTokens,
 		"compaction_reserved_output_tokens",
 	);
+	const compactionLimitScope = compactionLimitScopeValue(setting(
+		options.env,
+		sources,
+		"MYCLI_COMPACTION_LIMIT_SCOPE",
+		"compaction_limit_scope",
+	));
 	const compactionTailTurns = nonNegativeSafeIntegerSetting(
 		setting(
 			options.env,
@@ -687,6 +697,7 @@ async function resolveConfigFromSources(
 		compressionThresholdTokens,
 		compactionTokenLimit,
 		compactionReservedOutputTokens,
+		compactionLimitScope,
 		compactionTailTurns,
 		compactionTailMaxTokens,
 		compactionTriggerRatio,
@@ -1052,6 +1063,20 @@ function reasoningEffortValue(value: unknown): ReasoningEffort {
 		);
 	}
 	return normalized as ReasoningEffort;
+}
+
+function compactionLimitScopeValue(value: unknown): CompactionLimitScope {
+	const normalized = value === undefined || value === null
+		? NODE_RUNTIME_CONTEXT_DEFAULTS.compactionLimitScope
+		: String(value).trim().toLowerCase().replace(/[\s-]+/gu, "_");
+	if (normalized !== "total" && normalized !== "body_after_prefix") {
+		throw invalidConfigValue(
+			"compaction_limit_scope",
+			"unsupported compaction limit scope",
+			"Use one of: total, or body_after_prefix.",
+		);
+	}
+	return normalized;
 }
 
 function cacheRetentionValue(value: unknown): CacheRetention {

@@ -55,6 +55,7 @@ export const CONFIG_SECTION_KEYS: Readonly<Record<string, Readonly<Record<string
 		compression_threshold_tokens: "compression_threshold_tokens",
 		compaction_token_limit: "compaction_token_limit",
 		compaction_reserved_output_tokens: "compaction_reserved_output_tokens",
+		compaction_limit_scope: "compaction_limit_scope",
 		compaction_tail_turns: "compaction_tail_turns",
 		compaction_tail_max_tokens: "compaction_tail_max_tokens",
 		compaction_l4_trigger_ratio: "compaction_l4_trigger_ratio",

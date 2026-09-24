@@ -1152,6 +1152,7 @@ function config(apiBaseUrl: string): NodeRuntimeConfig {
 		compressionThresholdTokens: 8_000,
 		compactionTokenLimit: 9_600,
 		compactionReservedOutputTokens: 13_000,
+		compactionLimitScope: "body_after_prefix",
 		compactionTailTurns: 2,
 		compactionTailMaxTokens: 8_000,
 		compactionTriggerRatio: 0.9,

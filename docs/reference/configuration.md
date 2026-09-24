@@ -20,6 +20,7 @@ profile, user, system, legacy user, then built-in defaults. Credentials belong i
 | `context.compaction_l4_summarizer_model` | `string` | `unset` | yes | `context.compaction_l4_summarizer_model` | Selects an optional model override for compaction summaries. |
 | `context.compaction_l4_trigger_ratio` | `number` | `0.9` | yes | `context.compaction_l4_trigger_ratio` | Starts automatic compaction when estimated prompt use reaches this fraction of the active context window. |
 | `context.compaction_l4_trigger_ratios_by_model` | `number_map` | `{}` | no | `context.compaction_l4_trigger_ratios_by_model` | Reports per-model compaction trigger overrides; this structured setting is read-only through config commands. |
+| `context.compaction_limit_scope` | `string` | `"body_after_prefix"` | yes | `context.compaction_limit_scope` | Selects whether the compaction trigger counts the full prompt or only the tokens added after the carried prefix. |
 | `context.compaction_rehydration_file_max_item_tokens` | `integer` | `5000` | yes | `context.compaction_rehydration_file_max_item_tokens` | Legacy compatibility setting; unused by local context compaction. |
 | `context.compaction_rehydration_file_max_total_tokens` | `integer` | `50000` | yes | `context.compaction_rehydration_file_max_total_tokens` | Legacy compatibility setting; unused by local context compaction. |
 | `context.compaction_rehydration_max_files` | `integer` | `5` | yes | `context.compaction_rehydration_max_files` | Legacy compatibility setting; unused by local context compaction. |
@@ -75,6 +76,7 @@ Aliases remain readable for compatibility, emit deprecation diagnostics, and are
 - `context.compaction_l4_output_cost_per_1k`: `compaction_l4_output_cost_per_1k`
 - `context.compaction_l4_summarizer_model`: `compaction_l4_summarizer_model`
 - `context.compaction_l4_trigger_ratio`: `compaction_l4_trigger_ratio`
+- `context.compaction_limit_scope`: `compaction_limit_scope`
 - `context.compaction_rehydration_file_max_item_tokens`: `compaction_rehydration_file_max_item_tokens`
 - `context.compaction_rehydration_file_max_total_tokens`: `compaction_rehydration_file_max_total_tokens`
 - `context.compaction_rehydration_max_files`: `compaction_rehydration_max_files`

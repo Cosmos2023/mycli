@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
 	decideCompaction,
 	type CanonicalConversationItem,
+	type CompactionLimitScope,
 	type ProviderUsage,
 	type RuntimeEvent,
 } from "@mycli/core";
@@ -80,6 +81,8 @@ export interface CompactionCoordinatorOptions {
 	readonly baseContext?: string | (() => string);
 	readonly tokenLimit: number;
 	readonly reservedOutputTokens: number;
+	readonly limitScope?: CompactionLimitScope;
+	readonly hardLimitTokens?: number;
 	readonly triggerRatio?: number;
 	readonly retainedUserMaxTokens?: number;
 	readonly baseInstructions?: string;
@@ -151,6 +154,11 @@ export class CompactionCoordinator {
 			usedTokens: beforeTokens,
 			tokenLimit: this.#options.tokenLimit,
 			reservedOutputTokens: this.#options.reservedOutputTokens,
+			scope: this.#options.limitScope ?? "total",
+			baseContextTokens: baseTokens,
+			...(this.#options.hardLimitTokens === undefined
+				? {}
+				: { hardLimitTokens: this.#options.hardLimitTokens }),
 			freshSuffixTokens,
 			triggerRatio: this.#options.triggerRatio ?? 1,
 		});
@@ -431,6 +439,12 @@ function validateOptions(options: CompactionCoordinatorOptions): CompactionCoord
 	if (options.reservedOutputTokens >= options.tokenLimit) {
 		throw new RangeError("reservedOutputTokens must be below tokenLimit");
 	}
+	if (options.limitScope !== undefined
+		&& options.limitScope !== "total"
+		&& options.limitScope !== "body_after_prefix") {
+		throw new RangeError("limitScope must be 'total' or 'body_after_prefix'");
+	}
+	if (options.hardLimitTokens !== undefined) positiveSafeInteger(options.hardLimitTokens, "hardLimitTokens");
 	if (options.retainedUserMaxTokens !== undefined) nonNegativeSafeInteger(options.retainedUserMaxTokens, "retainedUserMaxTokens");
 	const ratio = options.triggerRatio ?? 1;
 	if (!Number.isFinite(ratio) || ratio < 0 || ratio > 1) throw new RangeError("triggerRatio must be between 0 and 1");

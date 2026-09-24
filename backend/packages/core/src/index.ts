@@ -94,6 +94,7 @@ export { decideCompaction } from "./policy/compaction-policy.ts";
 export type {
 	CompactionDecision,
 	CompactionDecisionInput,
+	CompactionLimitScope,
 } from "./policy/compaction-policy.ts";
 export { fingerprintSubmission } from "./fingerprint.ts";
 export type { TurnSubmissionFingerprintInput } from "./fingerprint.ts";

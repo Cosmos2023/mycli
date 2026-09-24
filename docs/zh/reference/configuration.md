@@ -22,6 +22,7 @@
 | `context.compaction_l4_summarizer_model` | `string` | `unset` | 是 | `context.compaction_l4_summarizer_model` | 可选：为压缩摘要指定不同模型。 |
 | `context.compaction_l4_trigger_ratio` | `number` | `0.9` | 是 | `context.compaction_l4_trigger_ratio` | 估算提示词用量达到当前上下文窗口的这一比例时，启动自动压缩。 |
 | `context.compaction_l4_trigger_ratios_by_model` | `number_map` | `{}` | 否 | `context.compaction_l4_trigger_ratios_by_model` | 显示各模型的压缩触发比例覆盖；config 命令只能读取此结构化设置。 |
+| `context.compaction_limit_scope` | `string` | `"body_after_prefix"` | 是 | `context.compaction_limit_scope` | 选择压缩触发是按整份提示词计数，还是只计携带前缀之后新增的 token。允许值：`total`、`body_after_prefix`。 |
 | `context.compaction_rehydration_file_max_item_tokens` | `integer` | `5000` | 是 | `context.compaction_rehydration_file_max_item_tokens` | 旧版兼容设置；本地上下文压缩不再使用。 |
 | `context.compaction_rehydration_file_max_total_tokens` | `integer` | `50000` | 是 | `context.compaction_rehydration_file_max_total_tokens` | 旧版兼容设置；本地上下文压缩不再使用。 |
 | `context.compaction_rehydration_max_files` | `integer` | `5` | 是 | `context.compaction_rehydration_max_files` | 旧版兼容设置；本地上下文压缩不再使用。 |
@@ -78,6 +79,7 @@
 - `context.compaction_l4_output_cost_per_1k`: `compaction_l4_output_cost_per_1k`
 - `context.compaction_l4_summarizer_model`: `compaction_l4_summarizer_model`
 - `context.compaction_l4_trigger_ratio`: `compaction_l4_trigger_ratio`
+- `context.compaction_limit_scope`: `compaction_limit_scope`
 - `context.compaction_rehydration_file_max_item_tokens`: `compaction_rehydration_file_max_item_tokens`
 - `context.compaction_rehydration_file_max_total_tokens`: `compaction_rehydration_file_max_total_tokens`
 - `context.compaction_rehydration_max_files`: `compaction_rehydration_max_files`

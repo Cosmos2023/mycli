@@ -1234,6 +1234,8 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 						resolved.compactionReservedOutputTokens,
 					),
 					reservedOutputTokens: resolved.compactionReservedOutputTokens,
+					limitScope: resolved.compactionLimitScope,
+					hardLimitTokens: resolved.maxPromptTokens,
 					triggerRatio: 1,
 					retainedUserMaxTokens: resolved.compactionTailMaxTokens,
 					baseInstructions: runtimeInstructions,

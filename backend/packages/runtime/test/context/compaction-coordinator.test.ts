@@ -18,6 +18,7 @@ import {
 	type CompactionRuntimeEvent,
 } from "../../src/context/compaction-coordinator.ts";
 import { TokenCounter } from "../../src/context/token-counter.ts";
+import { countConversationTokens } from "../../src/context/conversation-token-count.ts";
 import { summarizeCompactionWithProvider } from "../../src/context/compaction-coordinator.ts";
 import { compactionSummaryItem } from "../../src/context/compaction-summary.ts";
 
@@ -607,7 +608,7 @@ test("forces compaction after a provider context rejection below the local estim
 	assert.equal(summaryCalls, 1);
 });
 
-test("includes stable instructions and tool schemas in the trigger budget", async () => {
+test("counts stable instructions and tool schemas in the total trigger budget", async () => {
 	const conversation: readonly CanonicalConversationItem[] = [
 		{ type: "user", text: "first request" },
 		{ type: "assistant", text: "first answer" },
@@ -691,6 +692,57 @@ test("resolves the latest run tool context for every compaction attempt", async 
 	assert.ok(afterActivation.beforeTokens > beforeActivation.beforeTokens);
 	assert.equal(resolutions, 2);
 	assert.equal(summaryCalls, 1);
+});
+
+test("excludes the carried prefix from the trigger scope", async () => {
+	const baseContext = "carried instructions and tool schema ".repeat(8);
+	const conversation: readonly CanonicalConversationItem[] = [
+		{ type: "user", text: "short" },
+		{ type: "assistant", text: "answer" },
+		{ type: "user", text: "current" },
+	];
+	const counter = new TokenCounter({
+		loadEncoder: () => { throw new Error("force deterministic fallback"); },
+	});
+	const baseTokens = counter.count(baseContext);
+	const conversationTokens = countConversationTokens(counter, conversation);
+	const shared = {
+		tokenCounter: counter,
+		tokenLimit: baseTokens + conversationTokens + 10,
+		reservedOutputTokens: 10,
+		baseContext,
+	} as const;
+	const history = historyFixture(conversation, ["old-user", "old-assistant", "current-user"]);
+	const input = {
+		clientTurnId: "client-current",
+		turnId: "turn-current",
+		source: "pre_turn" as const,
+		conversation,
+		freshItemIds: new Set(["current-user"]),
+		emit: () => {},
+		signal: new AbortController().signal,
+	};
+
+	const totalScope = await createCoordinator({
+		...shared,
+		store: new FakeCompactionStore(conversation, history),
+	}).compact(input);
+	const prefixScope = await createCoordinator({
+		...shared,
+		store: new FakeCompactionStore(conversation, history),
+		limitScope: "body_after_prefix",
+	}).compact(input);
+	const prefixScopeHardLimit = await createCoordinator({
+		...shared,
+		store: new FakeCompactionStore(conversation, history),
+		limitScope: "body_after_prefix",
+		hardLimitTokens: baseTokens + conversationTokens,
+	}).compact(input);
+
+	assert.equal(baseTokens > conversationTokens, true);
+	assert.equal(totalScope.status, "compressed");
+	assert.equal(prefixScope.status, "not_needed");
+	assert.equal(prefixScopeHardLimit.status, "compressed");
 });
 
 test("summarizes the active tool turn after a context rejection", async () => {

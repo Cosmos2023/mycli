@@ -86,6 +86,10 @@
 # Starts automatic compaction when estimated prompt use reaches this fraction of the active context window.
 # compaction_l4_trigger_ratio = 0.9
 
+# Selects whether the compaction trigger counts the full prompt or only the tokens added after the carried prefix.
+# Allowed: "total", "body_after_prefix"
+# compaction_limit_scope = "body_after_prefix"
+
 # Legacy compatibility setting; unused by local context compaction.
 # compaction_rehydration_file_max_item_tokens = 5000
 

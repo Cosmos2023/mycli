@@ -15,7 +15,12 @@ import { responsesTextEvents, writeResponsesEvents, writeResponsesText, writeRes
 type Message = { id?: string; method?: string; params?: Record<string, unknown>; result?: Record<string, unknown>; error?: unknown };
 const usage = { input_tokens: 10, output_tokens: 2 };
 
-async function fixture(t: { after(fn: () => unknown): void }, respond: (response: ServerResponse, step: number, request: Record<string, unknown>) => void, maxPromptTokens = 100000) {
+async function fixture(
+	t: { after(fn: () => unknown): void },
+	respond: (response: ServerResponse, step: number, request: Record<string, unknown>) => void,
+	maxPromptTokens = 100000,
+	env: Record<string, string> = {},
+) {
 	const root = await mkdtemp(join(tmpdir(), "mycli-goal-backend-"));
 	const homeDir = join(root, "home"); const workspace = join(root, "workspace");
 	await Promise.all([mkdir(homeDir), mkdir(workspace)]);
@@ -34,6 +39,7 @@ async function fixture(t: { after(fn: () => unknown): void }, respond: (response
 	const options = { cwd: workspace, args: ["--session", "goal-session", "--model", "gpt-test"], env: {
 		HOME: homeDir, MYCLI_API_KEY: "test-key", MYCLI_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
 		MYCLI_PROVIDER: "openai", MYCLI_PROTOCOL: "responses", MYCLI_THINKING_ENABLED: "false", MYCLI_MAX_PROMPT_TOKENS: String(maxPromptTokens),
+		...env,
 	} };
 	const backend = await startTestNodeBackend(options);
 	const messages: Message[] = [];
@@ -178,7 +184,12 @@ test("compaction after goal completion remains attributed and rehydrates the obj
 		else if (normalStep === 3) tool(response, step, "get_goal", {});
 		else if (normalStep === 4) tool(response, step, "update_goal", { status: "complete" });
 		else text(response, step, "Verified after compaction.");
-	}, 12000);
+	}, 12000, {
+		// The fixture must compact without a long conversation, so it sets its own
+		// ceiling instead of relying on the carried prefix to fill the budget.
+		MYCLI_COMPACTION_TOKEN_LIMIT: "200",
+		MYCLI_COMPACTION_RESERVED_OUTPUT_TOKENS: "100",
+	});
 	await f.rpc("turn.submit", { message: "Create a goal and verify the fixture.", client_turn_id: "compaction-human", client_user_message_id: "compaction-human" });
 	await waitFor(() => f.messages.filter((message) => message.method === "turn.completed").length === 2);
 	const goal = parseSessionGoal((await f.rpc("goal.get")).goal);

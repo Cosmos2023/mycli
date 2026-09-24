@@ -120,6 +120,22 @@
       "restartRequired": false
     },
     {
+      "key": "context.compaction_limit_scope",
+      "description": "Selects whether the compaction trigger counts the full prompt or only the tokens added after the carried prefix.",
+      "valueKind": "string",
+      "writable": true,
+      "canonicalPath": "context.compaction_limit_scope",
+      "legacyPaths": [
+        "compaction_limit_scope"
+      ],
+      "defaultValue": "body_after_prefix",
+      "allowedValues": [
+        "total",
+        "body_after_prefix"
+      ],
+      "restartRequired": false
+    },
+    {
       "key": "context.compaction_rehydration_file_max_item_tokens",
       "description": "Legacy compatibility setting; unused by local context compaction.",
       "valueKind": "integer",

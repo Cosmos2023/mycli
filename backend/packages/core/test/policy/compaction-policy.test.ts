@@ -42,6 +42,59 @@ test("clamps trigger ratios to the supported zero-to-one interval", () => {
 	);
 });
 
+test("keeps a carried prefix out of the trigger under the prefix scope", () => {
+	const carriedPrefix = {
+		usedTokens: 90,
+		tokenLimit: 100,
+		reservedOutputTokens: 20,
+		baseContextTokens: 80,
+	} as const;
+
+	assert.deepEqual(
+		decideCompaction({ ...carriedPrefix, scope: "total" }),
+		{ shouldCompact: true, reason: "context_limit" },
+	);
+	assert.deepEqual(
+		decideCompaction({ ...carriedPrefix, scope: "body_after_prefix" }),
+		{ shouldCompact: false, reason: null },
+	);
+});
+
+test("still compacts at the hard limit under the prefix scope", () => {
+	assert.deepEqual(
+		decideCompaction({
+			usedTokens: 90,
+			tokenLimit: 100,
+			reservedOutputTokens: 20,
+			baseContextTokens: 80,
+			scope: "body_after_prefix",
+			hardLimitTokens: 90,
+		}),
+		{ shouldCompact: true, reason: "context_limit" },
+	);
+});
+
+test("rejects an unknown scope and an impossible prefix", () => {
+	assert.throws(
+		() => decideCompaction({
+			usedTokens: 10,
+			tokenLimit: 100,
+			reservedOutputTokens: 0,
+			scope: "everything" as "total",
+		}),
+		RangeError,
+	);
+	assert.throws(
+		() => decideCompaction({
+			usedTokens: 10,
+			tokenLimit: 100,
+			reservedOutputTokens: 0,
+			baseContextTokens: 11,
+		}),
+		RangeError,
+	);
+});
+
 test("never compacts when only the fresh suffix crosses the budget", () => {
 	assert.deepEqual(
 		decideCompaction({
