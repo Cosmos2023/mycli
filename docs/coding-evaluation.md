@@ -87,7 +87,7 @@ approval scheduling. Deterministic scorer tests use scripted responses and do
 not establish that a live model follows the prompt. Live results are separate
 from `npm test`, may incur provider charges, and apply to the tested model only.
 
-The packaged prompt is now `2026-09-codex-style-base-v19`. Rebuild and restart
+The packaged prompt is now `2026-09-codex-style-base-v23`. Rebuild and restart
 mycli, then create a new session to use the updated base instructions. Existing
 sessions retain their frozen instruction snapshot; they are not rewritten.
 
@@ -107,10 +107,24 @@ bounded, use structured APIs for structured data, inspect possible partial
 changes after failures, and verify the resulting diff. Every method preserves
 the active mode, permissions, and approval decisions.
 
-Read is preferred for supported files. If it is unavailable, fails operationally,
-or does not support the format, bounded Shell reads or an appropriate parser are
-allowed within the same permitted scope. Limit paths, extracted ranges, and
-output size; do not dump unbounded files or raw binary data.
+Read is preferred for supported files, with explicit `offset` and `limit`. The
+locate-then-read discipline applies to every reading method: find the region first
+(`rg -n`, `rg -c`), then read only that window, and never print a whole file through a
+script that emits it in chunks. If `Read` is unavailable, fails operationally, or does
+not support the format, bounded Shell reads or an appropriate parser are allowed within
+the same permitted scope and keep the same two steps. Limit paths, extracted ranges,
+and output size; do not dump unbounded files or raw binary data. The window command is
+shell-specific: `Get-Content | Select-Object -Skip/-First` in PowerShell, `sed -n` or
+`rg -n -A/-B` on POSIX shells, and `rg -n -A/-B` or a short Node script in CMD, since
+Node is always available.
+
+The per-turn environment context reports `platform`, `shell`, `shell_kind`, `shell_dialect`,
+and a factual `shell_notes` line naming the dialect. Command-writing rules live in the
+`Shell` tool description instead, matching Codex: that description carries the dialect
+syntax, the pinned UTF-8 encoding rule, the Windows safety rules, and the macOS
+BSD-userland caveats (`sed -i` needs an explicit suffix, and `date -d`, `readlink -f`,
+`stat -c`, `xargs -r`, and GNU-only long options are unavailable). The base prompt only
+points at the tool description and keeps platform-neutral rules.
 
 Literal content passed through Shell requires shell quoting; JSON escaping is
 not sufficient. Multiline content may use a supported quoted heredoc with a

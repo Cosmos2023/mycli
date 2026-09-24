@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 
-export const SYSTEM_PROMPT_VERSION = "2026-09-codex-style-base-v19";
+export const SYSTEM_PROMPT_VERSION = "2026-09-codex-style-base-v23";
 export const SYSTEM_PROMPT_SOURCE = "builtin-system-md";
 
 export interface PackagedSystemPrompt {

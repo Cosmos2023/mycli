@@ -719,7 +719,7 @@ test("Worker-backed root composes sessions, provider streaming, transcripts, and
 		`shell_dialect: ${process.platform === "win32" ? "cmd" : "posix-sh"}`,
 		"u",
 	));
-	assert.match(modelInput, /shell_notes: [^"]+syntax/u);
+	assert.match(modelInput, /shell_notes: (POSIX sh-family shell|PowerShell 7 cmdlet|Windows PowerShell 5\.1 cmdlet|Command Prompt batch)/u);
 	assert.equal(modelInput.includes(process.platform === "win32" ? "cmd.exe" : "/bin/sh"), false);
 	assert.deepEqual(
 		providerToolNames(capture.requestBody?.tools),
@@ -1071,14 +1071,24 @@ test("Node backend Plan mode adds structured clarification after /plan", async (
 	});
 	await waitFor(() => finalMessageCount(messages) === 2);
 
-	const names = toolNames(requestBodies[1]?.tools);
+	// A pre-turn compaction request can sit between the default and plan turns,
+	// so select the plan request by content instead of by position.
+	const planRequest = requestBodies.find((body) => (
+		Array.isArray(body.tools) && JSON.stringify(body.input).includes("# Plan Mode")
+	));
+	assert.ok(planRequest, "plan turn did not send a request with tools");
+	const names = toolNames(planRequest.tools);
 	assert.equal(defaultNames.includes("AskUserQuestion"), false);
 	assert.equal(names.includes("AskUserQuestion"), true);
 	assert.deepEqual(names.filter((name) => name !== "AskUserQuestion"), defaultNames);
 	for (const name of ["Read", "Edit", "Patch", "Write", "update_plan", "Shell", "WriteStdin"]) {
 		assert.ok(names.includes(name), `Plan request omitted ${name}: ${names.join(", ")}`);
 	}
-	assert.match(JSON.stringify(requestBodies[1]?.input), /# Plan Mode/u);
+	const shellDescription = toolDescription(planRequest.tools, "Shell");
+	assert.match(shellDescription, /^Run a command in the active user shell/u);
+	assert.match(shellDescription, /POSIX shell syntax|PowerShell 7 syntax|Windows PowerShell 5\.1 syntax|CMD syntax/u);
+	assert.match(shellDescription, /Windows safety rules:|heredocs are available/u);
+	assert.match(JSON.stringify(planRequest.input), /# Plan Mode/u);
 
 	writeRequest(backend, "shutdown-plan-exposure", "shutdown", {});
 	assert.equal(await backend.completion, 0);
@@ -3467,10 +3477,6 @@ test("Node backend triggers a durable follow-up turn without fabricating child u
 			MYCLI_THINKING_ENABLED: "false",
 			MYCLI_STREAM_MAX_RETRIES: "0",
 			MYCLI_AGENT_EXECUTION_ADAPTER: "worker",
-			// This test asserts the exact provider round count of the follow-up
-			// flow, so keep the base prompt below the compaction threshold.
-			MYCLI_MAX_PROMPT_TOKENS: "128000",
-			MYCLI_COMPACTION_TOKEN_LIMIT: "128000",
 		},
 	});
 	const messages: Array<Record<string, unknown>> = [];
@@ -6318,6 +6324,16 @@ function toolNames(value: unknown): string[] {
 	});
 }
 
+function toolDescription(value: unknown, name: string): string {
+	if (!Array.isArray(value)) return "";
+	for (const tool of value) {
+		if (typeof tool !== "object" || tool === null || !("name" in tool)) continue;
+		if (tool.name !== name || !("description" in tool)) continue;
+		return typeof tool.description === "string" ? tool.description : "";
+	}
+	return "";
+}
+
 function providerToolNames(value: unknown): string[] {
 	if (!Array.isArray(value)) return [];
 	return value.flatMap((tool) => {
@@ -6736,7 +6752,7 @@ test("selected skills reach one provider request and disabled selections cannot 
  const address = server.address(); assert.ok(address && typeof address === "object");
  const backend = await startNodeBackend({ cwd: workspace, args: ["--session", "selected-skill", "--model", "gpt-test"], env: {
   HOME: home, MYCLI_API_KEY: "test-key", MYCLI_BASE_URL: `http://127.0.0.1:${address.port}/v1`, MYCLI_PROVIDER: "openai", MYCLI_PROTOCOL: "responses",
-  MYCLI_THINKING_ENABLED: "false", MYCLI_MEMORY_ENABLED: "false", MYCLI_STREAM_MAX_RETRIES: "0", MYCLI_AGENT_EXECUTION_ADAPTER: "worker",
+ MYCLI_THINKING_ENABLED: "false", MYCLI_MEMORY_ENABLED: "false", MYCLI_STREAM_MAX_RETRIES: "0", MYCLI_AGENT_EXECUTION_ADAPTER: "worker",
  } });
  t.after(async () => { await backend.close(); await new Promise<void>((resolve) => server.close(() => resolve())); await rm(root, { recursive: true, force: true }); });
  const messages: Record<string, unknown>[] = [];

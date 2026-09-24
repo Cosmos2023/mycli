@@ -5,9 +5,9 @@ import type {
 	ToolManifestEntry,
 	ToolParameterManifest,
 } from "../types.ts";
-import { SHELL_MANIFEST_ENTRIES } from "../shell/shell-manifest.ts";
+import { SHELL_MANIFEST_ENTRIES, shellManifestEntries } from "../shell/shell-manifest.ts";
 import { CONTEXT_MANIFEST_ENTRIES } from "./context-manifest.ts";
-import { deepFreeze, parameterDescription } from "./manifest-helpers.ts";
+import { deepFreeze, deepFreezeCopy, parameterDescription } from "./manifest-helpers.ts";
 
 const READ_PARAMETERS: readonly ToolParameterManifest[] = deepFreeze([
 	{
@@ -20,13 +20,13 @@ const READ_PARAMETERS: readonly ToolParameterManifest[] = deepFreeze([
 		name: "offset",
 		type: "integer",
 		required: true,
-		description: "One-based line or row at which to start reading.",
+		description: "One-based line or row at which to start reading. Locate the range first (for example with `rg -n`) instead of probing a large file from line 1.",
 	},
 	{
 		name: "limit",
 		type: "integer",
 		required: true,
-		description: "Maximum number of lines or rows to return. Values above 500 are clamped.",
+		description: "Maximum number of lines or rows to return; values above 500 are clamped and the returned text is capped. Prefer 60-80 lines for source files. The note at the end of the result names where to continue.",
 	},
 	{
 		name: "pages",
@@ -708,8 +708,23 @@ const BUILTIN_MANIFEST: BuiltInToolManifest = deepFreeze({
 	],
 });
 
-export function builtinToolManifest(): BuiltInToolManifest {
-	return BUILTIN_MANIFEST;
+export interface BuiltinToolManifestOptions {
+	/** Platform-aware command rules appended to the Shell tool description. */
+	readonly shellGuidance?: string | undefined;
+}
+
+export function builtinToolManifest(
+	options: BuiltinToolManifestOptions = {},
+): BuiltInToolManifest {
+	const trimmed = options.shellGuidance?.trim();
+	if (!trimmed) return BUILTIN_MANIFEST;
+	const entries = new Map(
+		shellManifestEntries({ shellGuidance: trimmed }).map((entry) => [entry.name, entry]),
+	);
+	return deepFreezeCopy({
+		...BUILTIN_MANIFEST,
+		tools: BUILTIN_MANIFEST.tools.map((tool) => entries.get(tool.name) ?? tool),
+	});
 }
 
 function mutationParameterSchema(

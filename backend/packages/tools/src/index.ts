@@ -166,8 +166,11 @@ export {
 	SHELL_MANIFEST_ENTRIES,
 	SHELL_OUTPUT_TOOL_DEFINITION,
 	SHELL_TOOL_DEFINITION,
+	shellManifestEntries,
+	shellToolDefinition,
 	WRITE_STDIN_TOOL_DEFINITION,
 } from "./shell/shell-manifest.ts";
+export type { BuiltinToolManifestOptions } from "./registry/manifest.ts";
 export { FileSnapshotStore } from "./files/file-snapshot-store.ts";
 export { FileHistoryStore } from "./files/file-history-store.ts";
 export { ShellOutputBuffer } from "./shell/shell-output-buffer.ts";
@@ -231,7 +234,8 @@ export type {
 	ShellStartManager,
 	ShellToolOptions,
 } from "./shell/shell-tool.ts";
-export { shellDialectGuidance } from "./shell/shell-dialect-guidance.ts";
+export { shellDialectFact, shellToolGuidance } from "./shell/shell-dialect-guidance.ts";
+export type { ShellGuidanceOptions } from "./shell/shell-dialect-guidance.ts";
 export {
 	parseShellSandboxPermissions,
 	shellCallRequestsSandboxOverride,

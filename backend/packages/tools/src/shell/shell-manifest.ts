@@ -12,7 +12,7 @@ import {
 
 export const SHELL_DESCRIPTION_MAX_CHARS = 512;
 
-const OUTPUT_BUDGET_DESCRIPTION = `Model-visible output token budget. Defaults to ${DEFAULT_SHELL_MODEL_OUTPUT_MAX_TOKENS} tokens; larger requests are allowed up to ${SHELL_MODEL_OUTPUT_MAX_TOKENS} tokens and may be capped by runtime policy.`;
+const OUTPUT_BUDGET_DESCRIPTION = `Model-visible output token budget. Defaults to ${DEFAULT_SHELL_MODEL_OUTPUT_MAX_TOKENS} tokens; larger requests are allowed up to ${SHELL_MODEL_OUTPUT_MAX_TOKENS} tokens and may be capped by runtime policy. The budget covers the command output, and a result that omits text says how much was omitted. Prefer commands that print a bounded result (counts, a filtered window, or a tail) over full listings.`;
 
 const SHELL_PARAMETERS: readonly ToolParameterManifest[] = deepFreeze([
 	{
@@ -292,6 +292,28 @@ export const SHELL_MANIFEST_ENTRIES: readonly ToolManifestEntry[] = deepFreeze([
 		modelVisible: false,
 	}),
 ]);
+
+/** Shell tool definition with the active shell's command rules appended. */
+export function shellToolDefinition(guidance?: string): ToolDefinition {
+	const trimmed = guidance?.trim();
+	if (!trimmed) return SHELL_TOOL_DEFINITION;
+	return deepFreeze({
+		...SHELL_TOOL_DEFINITION,
+		description: `${SHELL_TOOL_DEFINITION.description}\n\n${trimmed}`,
+	});
+}
+
+/** Terminal manifest entries whose Shell description carries the active shell rules. */
+export function shellManifestEntries(
+	options: { readonly shellGuidance?: string | undefined } = {},
+): readonly ToolManifestEntry[] {
+	const trimmed = options.shellGuidance?.trim();
+	if (!trimmed) return SHELL_MANIFEST_ENTRIES;
+	const description = shellToolDefinition(trimmed).description;
+	return deepFreeze(SHELL_MANIFEST_ENTRIES.map((entry) => entry.name === "Shell"
+		? { ...entry, description }
+		: entry));
+}
 
 interface TerminalEntryInput {
 	readonly definition: ToolDefinition;

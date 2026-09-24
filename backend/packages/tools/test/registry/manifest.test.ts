@@ -328,6 +328,47 @@ test("exposure planner preserves manifest order and provider schemas", () => {
 	);
 });
 
+test("read and shell guidance steer the model toward bounded ranges and outputs", () => {
+	const manifest = builtinManifest();
+	const read = manifest.tools.find((tool) => tool.name === "Read");
+	const shell = manifest.tools.find((tool) => tool.name === "Shell");
+	assert.ok(read && shell);
+	const description = (tool: ManifestTool, name: string): string =>
+		tool.parameters.find((parameter) => parameter.name === name)?.description ?? "";
+
+	assert.match(description(read, "offset"), /Locate the range first/u);
+	assert.match(description(read, "limit"), /60-80 lines/u);
+	assert.match(description(read, "limit"), /names where to continue/u);
+	assert.match(description(shell, "max_output_tokens"), /bounded result/u);
+	assert.match(description(shell, "max_output_tokens"), /how much was omitted/u);
+});
+
+test("shell guidance is appended to the Shell description for one session manifest", () => {
+	const base = builtinManifest();
+	const guided = requiredFunction("builtinToolManifest")({
+		shellGuidance: "CMD syntax: `%NAME%` variables.",
+	}) as Manifest;
+	const baseShell = base.tools.find((tool) => tool.name === "Shell");
+	const guidedShell = guided.tools.find((tool) => tool.name === "Shell");
+	const baseRead = base.tools.find((tool) => tool.name === "Read");
+	const guidedRead = guided.tools.find((tool) => tool.name === "Read");
+	assert.ok(baseShell && guidedShell && baseRead && guidedRead);
+
+	assert.equal(
+		guidedShell.description,
+		`${baseShell.description}\n\nCMD syntax: \`%NAME%\` variables.`,
+	);
+	assert.equal(guidedRead.description, baseRead.description);
+	assert.deepEqual(
+		guided.tools.map((tool) => tool.name),
+		base.tools.map((tool) => tool.name),
+	);
+	assert.deepEqual(guided.toolsets, base.toolsets);
+	assert.equal(guided.schema_version, base.schema_version);
+	assert.equal(Object.isFrozen(guidedShell), true);
+	assert.equal(requiredFunction("builtinToolManifest")(), base);
+});
+
 function builtinManifest(): Manifest {
 	return requiredFunction("builtinToolManifest")() as Manifest;
 }

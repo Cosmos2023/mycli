@@ -149,7 +149,8 @@ import {
 	ReadTool,
 	RequestPermissionsTool,
 	resolveShellProfile,
-	shellDialectGuidance,
+	shellDialectFact,
+	shellToolGuidance,
 	SHELL_PATH_ENV_KEY,
 	ShellOutputTool,
 	ShellSessionManager,
@@ -962,8 +963,14 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			const directExtensionRegistrations = partitionRuntimeToolRegistrations(currentRegistrations()).direct;
 			const directExtensionDefinitions = Object.freeze(directExtensionRegistrations.map((registration) => registration.definition));
 			const currentDeferredRegistrations = () => partitionRuntimeToolRegistrations(currentRegistrations()).deferred;
+		const shellProfile = resolveShellProfile({ env: runtimeEnvironment });
+		// Codex attaches platform command rules to the shell tool spec instead of
+		// the base prompt, so the session manifest carries the active shell rules.
+		const sessionToolManifest = builtinToolManifest({
+			shellGuidance: shellToolGuidance(shellProfile.dialect, { platform: process.platform }),
+		});
 			const currentToolExposure = (): readonly ToolDefinition[] => filterToolDefinitions(runtimeToolExposure(
-				toolManifest, directExtensionDefinitions, currentDeferredRegistrations(), requestPermissionsToolEnabled), allowedTools);
+				sessionToolManifest, directExtensionDefinitions, currentDeferredRegistrations(), requestPermissionsToolEnabled), allowedTools);
 			let allToolExposure = currentToolExposure();
 			const mutatingAgentTools = mutatingTools(integrationComposition.manifest);
 			const executionPolicyCoordinator = new ExecutionPolicyCoordinator({
@@ -976,7 +983,6 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				sessionId,
 				history: fileHistory,
 			});
-		const shellProfile = resolveShellProfile({ env: runtimeEnvironment });
 		const execPolicyStore = new ExecPolicyStore({ homeDir, workspaceRoot });
 		const integrationApprovals = new IntegrationToolApprovalStore(homeDir);
 		const approvalPolicy = new ApprovalPolicy({
@@ -1050,7 +1056,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			const adapterByName = new Map<string, ToolAdapter>(
 				staticAdapters.map((adapter) => [adapter.definition.name, adapter]),
 		);
-		for (const tool of toolManifest.tools) {
+		for (const tool of sessionToolManifest.tools) {
 			if ((adapterByName.get(tool.name)?.supportsParallelToolCalls === true)
 				!== tool.supports_parallel_tool_calls) {
 				throw new Error("tool_parallel_capability_mismatch");
@@ -1065,7 +1071,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				sources: readonly DeferredToolCandidate[] = deferred,
 			): readonly ToolDefinition[] => Object.freeze(filterToolDefinitions(
 				[
-					...planToolExposure(toolManifest, {
+					...planToolExposure(sessionToolManifest, {
 						...capabilities,
 						requestPermissionsTool: requestPermissionsToolEnabled,
 						goals: goal !== undefined,
@@ -1313,7 +1319,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					shell: shellProfile.name,
 					shell_kind: shellProfile.kind,
 					shell_dialect: shellProfile.dialect,
-					shell_notes: shellDialectGuidance(shellProfile.dialect),
+					shell_notes: shellDialectFact(shellProfile.dialect),
 				}),
 			}),
 				...(developerInstructions.length > 0 ? { developerInstructions } : {}),

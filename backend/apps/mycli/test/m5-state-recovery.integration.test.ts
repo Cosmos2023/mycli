@@ -230,7 +230,9 @@ test("Worker-backed Responses root retries compaction, injects memory, resumes, 
 	});
 	const first = await startBackend(paths, provider.baseUrl, {
 		MYCLI_MEMORY_ENABLED: "true",
-		MYCLI_MAX_PROMPT_TOKENS: "16000",
+		// The shipped base prompt is ~10k tokens, so keep enough of the prompt
+		// budget free for the summarizer to receive its full output room.
+		MYCLI_MAX_PROMPT_TOKENS: "32000",
 		MYCLI_COMPACTION_TOKEN_LIMIT: "128",
 		MYCLI_COMPACTION_RESERVED_OUTPUT_TOKENS: "32",
 		MYCLI_COMPACTION_TAIL_TURNS: "1",
