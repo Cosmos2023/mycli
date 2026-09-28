@@ -78,7 +78,9 @@ do not disable certificate verification. Certificates last 24 hours; restart lon
 to obtain a fresh lease. Limited mode rejects direct loopback exceptions and structured egress;
 it needs a domain list and retains its limits through grants, child agents and resumed turns.
 Windows limited mode requires PSEC custom read grants for the public bundle; the legacy backend
-fails closed. Windows end-to-end verification remains pending; the packaged helper is unchanged.
+fails closed. A Windows platform test drives the same path through a real sandboxed Shell on a PSEC
+host: the bundle is granted as a readable root, GET succeeds under scoped trust, POST is refused
+with 403, and closing the lease removes the bundle.
 These method restrictions apply to the managed process proxy, not host-side `web_fetch` or remote
 HTTP MCP transports. Configurable MITM rewrite hooks are not implemented.
 
@@ -128,7 +130,9 @@ These notices are live UI diagnostics, not durable conversation history.
 The live approval bridge currently covers Shell/Bash, including child agents. Headless execution and
 stdio MCP have no live network responder and reject approval-required destinations. This does not
 add per-request approvals to host-side `web_fetch`, remote HTTP MCP, hooks or plugin networking.
-Windows uses the same TypeScript bridge; real Windows acceptance is still pending.
+Windows uses the same TypeScript bridge, and a platform test runs it through a real sandboxed
+Shell: the request waits for one approval after yield, and stopping the Shell cancels the pending
+decision without reaching the origin.
 
 ## Supported Traffic
 
@@ -177,8 +181,9 @@ managed `loopback_ports = [5432, 6379]` alongside `allowed_network_domains`, gra
 TCP to those ports on `127.0.0.1` and `::1`. The explicit list overrides the older all-port
 `allow_local_binding` exception; `[]` grants no extra ports, and offline policy still wins.
 This is a direct local-service exception, not proxy support for private targets. It requires an
-updated PSEC helper; the packaged binary is unchanged and Windows compilation/enforcement validation
-for this addition remains pending. See [port limits and compatibility](windows.md#psec-compatibility-and-boundaries).
+updated PSEC helper, which the packaged binary now carries; a Windows platform test proves a real
+sandboxed Shell reaches a listed port while an unlisted one stays blocked.
+See [port limits and compatibility](windows.md#psec-compatibility-and-boundaries).
 
 ## MCP Networking
 

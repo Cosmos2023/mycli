@@ -121,7 +121,7 @@ loopback_ports = [5432, 6379]
 
 `loopback_ports` 必须与 `allowed_network_domains` 一起使用，不能与 `network_egress` 混用。子 agent、恢复的轮次和 Shell 审批只能保持或缩小已冻结的端口范围。权限详情会显示端口列表，并在离线时标注未生效。
 
-这次新增功能已补跨平台回归测试，但**尚未在 Windows 编译或实测隔离效果**；现有打包 helper 未替换。旧 helper、旧账户后端和其他平台会拒绝该选项，不会忽略限制。需在 Windows 编译并通过原生、严格沙箱和安装包验收后，才能采用新版 helper。
+这次新增功能已补跨平台回归测试，并已在 Windows 上编译；打包 helper 已更新为带该字段的版本，平台测试在真实沙箱 Shell 中验证了列表内端口可连、列表外端口仍被拒绝。旧账户后端和其他平台会拒绝该选项，不会忽略限制。
 
 Workspace/Full 请求默认提供独立的 `TMPDIR`，Read Only 默认关闭。`writable_tmp=false` 只关闭这份额外目录，Windows PSEC 自己仍会提供私有 `TEMP/TMP`，不会开放宿主临时目录。最后一个活动命令退出后清理记录的目录；helper 异常退出后，下次运行会恢复清理。
 

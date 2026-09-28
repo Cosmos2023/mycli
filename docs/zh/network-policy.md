@@ -47,7 +47,7 @@ allow_upstream_proxy = false
 
 限制模式通过 `NODE_EXTRA_CA_CERTS`、`SSL_CERT_FILE`、`REQUESTS_CA_BUNDLE`、`CURL_CA_BUNDLE` 和 `GIT_SSL_CAINFO` 给对应子进程提供临时**公开 CA 证书包**，签名私钥只留在内存，进程代理关闭后删除证书包，不修改系统信任库。忽略这些变量、固定证书或强制 HTTP/2 的客户端可能无法使用；不要关闭证书验证。证书有效期为 24 小时，长期运行的进程需要重启以获得新代理。
 
-限制模式要求域名列表，不能与本地回环直连例外或结构化 egress 混用；审批、子 agent 和恢复不会放宽这些限制。Windows 需要 PSEC 的自定义读取权限来访问公开证书包，旧账户后端会拒绝启动；Windows 实机验收仍待完成，打包 helper 没有替换。方法限制作用于托管进程代理，不覆盖宿主侧的 `web_fetch` 或远程 HTTP MCP；尚未实现可配置的 MITM 请求改写钩子。
+限制模式要求域名列表，不能与本地回环直连例外或结构化 egress 混用；审批、子 agent 和恢复不会放宽这些限制。Windows 需要 PSEC 的自定义读取权限来访问公开证书包，旧账户后端会拒绝启动；这条路径已由平台测试在 PSEC 主机的真实沙箱 Shell 中验证：证书包获得可读范围授权，GET 在受限信任下成功，POST 返回 403，lease 关闭后证书包被删除。方法限制作用于托管进程代理，不覆盖宿主侧的 `web_fetch` 或远程 HTTP MCP；尚未实现可配置的 MITM 请求改写钩子。
 
 <a id="supported-traffic"></a>
 
@@ -89,7 +89,7 @@ Shell 返回后台句柄后审批仍有效。等待授权最多两分钟，期�
 
 实时审批目前接入 Shell / Bash，包括子 agent。无交互执行和 stdio MCP 没有网络审批通道，访问
 需要授权的域名会直接拒绝；宿主侧 `web_fetch`、远程 HTTP MCP、hooks 和插件联网不在此功能范围内。
-Windows 共用这些 TypeScript 代码，实机验收仍待完成。
+Windows 共用这些 TypeScript 代码，并已由平台测试在真实沙箱 Shell 中验证：请求在 yield 后继续等待一次审批，停止 Shell 会取消待定决策且不会触达源站。
 
 ## 支持的流量
 
