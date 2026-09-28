@@ -494,6 +494,7 @@
   {"file":"backend/packages/integrations/src/subagents/controller.ts","boundary":"TypeError","code":"*","evidence":"explicit_generic_fallback","scope":"application","reason":"integration.failure_unclassified"},
   {"file":"backend/packages/integrations/src/subagents/coordination-tools.ts","boundary":"Error","code":"interrupted","evidence":"legacy_code","scope":"application","reason":"runtime.interruption_unspecified"},
   {"file":"backend/packages/integrations/src/subagents/coordination-tools.ts","boundary":"tool_result","code":"agent_interrupt_unavailable","evidence":"legacy_code","scope":"tool_call","reason":"runtime.continuation_unavailable"},
+  {"file":"backend/packages/integrations/src/subagents/report-bounding.ts","boundary":"RangeError","code":"*","evidence":"explicit_generic_fallback","scope":"application","reason":"integration.failure_unclassified"},
   {"file":"backend/packages/integrations/src/subagents/wait-agent-tool.ts","boundary":"Error","code":"interrupted","evidence":"legacy_code","scope":"application","reason":"runtime.interruption_unspecified"},
   {"file":"backend/packages/integrations/src/subagents/wait-agent-tool.ts","boundary":"tool_result","code":"agent_wait_unavailable","evidence":"legacy_code","scope":"tool_call","reason":"runtime.continuation_unavailable"},
   {"file":"backend/packages/integrations/src/subagents/wait-agent-tool.ts","boundary":"TypeError","code":"*","evidence":"explicit_generic_fallback","scope":"application","reason":"integration.failure_unclassified"},
