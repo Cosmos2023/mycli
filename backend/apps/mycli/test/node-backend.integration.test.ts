@@ -3508,6 +3508,32 @@ test("Node backend triggers a durable follow-up turn without fabricating child u
 		"wait_agent",
 		"wait_agent",
 	]);
+	let interactionState = initialRuntimeState();
+	for (const message of messages) {
+		if (typeof message.method === "string") {
+			interactionState = reduceRuntimeEvent(interactionState, message.method, message.params as Record<string, unknown>);
+		}
+	}
+	const interactions = projectRuntimeState(interactionState).tools.filter((tool) => tool.agentInteraction);
+	assert.deepEqual(interactions.map((tool) => tool.agentInteraction), [
+		{ kind: "spawn", target: "/root/worker", message_preview: "Inspect the repository." },
+		{ kind: "followup", target: "/root/worker", message_preview: "Resume with the focused follow-up." },
+	]);
+	const liveFrame = renderMycliShell(projectRuntimeState(interactionState), 120).join("\n");
+	assert.match(liveFrame, /Started agent.*\/root\/worker/u);
+	assert.match(liveFrame, /Assigned follow-up to.*\/root\/worker/u);
+	for (const name of ["spawn_agent", "followup_task"]) {
+		const started = messages.find((message) => message.method === "tool.start" && paramValue(message, "name") === name);
+		assert.equal((paramValue(started!, "agent_interaction") as Record<string, unknown>).target, "worker");
+	}
+	writeRequest(backend, "agent-interaction-history", "transcript.load", { session_id: "follow-up-parent" });
+	const transcript = await waitFor(() => response(messages, "agent-interaction-history"));
+	const restoredState = runtimeStateFromTranscript(initialRuntimeState(), transcript.result as Record<string, unknown>);
+	assert.deepEqual(projectRuntimeState(restoredState).tools.filter((tool) => tool.agentInteraction).map((tool) => tool.agentInteraction),
+		interactions.map((tool) => tool.agentInteraction));
+	const restoredFrame = renderMycliShell(projectRuntimeState(restoredState), 120).join("\n");
+	assert.match(restoredFrame, /Started agent.*\/root\/worker/u);
+	assert.match(restoredFrame, /Assigned follow-up to.*\/root\/worker/u);
 	const projectedAgents = messages.filter((message) => message.method === "subagent.updated")
 		.map((message) => (message.params as {
 			subagent: { thread_id: string; run_id: string; status: string };

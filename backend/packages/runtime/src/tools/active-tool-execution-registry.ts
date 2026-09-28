@@ -1,5 +1,5 @@
 import type { RuntimeEvent } from "@mycli/core";
-import type { GatewayTerminalInteraction } from "@mycli/contracts";
+import type { GatewayAgentInteraction, GatewayTerminalInteraction } from "@mycli/contracts";
 import type { ToolExecutionResult } from "@mycli/tools";
 import {
 	publishRuntimeDiagnostic,
@@ -11,6 +11,7 @@ export interface ActiveToolExecutionInput {
 	readonly callId: string;
 	readonly toolName: string;
 	readonly terminalInteraction?: GatewayTerminalInteraction;
+	readonly agentInteraction?: GatewayAgentInteraction;
 	readonly interruptErrorKind: "effect_outcome_unknown" | "tool_interrupted";
 }
 
@@ -20,6 +21,7 @@ export interface ActiveToolExecutionClaim {
 	readonly callId: string;
 	readonly toolName: string;
 	readonly terminalInteraction?: GatewayTerminalInteraction;
+	readonly agentInteraction?: GatewayAgentInteraction;
 	readonly signal: AbortSignal;
 	readonly startedAt: number;
 	readonly interruptErrorKind: ActiveToolExecutionInput["interruptErrorKind"];
@@ -66,6 +68,7 @@ export class ActiveToolExecutionRegistry {
 			callId: boundedCallId(input.callId),
 			toolName: boundedToolName(input.toolName),
 			...(input.terminalInteraction ? { terminalInteraction: input.terminalInteraction } : {}),
+			...(input.agentInteraction ? { agentInteraction: input.agentInteraction } : {}),
 			signal: abortController.signal,
 			startedAt: this.#clock(),
 			interruptErrorKind: input.interruptErrorKind,
@@ -82,6 +85,7 @@ export class ActiveToolExecutionRegistry {
 			callId: claim.callId,
 			toolName: claim.toolName,
 			...(claim.terminalInteraction ? { terminalInteraction: claim.terminalInteraction } : {}),
+			...(claim.agentInteraction ? { agentInteraction: claim.agentInteraction } : {}),
 		});
 		return claim;
 	}
@@ -163,7 +167,10 @@ export class ActiveToolExecutionRegistry {
 					: `${claim.toolName} failed`,
 			durationMs,
 			errorKind,
-			metadata: Object.freeze(claim.terminalInteraction ? { terminal_interaction: claim.terminalInteraction } : {}),
+			metadata: Object.freeze({
+				...(claim.terminalInteraction ? { terminal_interaction: claim.terminalInteraction } : {}),
+				...(claim.agentInteraction ? { agent_interaction: claim.agentInteraction } : {}),
+			}),
 		});
 		return true;
 	}

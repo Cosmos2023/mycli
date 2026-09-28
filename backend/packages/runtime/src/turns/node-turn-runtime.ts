@@ -271,6 +271,7 @@ export interface ApprovalContinuationContract {
 		readonly choice: ApprovalChoice;
 		readonly signal: AbortSignal;
 		readonly onExecutionStart?: () => void;
+		readonly toolStopReason?: () => string | undefined;
 		readonly executionPolicy?: ExecutionPolicy;
 		readonly sandboxOverridePolicy?: ExecutionPolicy;
 	}): Promise<ApprovalRuntimeResolution>;
@@ -453,6 +454,7 @@ export class NodeTurnRuntime {
 			store: options.store,
 			budget: this.#agentBudget,
 			activeTools: this.#toolExecutions,
+			toolStopReason: (turnId) => options.goal?.toolsStopReason(turnId) ?? options.goalUsage?.stopReason(turnId),
 			...(options.toolRouter ? { toolRouter: options.toolRouter } : {}),
 			...(options.approvalPolicy ? { approvalPolicy: options.approvalPolicy } : {}),
 			...(options.approvalCoordinator
@@ -748,6 +750,7 @@ export class NodeTurnRuntime {
 		const resolution = await coordinator.resolve({
 			...input,
 			signal: options.signal,
+			toolStopReason: () => this.#options.goal?.toolsStopReason(pending.turnId) ?? this.#options.goalUsage?.stopReason(pending.turnId),
 			onExecutionStart: () => {
 				activeTool = this.#toolExecutions.begin({
 					turnId: pending.turnId,

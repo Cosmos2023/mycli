@@ -1,4 +1,4 @@
-import type { SessionGoal } from "@mycli/contracts";
+import type { GatewayAgentInteraction, SessionGoal } from "@mycli/contracts";
 import type { SkillReference } from "@mycli/contracts";
 import type {
 	DiagnosticCategory,
@@ -14,6 +14,8 @@ import type {
 	PluginDetail,
 	PluginOperation,
 	GatewayResult,
+	SandboxCapabilities,
+	PermissionBounds,
 } from "@mycli/contracts";
 
 export type MycliShellSkillCatalog = GatewayResult<"skills.list">;
@@ -94,6 +96,7 @@ export type MycliShellTool = {
 	id: string;
 	name: string;
 	terminalInteraction?: GatewayTerminalInteraction;
+	agentInteraction?: GatewayAgentInteraction;
 	args?: string;
 	status: MycliShellToolStatus;
 	durationMs?: number;
@@ -644,6 +647,7 @@ export type MycliShellPermissionRequest = {
 };
 
 export type MycliShellPendingApproval = {
+	networkRequest?: import("@mycli/contracts").NetworkAccessDetails;
 	decisionId: string;
 	sessionId?: string;
 	generation?: number;
@@ -700,6 +704,7 @@ export type MycliShellPermissionProfile = {
 };
 
 export type MycliShellEffectivePermission = {
+	bounds?: PermissionBounds;
 	trusted: boolean;
 	valid: boolean;
 	sandboxMode: "read-only" | "workspace-write" | "danger-full-access";
@@ -730,6 +735,7 @@ export type MycliShellPermissionState = {
 	commandAllowanceCount: number;
 	effective?: MycliShellEffectivePermission;
 	sandboxReadiness?: MycliShellSandboxReadiness;
+	sandboxCapabilities?: SandboxCapabilities;
 };
 
 export type MycliShellState = {

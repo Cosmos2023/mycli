@@ -1,6 +1,6 @@
 import type { HookPoint } from "./extensions.ts";
 import type { TurnInterruptionReason } from "@mycli/contracts";
-import type { ErrorContext, GatewayTerminalInteraction, ProviderAttemptRecord, RuntimeErrorCode, RuntimeFailure } from "@mycli/contracts";
+import type { ErrorContext, GatewayAgentInteraction, GatewayTerminalInteraction, ProviderAttemptRecord, RuntimeErrorCode, RuntimeFailure } from "@mycli/contracts";
 import type { ShellLifecycleEvent } from "./lifecycle/shell-lifecycle.ts";
 import type { ProviderNativeTransportSnapshot } from "./conversation/provider-native-transport.ts";
 import type { ToolDiscovery } from "./conversation/tool-discovery.ts";
@@ -351,7 +351,7 @@ export type RuntimeEvent =
 		readonly multiSelect: boolean;
 	}
 	| { readonly type: "tool_execution_started"; readonly callId: string; readonly toolName: string;
-		readonly terminalInteraction?: GatewayTerminalInteraction }
+		readonly terminalInteraction?: GatewayTerminalInteraction; readonly agentInteraction?: GatewayAgentInteraction }
 	| {
 		readonly type: "tool_execution_completed";
 		readonly callId: string;

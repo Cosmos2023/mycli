@@ -29,6 +29,10 @@ The local tools are `create_goal({ objective, token_budget? })`, `get_goal({})`,
 `update_goal({ status })`. They are exposed only in interactive root runtimes.
 The model may create only on explicit user intent. It may mark complete or blocked,
 or pause on an explicit human request; resume and budget editing are user controls.
+
+After `update_goal` pauses or completes a goal, later tools in the same batch are
+skipped, including calls still waiting for approval. The model can still send its
+final text response.
 An unfinished goal cannot be silently overwritten. Natural-language intent and
 completion evidence are model responsibilities, not deterministic classifiers.
 

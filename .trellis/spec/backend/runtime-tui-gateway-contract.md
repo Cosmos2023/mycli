@@ -6674,6 +6674,13 @@ emit({ type: "plan_updated", items });
   `tool.start|tool.complete|tool.failed` field, projected by `projectTerminalInteraction`.
 - Interaction fields: `shell_id`, `kind: input | poll`, optional `input_preview`,
   `command_preview`, `interaction_succeeded`, and `process_running`.
+- Targeted coordination: optional `GatewayToolRecord.agent_interaction` and matching
+  `tool.start|tool.complete|tool.failed` field, projected by `projectAgentInteraction(value)`.
+  The closed record has `kind: spawn | message | followup | interrupt`, `target` (1–512 chars),
+  and optional `message_preview` (at most 1000 Unicode characters).
+- `agentInteractionFromArguments(toolName, argumentsValue, includeMessage = true)` recognizes
+  only the exact built-in names `spawn_agent`, `send_message`, `followup_task`, `interrupt_agent`
+  after trimming/case normalization. MCP/plugin lookalikes must retain generic rendering.
 - Suppressed normalized names: `askuserquestion`, `followuptask`, `interruptagent`, `killshell`,
   `listagents`, `sendmessage`, `spawnagent`, `toolsearch`, `updateplan`, and `waitagent`.
 
@@ -6681,10 +6688,26 @@ emit({ type: "plan_updated", items });
 
 - Suppression is display-only. Reducer state, append-only history, tool results, provider replay,
   trace data, and storage projection retain the original call and result.
-- Running and successful generic rows for `AskUserQuestion`, the subagent coordination toolset,
+- Running and successful generic rows for `AskUserQuestion`, coordination without safe target metadata,
   `KillShell`, `tool_search`, and `update_plan` are omitted. Their useful state is carried by the
   clarification selector, durable task/mailbox state, the originating Shell state, deferred-tool
   activation, live wait status, immutable `plan_update` blocks, and subagent task state.
+- Calls with a valid `agent_interaction` matching their tool name bypass generic suppression.
+  Render action + target, followed by at most two visual lines from the start of the message.
+  Expansion shows the bounded message and original tool name/result. Running, successful, failed,
+  and cancelled actions remain distinct. A sent message, assigned follow-up, or requested stop
+  does not claim the child task completed; successful `wait_agent`/`list_agents` remain quiet.
+- At execution start, use the supplied `task_name`/`target` without inventing a `/root/` prefix.
+  The adapter's resolved `agentPath`/`receiverPath`/`path` replaces it on completion, including
+  nested agents. Runtime failure, interruption, and pre-execution rejection retain the target.
+- Derive previews only from `message`/`reason`; redact credentials, strip terminal controls and
+  bound content before publishing. Preserve ordinary code references and phrases such as
+  `Look at src/app.ts:12:3`; they are task text, not runtime stack traces. Reject empty,
+  oversized, or control-bearing targets. Never add message/target fields to tool diagnostics.
+- Both storage implementations persist explicit safe `agent_interaction` metadata. Legacy call
+  arguments may recover only target identity (`includeMessage=false`), never old message bodies.
+  Live and restored rows use the same typed metadata; the TUI must not parse JSON tool output
+  to discover the target. Missing or malformed metadata retains generic compatibility behavior.
 - Failed or cancelled calls are visible. A successful terminal poll observing process exit is the
   exception: the original Shell block carries the exit outcome even if its exit code is nonzero.
   Unknown MCP/plugin tools and tools with filesystem, process, or network effects remain visible
@@ -6722,6 +6745,11 @@ emit({ type: "plan_updated", items });
 | Condition | Required behavior |
 | --- | --- |
 | Suppressed tool is running or successful | Omit only its generic tool row |
+| Targeted coordination carries matching safe metadata | Show action, agent target, and bounded preview |
+| Targeted call is rejected, fails or is cancelled | Keep target and explicit failure/cancellation status |
+| Adapter resolves a relative target | Replace supplied target with canonical path; do not guess parent |
+| Legacy targeted call contains a message body | Recover safe target only; keep old body private |
+| External name resembles a coordination tool | Keep generic rendering; ignore agent interaction metadata |
 | Suppressed tool fails or is cancelled | Render the normal error/cancelled tool row |
 | Dedicated plan or subagent state exists | Preserve that semantic state |
 | Unknown or side-effecting tool | Render by default |
@@ -6743,6 +6771,8 @@ emit({ type: "plan_updated", items });
 - Good: `update_plan` produces one `Updated Plan` block and no duplicate generic card.
 - Good: repeated successful `wait_agent` calls leave the transcript stable while the footer carries
   live waiting state.
+- Good: `followup_task(target="review")` begins as `Assigning follow-up to review`, then renders
+  `Assigned follow-up to /root/review` with the same bounded message after history reload.
 - Base: a failed `tool_search` renders a compact error row.
 - Base: a legacy `WriteStdin(arguments.session_id=...)` snapshot merges into its completed Shell
   card without exposing stdin or rendering a second card.
@@ -6754,7 +6784,17 @@ emit({ type: "plan_updated", items });
 ### 6. Tests Required
 
 - Reducer projection tests cover running/success suppression and failed-call visibility for all ten
-  normalized names.
+  normalized names without safe agent metadata; targeted interaction metadata overrides suppression.
+- `contracts/test/gateway/agent-interaction.test.ts` checks closed payloads, exact names, bounded
+  redacted previews, malformed targets, code references, and direct/mirrored event round trips.
+- `storage/test/sessions/agent-interaction-persistence.test.ts` closes/reopens both stores and
+  asserts canonical targets/previews survive while legacy messages remain hidden.
+- Runtime registry and turn tests assert target retention on failure/interruption/rejection and
+  absence of previews in diagnostics; gateway controller tests cover start/complete/failed forwarding.
+- The backend durable follow-up integration test runs a real worker with an offline provider,
+  checks supplied-to-canonical identity, and renders both live and loaded transcript records.
+- TUI agent interaction tests cover four actions, sparse failure/cancellation updates, detail
+  expansion, CJK/narrow widths, and native/ordinary terminal frames without stale running rows.
 - Resume tests feed equivalent persisted tool items through `runtimeStateFromTranscript` and assert
   the same visible tool list.
 - Storage projection tests cover all three polling aliases, each accepted parent-id argument name,
@@ -6783,6 +6823,14 @@ history = history.filter((item) => item.toolName !== "wait_agent");
 const tool = toolFromTranscriptItem(item, workspace, detailMode);
 if (suppressGenericToolRow(tool)) continue;
 // Canonical history and model replay remain unchanged.
+```
+
+For targeted coordination, use the canonical record instead of treating tool success as task success:
+
+```typescript
+// Wrong: "Agent completed" on every successful send_message call.
+// Correct: "Sent message to /root/review" from tool.agentInteraction.
+if (tool.agentInteraction) return false; // suppressGenericToolRow
 ```
 
 For legacy Shell polling, normalize only the parent identifier and preserve terminal ownership:

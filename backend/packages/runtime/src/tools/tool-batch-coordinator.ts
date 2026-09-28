@@ -8,7 +8,7 @@ import {
 	type ShellLifecycleEvent,
 	type ToolDefinition,
 } from "@mycli/core";
-import { createErrorContext, errorOccurrence, failureScope, terminalInteractionFromArguments, type RuntimeTurnRecord } from "@mycli/contracts";
+import { agentInteractionFromArguments, agentInteractionKind, projectAgentInteraction, createErrorContext, errorOccurrence, failureScope, terminalInteractionFromArguments, type RuntimeTurnRecord } from "@mycli/contracts";
 import { ProviderFailure } from "@mycli/providers";
 import {
 	StorageFailure,
@@ -30,6 +30,7 @@ import {
 	type ToolRouterContract,
 } from "@mycli/tools";
 import { canRequestOriginalImageDetail } from "@mycli/config";
+import { stoppedToolResult } from "./stopped-tool-result.ts";
 import { canonicalToolResult, modelOutputMaxCharsFromTokens } from "./model-output-budget.ts";
 import type {
 	ApprovalSuspensionInput,
@@ -120,6 +121,7 @@ export interface ToolBatchCoordinatorOptions {
 	readonly budget: AgentBudgetTracker;
 	readonly activeTools: ActiveToolExecutionRegistry;
 	readonly toolRouter?: ToolRouterContract;
+	readonly toolStopReason?: (turnId: string) => string | undefined;
 	readonly approvalPolicy?: ToolBatchApprovalPolicy;
 	readonly approvalCoordinator?: ToolBatchApprovalContinuation;
 	readonly parallelApprovals?: ParallelApprovalCoordinator;
@@ -154,11 +156,11 @@ interface PreparedParallelToolCall {
 interface ParallelToolOutcome {
 	readonly result: ToolExecutionResult;
 	readonly executed: boolean;
+	readonly resultEmitted: boolean;
 }
 
-interface PendingToolExecutionResult {
+interface PendingToolExecutionResult extends ParallelToolOutcome {
 	readonly active: ActiveToolExecutionClaim;
-	readonly result: ToolExecutionResult;
 }
 
 export class ToolBatchCoordinator {
@@ -194,8 +196,7 @@ export class ToolBatchCoordinator {
 						index: prepared.index,
 						call: prepared.call,
 						executionCall: prepared.executionCall,
-						result: results[phaseIndex]!.result,
-						executed: results[phaseIndex]!.executed,
+						...results[phaseIndex]!,
 						allowClarification: false,
 					});
 					if (suspended) return suspended;
@@ -210,6 +211,16 @@ export class ToolBatchCoordinator {
 			const wallClockExhausted = this.#options.budget.wallClockExhaustion();
 			if (wallClockExhausted) throw new AgentBudgetExhaustedError(wallClockExhausted);
 			assertNotAborted(signal);
+			const stopReason = this.#options.toolStopReason?.(turnId);
+			if (stopReason) {
+				const earlierSuspension = await flushParallelCalls();
+				if (earlierSuspension) return earlierSuspension;
+				await this.#applyToolExecutionResult({
+					context, batch, accumulatedUsage, deferredContextItems, index, call, executionCall: call,
+					result: stoppedToolResult(call, stopReason), executed: false, allowClarification: false,
+				});
+				continue;
+			}
 			if (!exposedToolNames.has(call.name)
 				&& !context.runSnapshot.toolCatalog.deferredTools.some((tool) => tool.name === call.name)) {
 				const earlierSuspension = await flushParallelCalls();
@@ -432,7 +443,7 @@ export class ToolBatchCoordinator {
 				context,
 				sandboxOverrideApproved,
 			);
-			const result = await this.#executeTool(
+			const outcome = await this.#executeTool(
 				executionCall,
 				context,
 				sandboxOverrideApproved,
@@ -446,8 +457,7 @@ export class ToolBatchCoordinator {
 				index,
 				call,
 				executionCall,
-				result,
-				executed: true,
+				...outcome,
 				allowClarification: true,
 			});
 			if (suspended) return suspended;
@@ -528,7 +538,7 @@ export class ToolBatchCoordinator {
 				await this.#applyToolExecutionResult({
 					context: input.context, batch, accumulatedUsage: restored.continuation.usage,
 					deferredContextItems, index: entry.index, call: entry.call, executionCall: entry.executionCall,
-					result: results[index]!.result, executed: results[index]!.executed, allowClarification: false,
+					...results[index]!, allowClarification: false,
 				});
 			}
 			this.#persistDeferredContextItems(deferredContextItems, input.context.signal);
@@ -557,7 +567,7 @@ export class ToolBatchCoordinator {
 		}
 		const tasks = phase.map(async (prepared): Promise<ParallelToolOutcome> => {
 			if (prepared.approval && !await this.#options.parallelApprovals!.waitForApproval(prepared.call.callId)) {
-				return { result: rejectedResult(prepared.call), executed: false };
+				return { result: rejectedResult(prepared.call), executed: false, resultEmitted: false };
 			}
 			const outcome = await this.#runTool(
 				prepared.executionCall,
@@ -570,7 +580,7 @@ export class ToolBatchCoordinator {
 				throw new ProviderFailure({ code: "tool_protocol_error", message: "parallel tool requested clarification" });
 			}
 			this.#options.activeTools.complete(outcome.active, outcome.result, context.emit);
-			return { result: outcome.result, executed: true };
+			return { result: outcome.result, executed: outcome.executed, resultEmitted: true };
 		});
 		try {
 			return await Promise.all(tasks);
@@ -593,6 +603,7 @@ export class ToolBatchCoordinator {
 		readonly executionCall: CanonicalToolCall;
 		readonly result: ToolExecutionResult;
 		readonly executed: boolean;
+		readonly resultEmitted?: boolean;
 		readonly allowClarification: boolean;
 	}): Promise<RuntimeTurnRecord | undefined> {
 		const {
@@ -612,8 +623,9 @@ export class ToolBatchCoordinator {
 			errorContextVersion: this.#options.store.errorContextVersion,
 			mutating: this.#options.isMutatingTool?.(call.name) ?? true,
 		}, executed);
-		const result = errorContext ? { ...rawResult, errorContext, metadata: { ...rawResult.metadata, error_context: errorContext } } : rawResult;
-		if (!executed) emitToolResult(result, 0, emit);
+		const result = withAgentInteraction(executionCall,
+			errorContext ? { ...rawResult, errorContext, metadata: { ...rawResult.metadata, error_context: errorContext } } : rawResult);
+		if (!(input.resultEmitted ?? executed)) emitToolResult(result, 0, emit);
 		const clarification = clarificationRequest(result);
 		if (clarification) {
 			if (!allowClarification) {
@@ -714,7 +726,7 @@ export class ToolBatchCoordinator {
 		context: ToolBatchRuntimeContext,
 		sandboxOverrideApproved = false,
 		preparedMutationGuard?: PreparedMutationGuard,
-	): Promise<ToolExecutionResult> {
+	): Promise<ParallelToolOutcome> {
 		const outcome = await this.#runTool(
 			call,
 			context,
@@ -722,7 +734,7 @@ export class ToolBatchCoordinator {
 			preparedMutationGuard,
 		);
 		this.#options.activeTools.complete(outcome.active, outcome.result, context.emit);
-		return outcome.result;
+		return { result: outcome.result, executed: outcome.executed, resultEmitted: true };
 	}
 
 	async #runTool(
@@ -748,34 +760,42 @@ export class ToolBatchCoordinator {
 			mutating,
 		});
 		const terminalInteraction = terminalInteractionFromArguments(call.name, call.argumentsJson);
+		const agentInteraction = agentInteractionFromArguments(call.name, call.argumentsJson);
 		const activeTool = this.#options.activeTools.begin({
 			turnId: context.turnId,
 			callId: call.callId,
 			toolName: call.name,
 			...(terminalInteraction ? { terminalInteraction } : {}),
+			...(agentInteraction ? { agentInteraction } : {}),
 			interruptErrorKind: mutating ? "effect_outcome_unknown" : "tool_interrupted",
 		}, emit);
 		const executionSignal = AbortSignal.any([signal, activeTool.signal]);
 		let result: ToolExecutionResult;
+		let stopped = false;
 		try {
 			const sandboxOverridePolicy = sandboxOverrideApproved
 				? this.#options.sandboxOverrideProfile?.()
 				: undefined;
-			const execute = async (): Promise<ToolExecutionResult> => await router.execute(call, {
-				signal: executionSignal,
-				ownerSessionId: this.#options.sessionId,
-				ownerTurnId: context.turnId,
-				callId: call.callId,
-				publishLifecycle: this.#options.publishLifecycle,
-				...(context.executionPolicy ? { executionPolicy: context.executionPolicy } : {}),
-				imageDetailOriginalSupported: canRequestOriginalImageDetail(context.config),
-				imageInputSupported: context.config.supportsImages,
-				errorContextVersion: this.#options.store.errorContextVersion,
-				mutating,
-				...(sandboxOverrideApproved ? { sandboxOverrideApproved: true } : {}),
-				...(sandboxOverridePolicy ? { sandboxOverridePolicy } : {}),
-				...(preparedMutationGuard ? { preparedMutationGuard } : {}),
-			});
+			const execute = async (): Promise<ToolExecutionResult> => {
+				// Approvals, hooks, and effect claims may have awaited since batch admission.
+				const stopReason = this.#options.toolStopReason?.(context.turnId);
+				if (stopReason) { stopped = true; return stoppedToolResult(call, stopReason); }
+				return await router.execute(call, {
+					signal: executionSignal,
+					ownerSessionId: this.#options.sessionId,
+					ownerTurnId: context.turnId,
+					callId: call.callId,
+					publishLifecycle: this.#options.publishLifecycle,
+					...(context.executionPolicy ? { executionPolicy: context.executionPolicy } : {}),
+					imageDetailOriginalSupported: canRequestOriginalImageDetail(context.config),
+					imageInputSupported: context.config.supportsImages,
+					errorContextVersion: this.#options.store.errorContextVersion,
+					mutating,
+					...(sandboxOverrideApproved ? { sandboxOverrideApproved: true } : {}),
+					...(sandboxOverridePolicy ? { sandboxOverridePolicy } : {}),
+					...(preparedMutationGuard ? { preparedMutationGuard } : {}),
+				});
+			};
 			result = this.#options.executeToolEffect
 				? await this.#options.executeToolEffect({
 					turnId: context.turnId,
@@ -797,7 +817,7 @@ export class ToolBatchCoordinator {
 				diagnostics: { tool_name: boundedToolName(call.name) },
 			});
 		}
-		return { active: activeTool, result };
+		return { active: activeTool, result: withAgentInteraction(call, result), executed: !stopped, resultEmitted: false };
 	}
 
 	#persistToolResult(
@@ -841,6 +861,15 @@ export class ToolBatchCoordinator {
 		}
 		return turn;
 	}
+}
+
+function withAgentInteraction(call: CanonicalToolCall, result: ToolExecutionResult): ToolExecutionResult {
+	const kind = agentInteractionKind(call.name);
+	if (!kind) return result;
+	const returned = projectAgentInteraction(result.metadata.agent_interaction);
+	const interaction = (returned?.kind === kind ? returned : undefined)
+		?? agentInteractionFromArguments(call.name, call.argumentsJson);
+	return interaction ? { ...result, metadata: { ...result.metadata, agent_interaction: interaction } } : result;
 }
 
 function sameToolCall(left: CanonicalToolCall, right: CanonicalToolCall): boolean {

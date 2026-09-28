@@ -14,6 +14,7 @@ import {
 	runtimeRetryStatusText,
 	sanitizeRuntimeErrorDetail,
 	projectTerminalInteraction,
+	projectAgentInteraction,
 	type RuntimeErrorCode,
 	type RuntimeTurnRecord,
 } from "@mycli/contracts";
@@ -1445,6 +1446,7 @@ export class NodeGatewayTurnController {
 					name: toolName,
 					context: `Executing ${toolName}`,
 					...(event.terminalInteraction ? { terminal_interaction: projectTerminalInteraction(event.terminalInteraction) } : {}),
+					...(event.agentInteraction ? { agent_interaction: projectAgentInteraction(event.agentInteraction) } : {}),
 				});
 				this.#emitTurnEvent(active, "tool_execution", "tool_start", "", {
 					call_id: callId,
@@ -2134,6 +2136,8 @@ function safeToolMetadata(
 	if (errorContext) safe.error_context = errorContext;
 	const interaction = projectTerminalInteraction(metadata.terminal_interaction);
 	if (interaction) safe.terminal_interaction = interaction;
+	const agentInteraction = projectAgentInteraction(metadata.agent_interaction);
+	if (agentInteraction) safe.agent_interaction = agentInteraction;
 	const skillName = skillNameFromMetadata(metadata);
 	if (skillName) safe.skill_name = skillName;
 	const mutation = projectMutationMetadata(metadata, success);

@@ -336,6 +336,13 @@ and session. In `/settings`, Statusbar `full` shows both rows, `compact` keeps t
 `off` hides the footer. Goal state, queued input, background work and pending decisions remain
 visible. `/goal`, `/ps` and `/agents` open the corresponding details.
 
+Agent interactions appear directly in the transcript with an action and target, such as
+`Started agent /root/review` or `Sent message to /root/review`, followed by a short task/message
+preview. Follow-up assignments and stop requests show their targets too; failures and cancellations
+retain the target. `/details` expands the preview and original tool details. Sending a message
+does not mean the agent has finished its task. New interaction previews survive history reload;
+older records show a target when it can be recovered safely, without exposing old message bodies.
+
 Approval, permission, workspace-trust, clarification, plan-confirmation, and session-repair
 views share a bottom decision panel. Arrow keys or `j`/`k` navigate; Enter confirms the highlighted
 option. Numbered options also accept their displayed number. Approval numbers remain stable:

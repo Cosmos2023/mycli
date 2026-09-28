@@ -2,6 +2,7 @@ import {
 	gatewayToolLifecycleRecord,
 	parseGatewayToolRecord,
 	projectTerminalInteraction,
+	agentInteractionKind,
 	type GatewayToolRecord,
 } from "@mycli/contracts";
 import type {
@@ -44,6 +45,7 @@ export function toolFromTranscriptItem(
 		id: item.id,
 		name: record.name,
 		terminalInteraction: record.terminal_interaction,
+		agentInteraction: record.agent_interaction?.kind === agentInteractionKind(record.name) ? record.agent_interaction : undefined,
 		args: compactTarget(commandTargetPreview(record.name, record.target ?? null), workspace) ?? undefined,
 		status: record.status,
 		durationMs: record.duration_ms,
@@ -265,6 +267,7 @@ function normalizeToolName(name: string): string {
 }
 
 export function suppressGenericToolRow(tool: MycliShellTool): boolean {
+	if (tool.agentInteraction) return false;
 	const interaction = tool.terminalInteraction;
 	// Live polls live in the status line; settled polls are the wait rows the reducer records.
 	if (interaction?.kind === "poll" && tool.status === "running") return true;

@@ -5,6 +5,7 @@ import { dirname } from "node:path";
 import {
 	parseRuntimeTurnRecord,
 	projectTerminalInteraction,
+	projectAgentInteraction,
 	TURN_INTERRUPTED_NOTICE,
 	turnFailedNoticeId,
 	turnFailureNotice,
@@ -2392,6 +2393,7 @@ function toolResultMetadata(
 ): Readonly<Record<string, unknown>> {
 	const mutationMetadata = projectMutationMetadata(input.metadata, input.result.success);
 	const interaction = projectTerminalInteraction(input.metadata?.terminal_interaction);
+	const agentInteraction = projectAgentInteraction(input.metadata?.agent_interaction);
 	return {
 		turn_id: turn.turn_id,
 		source: "node_runtime",
@@ -2399,6 +2401,7 @@ function toolResultMetadata(
 		success: input.result.success,
 		summary: input.summary.slice(0, 500),
 		...(interaction ? { terminal_interaction: interaction } : {}),
+		...(agentInteraction ? { agent_interaction: agentInteraction } : {}),
 		...(input.errorKind ? { error_kind: input.errorKind } : {}),
 		...(["tool_interrupted", "effect_outcome_unknown"].includes(input.errorKind ?? "")
 			? { synthetic: true, append_only: true }

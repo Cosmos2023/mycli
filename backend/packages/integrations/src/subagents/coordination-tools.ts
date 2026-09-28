@@ -1,4 +1,5 @@
 import type { ToolDefinition } from "@mycli/core";
+import { agentInteractionFromArguments, projectAgentInteraction } from "@mycli/contracts";
 import type {
 	ToolAdapter,
 	ToolAdapterResult,
@@ -136,9 +137,10 @@ export class SpawnAgentTool implements ToolAdapter {
 				...(result.report === undefined ? {} : { report: result.report }),
 				...(result.error === undefined ? {} : { error: result.error }),
 			}));
-			return result.status === "running" || result.status === "completed"
+			const outcome = result.status === "running" || result.status === "completed"
 				? success(output, `Agent ${result.status}: ${result.agentPath}`)
 				: failure(output, `Agent ${result.status}: ${result.agentPath}`, `agent_${result.status}`);
+			return agentInteractionResult(outcome, this.definition.name, argumentsValue, result.agentPath);
 		} catch (error) {
 			return coordinationFailure("spawn_agent", error);
 		}
@@ -173,7 +175,7 @@ export class SendAgentMessageTool implements ToolAdapter {
 				triggerMode: this.#triggerMode,
 				callId: options.callId,
 			});
-			return success(JSON.stringify({
+			return agentInteractionResult(success(JSON.stringify({
 				status: result.status,
 				message_id: result.messageId,
 				receiver_thread_id: result.receiverThreadId,
@@ -181,7 +183,7 @@ export class SendAgentMessageTool implements ToolAdapter {
 				receiver_sequence: result.receiverSequence,
 				trigger_mode: result.triggerMode,
 				projected: result.projected,
-			}), `Agent message ${result.status}: ${result.receiverPath}`);
+			}), `Agent message ${result.status}: ${result.receiverPath}`), this.definition.name, argumentsValue, result.receiverPath);
 		} catch (error) {
 			return coordinationFailure(this.definition.name, error);
 		}
@@ -213,9 +215,10 @@ export class InterruptAgentTool implements ToolAdapter {
 				thread_id: result.threadId,
 				agent_path: result.path,
 			});
-			return result.interrupted
+			const outcome = result.interrupted
 				? success(output, `Agent interrupted: ${result.path}`)
 				: failure(output, `Agent not interruptible: ${result.path}`, "agent_interrupt_unavailable");
+			return agentInteractionResult(outcome, this.definition.name, argumentsValue, result.path);
 		} catch (error) {
 			return coordinationFailure("interrupt_agent", error);
 		}
@@ -255,6 +258,18 @@ export class ListAgentsTool implements ToolAdapter {
 			return Promise.resolve(coordinationFailure("list_agents", error));
 		}
 	}
+}
+
+function agentInteractionResult(
+	result: ToolAdapterResult,
+	toolName: string,
+	args: Readonly<Record<string, unknown>>,
+	target: string,
+): ToolAdapterResult {
+	const interaction = projectAgentInteraction({ ...agentInteractionFromArguments(toolName, args), target });
+	return interaction ? Object.freeze({ ...result, metadata: Object.freeze({
+		...result.metadata, agent_interaction: interaction,
+	}) }) : result;
 }
 
 function messageDefinition(name: "send_message" | "followup_task", description: string): ToolDefinition {

@@ -9,6 +9,7 @@ import {
 	parseRuntimeState,
 	parseRuntimeTurnRecord,
 	projectTerminalInteraction,
+	projectAgentInteraction,
 	readErrorContext,
 	TURN_INTERRUPTED_NOTICE,
 	turnInterruptedNoticeId,
@@ -3980,12 +3981,14 @@ function eventToolResultMetadata(
 	const mutation = projectMutationMetadata(input.metadata, input.result.success);
 	const errorContext = input.result.success ? undefined : readErrorContext(input.metadata?.error_context);
 	const interaction = projectTerminalInteraction(input.metadata?.terminal_interaction);
+	const agentInteraction = projectAgentInteraction(input.metadata?.agent_interaction);
 	const discoveries = input.result.success && input.result.toolName === "tool_search"
 		? parseToolDiscoveries(input.metadata?.tool_discovery) : [];
 	const metadata = {
 		...(discoveries.length ? { tool_discovery: { version: 1, tools: discoveries } } : {}),
 		...(errorContext ? { error_context: errorContext } : {}),
 		...(interaction ? { terminal_interaction: interaction } : {}),
+		...(agentInteraction ? { agent_interaction: agentInteraction } : {}),
 		...(mutation.file_changes ? { file_changes: mutation.file_changes } : {}),
 		...(["tool_interrupted", "effect_outcome_unknown"].includes(input.errorKind ?? "")
 			? { synthetic: true, append_only: true }

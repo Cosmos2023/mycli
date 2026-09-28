@@ -191,6 +191,15 @@ test("Codex-style coordination adapters return typed stable results", async () =
 	assert.equal(JSON.parse(followed.modelOutput).trigger_mode, "follow_up");
 	assert.equal(JSON.parse(interrupted.modelOutput).interrupted, true);
 	assert.equal(JSON.parse(listed.modelOutput).agents[0].status, "idle");
+	for (const [result, kind, message] of [
+		[spawned, "spawn", "write tests"], [sent, "message", "status"],
+		[followed, "followup", "continue"], [interrupted, "interrupt", "stop"],
+	] as const) {
+		assert.deepEqual(result.metadata.agent_interaction, {
+			kind, target: "/root/tests", message_preview: message,
+		});
+	}
+	assert.equal(listed.metadata.agent_interaction, undefined);
 	assert.equal(calls.length, 5);
 	assert.deepEqual(calls[0], {
 		kind: "spawn",

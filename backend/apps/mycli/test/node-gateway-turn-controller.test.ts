@@ -46,6 +46,27 @@ test("terminal interaction metadata reaches start and completion with bounded pr
 	await waitFor(() => !fixture.controller.hasActiveTurn());
 });
 
+test("agent interactions reach start, completion and failure with sanitized targets and previews", async () => {
+	const fixture = controllerFixture();
+	await fixture.controller.submit(submitParams("client-agent"));
+	const run = await waitForRun(fixture.runs);
+	const interaction = { kind: "message" as const, target: "review", message_preview: "Check permissions token=private-token" };
+	run.emit({ type: "tool_execution_started", callId: "message-1", toolName: "send_message", agentInteraction: interaction });
+	const start = fixture.events.find((event) => event.method === "tool.start");
+	assert.equal((start?.params.agent_interaction as JsonObject).target, "review");
+	run.emit({ type: "tool_execution_completed", callId: "message-1", toolName: "send_message", summary: "Message queued", durationMs: 10,
+		metadata: { agent_interaction: { ...interaction, target: "/root/review", private_field: "private-field" }, arguments: { message: "private-message" } } });
+	const finish = fixture.events.find((event) => event.method === "tool.complete");
+	assert.equal((finish?.params.agent_interaction as JsonObject).target, "/root/review");
+	run.emit({ type: "tool_execution_failed", callId: "message-2", toolName: "send_message", summary: "Message failed", durationMs: 10,
+		errorKind: "tool_execution_failed", metadata: { agent_interaction: interaction } });
+	const failed = fixture.events.find((event) => event.method === "tool.failed");
+	assert.equal((failed?.params.agent_interaction as JsonObject).target, "review");
+	assert.doesNotMatch(JSON.stringify([start, finish, failed]), /private-token|private-field|private-message/u);
+	run.resolve(completedTurn("session-a", "client-agent", "turn-1"));
+	await waitFor(() => !fixture.controller.hasActiveTurn());
+});
+
 test("turn admission releases its exact execution claim after pre-activation failures", async (t) => {
 	await t.test("credential readiness", async () => {
 		const readiness = deferred<null>();

@@ -3,6 +3,8 @@ import {
 	TURN_INTERRUPTED_NOTICE,
 	turnInterruptedNoticeId,
 	projectTerminalInteraction,
+	projectAgentInteraction,
+	agentInteractionFromArguments,
 	readErrorContext,
 } from "@mycli/contracts";
 
@@ -466,6 +468,10 @@ function legacyToolPreambleItem(item: ParsedHistoryItem): TranscriptItem {
 function visibleToolMetadata(item: ParsedHistoryItem): Readonly<Record<string, unknown>> {
 	const visible = { ...visibleMetadata(item.metadata, item.toolName) };
 	const argumentsValue = recordValue(item.metadata.arguments);
+	// Legacy calls recover only the target; message previews require explicit safe metadata.
+	const agentInteraction = projectAgentInteraction(visible.agent_interaction)
+		?? agentInteractionFromArguments(item.toolName ?? "", argumentsValue, false);
+	if (agentInteraction) visible.agent_interaction = agentInteraction;
 	const normalizedName = normalizedToolName(item.toolName);
 	if (normalizedName === "skill") {
 		const skillName = boundedSkillName(argumentsValue.name)
@@ -596,6 +602,8 @@ function visibleMetadata(
 	else if (metadata.error_context !== undefined || metadata.error_context_invalid === true) visible.error_context_invalid = true;
 	const interaction = projectTerminalInteraction(metadata.terminal_interaction);
 	if (interaction) visible.terminal_interaction = interaction;
+	const agentInteraction = projectAgentInteraction(metadata.agent_interaction);
+	if (agentInteraction) visible.agent_interaction = agentInteraction;
 	const path = boundedOptionalText(metadata.path)?.value;
 	if (path) visible.path = path;
 	const status = boundedIdentity(metadata.status, 100);

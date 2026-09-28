@@ -4180,6 +4180,29 @@ test("enforces explicit token no-progress and wall-clock budgets", async () => {
 	assert.equal(wallRequests.length, 0);
 });
 
+test("agent failures retain target previews even when rejected before execution", async () => {
+	for (const exposed of [false, true]) {
+		const trace: string[] = [];
+		const store = new FakeStore(trace);
+		const events: RuntimeEvent[] = [];
+		const definition = { ...READ_TOOL_DEFINITION, name: "send_message" };
+		const runtime = createRuntime({ store,
+			provider: scriptedProvider(trace, [], [[
+				{ type: "tool_call", callId: "message-call", name: "send_message", argumentsJson: JSON.stringify({ target: "review", message: "Look at permissions token=private-token" }) },
+				{ type: "completed", responseId: "response-1" },
+			], [{ type: "text_delta", text: "Message unavailable." }, { type: "completed", responseId: "response-2" }]]),
+			toolDefinitions: exposed ? [definition] : [],
+			toolRouter: new FakeRouter(trace, { callId: "message-call", toolName: "send_message", success: false,
+				modelOutput: "Agent unavailable", summary: "Agent unavailable", errorKind: "agent_unavailable", metadata: {} }),
+		});
+		await runtime.submit(submission(), (event) => { events.push(event); }, { signal: new AbortController().signal });
+		const expected = { kind: "message", target: "review", message_preview: "Look at permissions token=[REDACTED]" };
+		assert.deepEqual(events.find((event) => event.type === "tool_execution_failed")?.metadata.agent_interaction, expected);
+		assert.deepEqual(store.toolResults[0]?.metadata?.agent_interaction, expected);
+		assert.equal(events.some((event) => event.type === "tool_execution_started"), exposed);
+	}
+});
+
 function createRuntime(options: {
 	readonly store: RuntimeTurnStore;
 	readonly runLifecycle?: NodeTurnRuntimeOptions["runLifecycle"];

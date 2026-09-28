@@ -35,6 +35,19 @@ const PREPARED_GUARD: PreparedMutationGuard = Object.freeze({
 	})]),
 });
 
+test("approval resolution closes a stopped goal's call without dispatching it", async () => {
+	const fixture = approvalFixture();
+	fixture.coordinator.suspend(suspension());
+	const result = await fixture.coordinator.resolve({ decisionId: "call-1", choice: "approve_once",
+		signal: new AbortController().signal, toolStopReason: () => "Goal paused while approval was pending.",
+		onExecutionStart: () => { assert.fail("stopped tool must not start"); },
+	});
+	assert.equal(result.status, "completed");
+	assert.equal(fixture.executeCalls, 0);
+	assert.equal(fixture.effect.status, "completed");
+	assert.equal(result.toolResult?.errorKind, "interrupted");
+});
+
 test("suspends only after all compatible approval state is durable", () => {
 	const fixture = approvalFixture();
 	const pending = fixture.coordinator.suspend(suspension());
@@ -334,9 +347,10 @@ interface CoordinatorContract {
 		readonly choice: ApprovalChoice;
 		readonly signal: AbortSignal;
 		readonly onExecutionStart?: () => void;
+		readonly toolStopReason?: () => string | undefined;
 		readonly executionPolicy?: ToolExecutionOptions["executionPolicy"];
 		readonly sandboxOverridePolicy?: ToolExecutionOptions["sandboxOverridePolicy"];
-	}): Promise<{ readonly status: string; readonly continuation?: PendingContract }>;
+	}): Promise<{ readonly status: string; readonly continuation?: PendingContract; readonly toolResult?: ToolExecutionResult }>;
 	finish(decisionId: string): void;
 	recover(): Promise<RuntimeTurnRecord | undefined> | RuntimeTurnRecord | undefined;
 }

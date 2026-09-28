@@ -42,6 +42,7 @@ import {
 	toolCallRequestsSandboxOverride,
 } from "@mycli/tools";
 import { NO_RUNTIME_FAILPOINT } from "../fault-injection.ts";
+import { stoppedToolResult } from "../tools/stopped-tool-result.ts";
 import type { RuntimeFailpointHook } from "../fault-injection.ts";
 import { parseRunExecutionSnapshot } from "./run-execution-snapshot.ts";
 import type { RunExecutionSnapshot } from "./run-execution-snapshot.ts";
@@ -328,6 +329,7 @@ export class ApprovalContinuationCoordinator {
 		readonly choice: ApprovalChoice;
 		readonly signal: AbortSignal;
 		readonly onExecutionStart?: () => void;
+		readonly toolStopReason?: () => string | undefined;
 		readonly executionPolicy?: ExecutionPolicy;
 		readonly sandboxOverridePolicy?: ExecutionPolicy;
 	}): Promise<ApprovalContinuationResult> {
@@ -390,35 +392,41 @@ export class ApprovalContinuationCoordinator {
 		let result: ToolExecutionResult;
 		let permissionGrant: PermissionGrant | undefined;
 		try {
-			input.onExecutionStart?.();
-			if (pending.permissionRequest) {
-				if (!this.#grantPermissions) {
-					throw new ApprovalPersistenceError("Permission grants are not configured.");
+			const stopReason = input.toolStopReason?.();
+			if (stopReason) {
+				result = stoppedToolResult(pending.call, stopReason);
+			} else {
+				input.onExecutionStart?.();
+				if (pending.permissionRequest) {
+					if (!this.#grantPermissions) {
+						throw new ApprovalPersistenceError("Permission grants are not configured.");
+					}
+					permissionGrant = await this.#grantPermissions({
+						turnId: pending.turnId,
+						scope: input.choice === "allow_session" ? "session" : "turn",
+						permissions: pending.permissionRequest,
+					});
 				}
-				permissionGrant = await this.#grantPermissions({
-					turnId: pending.turnId,
-					scope: input.choice === "allow_session" ? "session" : "turn",
-					permissions: pending.permissionRequest,
+				const dispatchStopReason = input.toolStopReason?.();
+				result = dispatchStopReason ? stoppedToolResult(pending.call, dispatchStopReason) : await this.#toolRouter.execute(pending.call, {
+					signal: input.signal,
+					ownerSessionId: this.#sessionId,
+					ownerTurnId: pending.turnId,
+					callId: pending.call.callId,
+					publishLifecycle: this.#publishLifecycle,
+					...(input.executionPolicy ? { executionPolicy: input.executionPolicy } : {}),
+					...(toolCallRequestsSandboxOverride(pending.call)
+						? { sandboxOverrideApproved: true }
+						: {}),
+					...(input.sandboxOverridePolicy
+						? { sandboxOverridePolicy: input.sandboxOverridePolicy }
+						: {}),
+					...(pending.preparedMutationGuard
+						? { preparedMutationGuard: pending.preparedMutationGuard }
+						: {}),
+					...(permissionGrant ? { permissionGrant } : {}),
 				});
 			}
-			result = await this.#toolRouter.execute(pending.call, {
-				signal: input.signal,
-				ownerSessionId: this.#sessionId,
-				ownerTurnId: pending.turnId,
-				callId: pending.call.callId,
-				publishLifecycle: this.#publishLifecycle,
-				...(input.executionPolicy ? { executionPolicy: input.executionPolicy } : {}),
-				...(toolCallRequestsSandboxOverride(pending.call)
-					? { sandboxOverrideApproved: true }
-					: {}),
-				...(input.sandboxOverridePolicy
-					? { sandboxOverridePolicy: input.sandboxOverridePolicy }
-					: {}),
-				...(pending.preparedMutationGuard
-					? { preparedMutationGuard: pending.preparedMutationGuard }
-					: {}),
-				...(permissionGrant ? { permissionGrant } : {}),
-			});
 		} catch {
 			return this.#interruptUnknown(executing);
 		}

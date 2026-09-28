@@ -15,6 +15,7 @@ import {
 } from "./transcript-gutter.ts";
 import { truncateToVisualLines } from "../shared/visual-truncate.ts";
 import { TerminalInteractionComponent } from "./terminal-interaction.ts";
+import { AgentInteractionComponent } from "./agent-interaction.ts";
 import { toolContextActivity } from "../../transcript/context-activity.ts";
 import { ExplorationSummaryComponent } from "./exploration-summary.ts";
 
@@ -45,6 +46,10 @@ export class ToolExecutionComponent extends Container {
 
 	private rebuild(): void {
 		this.clear();
+		if (this.tool.agentInteraction) {
+			this.addChild(new AgentInteractionComponent(this.tool));
+			return;
+		}
 		if (this.tool.terminalInteraction) {
 			this.addChild(new TerminalInteractionComponent(this.tool));
 			return;

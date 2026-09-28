@@ -21,6 +21,8 @@
 - Active-call authority: `ActiveToolExecutionRegistry.begin(input, emit)`, `complete(claim, ...)`,
   `fail(claim, ...)`, `interrupt(claim, ...)`, and `interruptTurn(turnId, emit)`.
 - Tool orchestration: `ToolBatchCoordinator.process(input)`.
+- Dispatch fence: `ToolBatchCoordinatorOptions.toolStopReason(turnId)` and
+  `ApprovalContinuationCoordinator.resolve({ toolStopReason })` return an optional stop reason.
 - Parallel approvals: `ParallelApprovalCoordinator.begin(input)`, `respond({ decisionId, choice })`,
   `waitForApproval(callId)`, `restore(signal, emit)`, `abortPending()`, `finish()`, and `recover()`.
 - Live responses: `NodeTurnRuntime.hasActiveApproval(decisionId)` and
@@ -48,6 +50,13 @@
   await approval and execute within one phase. Denial by policy, sequential calls, clarification,
   permission grants, and prepared mutation guards retain barriers. Legacy single-approval
   continuations remain readable and preserve sequential suspension.
+- Recheck goal stop state for every call and immediately before router dispatch, after awaited
+  hooks, approvals, and effect claims. A successful `update_goal` pause/completion fences remaining
+  calls in its own provider batch. Persist unsuccessful `interrupted` results for skipped
+  calls, omit post-tool hooks and committed agent checkpoints, and keep the final text response
+  available. Legacy sequential approval resolution must apply the same dispatch fence.
+  Regression tests: `node-turn-runtime-goal.integration.test.ts` and
+  `approval-continuation-coordinator.test.ts`; checking only at provider-step admission is wrong.
 - Headless exec/review explicitly select `approvalMode: "suspend"` to return exit 3 for unanswered
   requests. The next cold activation interrupts that historical wait. The supervisor forwards this
   option; it grants no execution authority.

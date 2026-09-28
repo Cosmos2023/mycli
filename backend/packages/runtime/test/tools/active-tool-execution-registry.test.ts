@@ -92,6 +92,24 @@ test("active tool registry requires exact claims across reused call ids", () => 
 	assert.equal(events.filter((event) => event.type === "tool_execution_failed").length, 2);
 });
 
+test("agent targets survive runtime failure and interruption without entering diagnostics", () => {
+	for (const interrupted of [false, true]) {
+		const events: RuntimeEvent[] = [];
+		const diagnostics: RuntimeDiagnosticEvent[] = [];
+		const registry = new ActiveToolExecutionRegistry({ recordDiagnostic: (event) => { diagnostics.push(event); } });
+		const interaction = { kind: "message" as const, target: "/root/review", message_preview: "Check permissions" };
+		const emit = (event: RuntimeEvent): void => { events.push(event); };
+		const claim = registry.begin({ turnId: "turn", callId: "call", toolName: "send_message",
+			interruptErrorKind: "tool_interrupted", agentInteraction: interaction }, emit);
+		assert.deepEqual(events[0], { type: "tool_execution_started", callId: "call", toolName: "send_message", agentInteraction: interaction });
+		if (interrupted) registry.interrupt(claim, emit);
+		else registry.fail(claim, "tool_execution_failed", emit);
+		const failed = events.find((event) => event.type === "tool_execution_failed");
+		assert.deepEqual(failed?.metadata.agent_interaction, interaction);
+		assert.doesNotMatch(JSON.stringify(diagnostics), /agent_interaction|\/root\/review|Check permissions/u);
+	}
+});
+
 test("active tool registry interrupts every full-id claim exactly once", () => {
 	const events: RuntimeEvent[] = [];
 	const registry = new ActiveToolExecutionRegistry();
