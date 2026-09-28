@@ -90,6 +90,7 @@
     "@mycli/runtime": "^0.1.1",
     "@mycli/storage": "^0.1.1",
     "@mycli/tools": "^0.1.1",
+    "@openai/codex": "^0.155.0",
     "mycli-shell-tui": "^0.1.1"
   }
 }
