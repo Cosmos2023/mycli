@@ -640,10 +640,21 @@ function safeFailureCode(error) {
 		: "unknown_error";
 }
 
+// An unrecognized failure used to report only "unknown_error" and discard the
+// cause. Keep the stable code and add a bounded single-line detail behind it.
+function failureDetail(error) {
+	const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+	return detail.replaceAll(/[\r\n]+/gu, " ").slice(0, 512);
+}
+
 main().then(
 	(code) => { process.exitCode = code; },
 	(error) => {
-		process.stderr.write(`agent_worker_memory_benchmark_failed:${safeFailureCode(error)}\n`);
+		const code = safeFailureCode(error);
+		process.stderr.write(`agent_worker_memory_benchmark_failed:${code}\n`);
+		if (code === "unknown_error") {
+			process.stderr.write(`agent_worker_memory_benchmark_failure_detail:${failureDetail(error)}\n`);
+		}
 		process.exitCode = 1;
 	},
 );
