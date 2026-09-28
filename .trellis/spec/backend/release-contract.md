@@ -222,3 +222,27 @@ git push origin v0.2.0
 
 The protected tag workflow owns the real publish and safely skips exact versions already present
 after a partial release.
+
+## Scenario: Standalone user installation
+
+- `scripts/install.mjs` is a downloadable, dependency-free Node entry, also exposed as
+  `npm run install:cli`. It installs the published application; it does not build the checkout.
+- Keep the public package name and minimum Node version synchronized with the application manifest.
+  The installer cannot import repository helpers because users download a single file; regression
+  tests enforce these two shared values instead.
+- Default to user-owned installation and cache directories. Do not invoke sudo, change npm settings
+  or shell profiles, or overwrite unrelated command launchers. Updates may replace launchers owned
+  by the same npm package. Report a shadowing PATH executable after verifying the installed entry.
+- Resolve npm's JavaScript entry and invoke it with the checked Node executable and an argument
+  array. Do not interpolate user paths into a shell or execute `npm.cmd` through `cmd.exe`.
+- Use the official registry, retain optional dependencies, and accept only release versions or the
+  `latest` / `next` tags. `--dry-run` must perform no writes or network requests.
+- Progress belongs on stderr. Show elapsed time while npm works; plain/non-TTY output must remain
+  readable without animation. Do not claim a download percentage. Keep error diagnostics bounded,
+  strip terminal controls and common credential forms, and write private installer logs.
+- Verify the installed manifest, launcher, and `--version` result before reporting success. Failure
+  or cancellation must stop later stages. Cancel the npm process tree, including build descendants.
+  npm installation is not a transactional upgrade; documentation must explain retry behavior.
+- Cover fresh install, repeat update, literal paths, conflict preservation, output redaction,
+  verification failure, dry-run, PATH guidance, and process cleanup using isolated temporary
+  prefixes and a process-level npm fixture. Keep the normal test suite independent of the registry.

@@ -6,6 +6,7 @@ This directory is split by document purpose.
 
 ## Current Architecture
 
+- [installation.md](./installation.md): user-directory installer, visible progress, PATH setup, and npm troubleshooting.
 - [architecture.md](./architecture.md): Node workspace and runtime ownership boundaries.
 - [testing.md](./testing.md): canonical test suites, classification rules, local commands, and CI composition.
 - [architecture/configuration-trust-and-provenance.md](./architecture/configuration-trust-and-provenance.md): configuration precedence, workspace trust, provenance, and secret boundaries.

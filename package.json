@@ -20,6 +20,7 @@
     "eval:coding": "node scripts/run-coding-evaluation.mjs",
     "eval:prompt": "node --conditions=mycli-source --import tsx scripts/run-system-prompt-evaluation.mjs",
     "lint": "eslint \"backend/apps/**/*.ts\" \"backend/packages/**/*.ts\"",
+    "install:cli": "node scripts/install.mjs",
     "mycli": "node backend/apps/mycli/dist/cli.js",
     "pretest": "npm run build",
     "smoke:package": "node scripts/smoke_packed_cli.mjs",

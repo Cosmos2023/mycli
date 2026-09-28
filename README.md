@@ -60,6 +60,45 @@ commands and keyboard shortcuts.
 
 ## Installation
 
+### Installer with Progress
+
+The standalone installer checks Node.js and npm, displays installation stages and elapsed time,
+and verifies the installed `mycli` command. It installs the published npm release into your user
+directory without sudo. Node.js 22.19.0 or newer and npm must already be installed.
+
+macOS / Linux:
+
+```bash
+curl -fL https://raw.githubusercontent.com/Cosmos2023/mycli/main/scripts/install.mjs -o mycli-install.mjs
+node mycli-install.mjs
+```
+
+Windows PowerShell:
+
+```powershell
+Invoke-WebRequest https://raw.githubusercontent.com/Cosmos2023/mycli/main/scripts/install.mjs -OutFile mycli-install.mjs
+node .\mycli-install.mjs
+```
+
+From a source checkout, run `node scripts/install.mjs` or `npm run install:cli`. This installs the
+published release, without building the checkout. Run the installer again to update.
+
+```bash
+node mycli-install.mjs --dry-run
+node mycli-install.mjs --version 0.1.1
+node mycli-install.mjs --verbose
+```
+
+The default prefix is `~/.local` on macOS/Linux and `%LOCALAPPDATA%\mycli` on Windows. The installer
+uses a separate npm cache, reports conflicting launchers, and prints PATH instructions if the new
+command is missing or another installation takes precedence. It leaves shell profiles, npm settings,
+and `~/.mycli` configuration and sessions alone. Use `--prefix` and `--cache` to choose directories.
+
+Progress goes to stderr; noninteractive terminals and `--plain` use ordinary lines. `--verbose`
+shows download and native build output. Failures include recent npm output and the path to a private,
+bounded installation log in the selected cache. Ctrl+C stops installation and its build processes;
+rerun the installer to retry. See [installation troubleshooting](docs/installation.md).
+
 ### npm
 
 ```bash
@@ -72,6 +111,9 @@ Update an existing installation with:
 ```bash
 npm install -g @cosmos2023/mycli@latest
 ```
+
+Add `--progress --loglevel=info` to see npm download activity, and `--foreground-scripts` to inspect
+native build output. npm's own display is separate from the standalone installer above.
 
 `mycli update check` checks for a release and shows installation guidance; it does not install it.
 
