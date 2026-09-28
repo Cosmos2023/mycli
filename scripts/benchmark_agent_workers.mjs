@@ -4,6 +4,8 @@ import { Buffer } from "node:buffer";
 import { spawn } from "node:child_process";
 import { writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import process from "node:process";
 import { clearTimeout, setTimeout } from "node:timers";
@@ -248,8 +250,11 @@ async function providerWorkerSoak() {
 				"content-type": "text/event-stream",
 				connection: "close",
 			});
-			response.write('data: {"type":"response.output_text.delta","delta":"soak"}\n\n');
-			response.write('data: {"type":"response.completed","response":{"id":"resp-soak","usage":{"input_tokens":16,"output_tokens":1,"total_tokens":17}}}\n\n');
+			writeResponsesText(response, "soak", "resp-soak", {
+				input_tokens: 16,
+				output_tokens: 1,
+				total_tokens: 17,
+			});
 			response.end("data: [DONE]\n\n");
 		});
 	});
@@ -277,9 +282,11 @@ async function providerWorkerSoak() {
 				lease,
 				createRequestId: () => `provider-soak-request-${index}`,
 			});
+			const config = providerSoakConfig(`http://127.0.0.1:${address.port}/v1`);
 			try {
 				const result = await executor.execute({
-					config: providerSoakConfig(`http://127.0.0.1:${address.port}/v1`),
+					config,
+					providerRoute: providerSoakRoute(config),
 					provider: { stream: coordinatorProviderMustNotRun },
 					request: providerSoakRequest(index),
 					timelineWindowId: "provider-soak-window",
@@ -290,6 +297,7 @@ async function providerWorkerSoak() {
 					emit: () => undefined,
 				});
 				if ("failure" in result || result.assistantText !== "soak") {
+					console.error("DEBUG soak result", JSON.stringify(result));
 					throw new Error("agent_worker_memory_benchmark_provider_step_failed");
 				}
 			} finally {
@@ -443,12 +451,64 @@ function linearSlope(values) {
 
 function providerSoakConfig(apiBaseUrl) {
 	return Object.freeze({
+		workspaceRoot: process.cwd(),
+		homeDir: tmpdir(),
 		provider: "openai",
 		protocol: "responses",
+		model: "benchmark-model",
 		apiBaseUrl,
 		apiKey: "benchmark-key",
+		authRef: "benchmark",
+		sessionId: "benchmark-provider-soak",
+		sessionsDbPath: join(tmpdir(), "benchmark-provider-soak.db"),
+		maxPromptTokens: 10_000,
 		requestMaxRetries: 0,
+		streamMaxRetries: 0,
+		reasoningEffort: "none",
+		thinkingEnabled: false,
+		supportsImages: false,
+		webSearchMode: "disabled",
+		cacheRetention: "short",
+		memoryEnabled: false,
+		requestPermissionsToolEnabled: false,
+		updatesCheckOnStartup: true,
 	});
+}
+
+function providerSoakRoute(config) {
+	return Object.freeze({
+		routeId: config.provider,
+		displayName: "OpenAI",
+		supportTier: "stable",
+		source: "pi_ai_declared",
+		protocol: config.protocol,
+		apiBaseUrl: config.apiBaseUrl,
+		authRef: config.authRef,
+		activation: "active",
+		modelPolicy: Object.freeze({ kind: "declared", modelIds: Object.freeze([config.model]) }),
+		snapshotVersion: 1,
+	});
+}
+
+// Mirrors the canonical Responses stream: the item lifecycle and the terminal
+// output are both required, not just the delta.
+function writeResponsesText(response, text, responseId, usage) {
+	const item = {
+		type: "message",
+		id: `msg-${responseId}`,
+		role: "assistant",
+		status: "completed",
+		content: [{ type: "output_text", text, annotations: [] }],
+	};
+	const events = [
+		{ type: "response.created", response: { id: responseId, status: "in_progress" } },
+		{ type: "response.output_item.added", output_index: 0,
+			item: { ...item, status: "in_progress", content: [] } },
+		{ type: "response.output_text.delta", output_index: 0, content_index: 0, delta: text },
+		{ type: "response.output_item.done", output_index: 0, item },
+		{ type: "response.completed", response: { id: responseId, status: "completed", output: [item], usage } },
+	];
+	for (const event of events) response.write(`data: ${JSON.stringify(event)}\n\n`);
 }
 
 function providerSoakRequest(index) {
