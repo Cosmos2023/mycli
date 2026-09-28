@@ -114,6 +114,19 @@ export async function runSelectedTestSuites(options) {
 	return 0;
 }
 
+/**
+ * GitHub renders `::error::` workflow commands as check annotations, which stay
+ * readable without a token. Otherwise the failing test names only exist inside
+ * the step log, which anonymous readers cannot fetch.
+ */
+function reportFailingTests(output) {
+	if (process.env.GITHUB_ACTIONS !== "true") return;
+	const lines = output.split(/\r?\n/u).filter((line) => /^(?:✖ |test at )/u.test(line));
+	for (const line of lines.slice(0, 40)) {
+		process.stdout.write(`::error::${line.replaceAll("%", "%25")}\n`);
+	}
+}
+
 async function runTarget(target, rows, forwarded, suite) {
 	const cwd = join(REPOSITORY_ROOT, target.root);
 	const files = rows.map(({ file }) => relative(cwd, join(REPOSITORY_ROOT, file)));
@@ -133,6 +146,7 @@ async function runTarget(target, rows, forwarded, suite) {
 	process.stderr.write(`  ${target.label}: ${files.length}\n`);
 
 	return await new Promise((resolveExit) => {
+		const captured = [];
 		const child = spawn(process.execPath, args, {
 			cwd,
 			env: {
@@ -144,8 +158,10 @@ async function runTarget(target, rows, forwarded, suite) {
 				TERM: process.env.TERM && process.env.TERM !== "dumb" ? process.env.TERM : "xterm-256color",
 				MYCLI_TUI_ASCII: process.env.MYCLI_TUI_ASCII ?? "0",
 			},
-			stdio: "inherit",
+			stdio: ["inherit", "pipe", "pipe"],
 		});
+		child.stdout.on("data", (chunk) => { captured.push(chunk); process.stdout.write(chunk); });
+		child.stderr.on("data", (chunk) => { captured.push(chunk); process.stderr.write(chunk); });
 		child.once("error", (error) => {
 			process.stderr.write(`test_runner_spawn_failed: ${error.message}\n`);
 			resolveExit(1);
@@ -156,6 +172,7 @@ async function runTarget(target, rows, forwarded, suite) {
 				resolveExit(1);
 				return;
 			}
+			if ((code ?? 1) !== 0) reportFailingTests(Buffer.concat(captured).toString("utf8"));
 			resolveExit(code ?? 1);
 		});
 	});
