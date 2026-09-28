@@ -40,9 +40,14 @@ enable/disable. OpenAI-hosted Apps, ACP, provider plugins, and an LLM facade are
 - Installation copies data only, with no ESM import, MCP start, hook execution, lifecycle script,
   or submodule execution. Bound entry/byte counts, reject escaping symlinks and cycles, and disable
   Git user config/templates/hooks. Cancellation/timeout terminates Git's process tree.
-- Bundle hook commands interpolate `CODEX_PLUGIN_ROOT` and `CLAUDE_PLUGIN_ROOT` before the shell
-  runs, so `${VAR}`, `$VAR`, `$env:VAR`, and `%VAR%` all work in POSIX shells, PowerShell, and
-  CMD. PowerShell receives the call operator for a command that starts with a quoted executable.
+- Bundle hook string commands translate `CODEX_PLUGIN_ROOT` and `CLAUDE_PLUGIN_ROOT` placeholders
+  (`${VAR}`, `$VAR`, `$env:VAR`, `%VAR%`) into native shell environment references. Bind the literal
+  roots in the runner environment; never insert filesystem paths into shell source. Authors quote
+  references for paths with spaces. Literal argv arrays substitute the path directly using a
+  replacement callback, preserving `$&` and other replacement metacharacters. Hook approval digests
+  include the bound plugin root so changing it invalidates approval. Test both discovery and actual
+  execution with paths containing dollar signs, command substitutions, quotes and backticks.
+  PowerShell receives the call operator for a command that starts with a quoted executable.
   A Windows hook environment must keep `PATHEXT`, `COMSPEC`, `SystemDrive`, `TEMP`, and `TMP`:
   without `PATHEXT` PowerShell hooks can exit 0 while the child never actually runs.
 - `~/.mycli/plugin-registry.json` is private, locked and atomically replaced. New immutable cache

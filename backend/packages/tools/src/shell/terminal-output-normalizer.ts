@@ -27,6 +27,7 @@ type EscapeState =
 export class TerminalOutputNormalizer {
 	readonly #decoder: TextDecoder;
 	readonly #fallback: TextDecoder | undefined;
+	#pendingUtf8 = new Uint8Array(0);
 	#encoding: NormalizedOutput["encoding"] = "utf-8";
 	#escapeState: EscapeState = "text";
 	#pendingCarriageReturn = false;
@@ -78,16 +79,18 @@ export class TerminalOutputNormalizer {
 		if (this.#encoding === "fallback") {
 			return { text: this.#fallback?.decode(chunk, { stream }) ?? "", encoding: "fallback" };
 		}
+		const undecoded = this.#pendingUtf8.length === 0 ? chunk : Buffer.concat([this.#pendingUtf8, chunk]);
 		try {
-			return { text: this.#decoder.decode(chunk, { stream }), encoding: "utf-8" };
+			const text = this.#decoder.decode(chunk, { stream });
+			if (this.#fallback) this.#pendingUtf8 = stream ? incompleteUtf8Suffix(undecoded) : new Uint8Array(0);
+			return { text, encoding: "utf-8" };
 		} catch {
-			// The child emitted its console code page instead of UTF-8. Switch the
-			// whole stream to the fallback decoder; resetting the UTF-8 decoder
-			// drops any half-decoded sequence it kept from earlier chunks.
 			if (this.#fallback === undefined) throw new Error("terminal output is not valid UTF-8");
-			this.#decoder.decode();
+			// Replay only bytes not emitted by the UTF-8 probe, including its bounded
+			// incomplete suffix from earlier chunks (also on end-of-stream failure).
+			this.#pendingUtf8 = new Uint8Array(0);
 			this.#encoding = "fallback";
-			return { text: this.#fallback.decode(chunk, { stream }), encoding: "fallback" };
+			return { text: this.#fallback.decode(undecoded, { stream }), encoding: "fallback" };
 		}
 	}
 
@@ -176,6 +179,20 @@ export class TerminalOutputNormalizer {
 				return true;
 		}
 	}
+}
+
+/** Called only after successful UTF-8 streaming validation; retains at most three bytes. */
+function incompleteUtf8Suffix(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
+	for (let index = bytes.length - 1; index >= Math.max(0, bytes.length - 4); index -= 1) {
+		const byte = bytes[index]!;
+		if (byte < 0x80) break;
+		if (byte >= 0xc2) {
+			const length = byte < 0xe0 ? 2 : byte < 0xf0 ? 3 : 4;
+			if (bytes.length - index < length) return new Uint8Array(bytes.subarray(index));
+			break;
+		}
+	}
+	return new Uint8Array(0);
 }
 
 const EMPTY_OUTPUT: NormalizedOutput = Object.freeze({ text: "", replacementCount: 0 });

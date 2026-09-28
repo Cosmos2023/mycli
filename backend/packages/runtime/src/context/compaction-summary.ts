@@ -73,7 +73,7 @@ export function retainCompactionUserMessages(
 	for (const item of items.toReversed()) {
 		if (remaining <= 0) break;
 		if (item.type !== "user" || !item.text.trim() || item.text.startsWith(COMPACTION_SUMMARY_PREFIX)) continue;
-		const tokens = counter.count(item.text);
+		const tokens = counter.count(`user: ${item.text}`);
 		if (tokens <= remaining) {
 			// Old images and tool artifacts are represented by the summary; retain user text.
 			retained.push({ type: "user", text: item.text });
@@ -89,7 +89,7 @@ export function retainCompactionUserMessages(
 
 function truncateUserMessage(text: string, maxTokens: number, counter: TokenCounter): string | undefined {
 	const marker = "\n[... truncated during compaction ...]\n";
-	if (counter.count(marker) > maxTokens) return undefined;
+	if (counter.count(`user: ${marker}`) > maxTokens) return undefined;
 	const characters = Array.from(text);
 	let low = 0;
 	let high = characters.length;
@@ -100,7 +100,7 @@ function truncateUserMessage(text: string, maxTokens: number, counter: TokenCoun
 		const tail = Math.floor(keep / 2);
 		const candidate = characters.slice(0, head).join("") + marker
 			+ (tail ? characters.slice(-tail).join("") : "");
-		if (counter.count(candidate) <= maxTokens) {
+		if (counter.count(`user: ${candidate}`) <= maxTokens) {
 			bounded = candidate;
 			low = keep + 1;
 		} else high = keep - 1;

@@ -251,6 +251,7 @@ function parseHook(
 		name: `configured:${file.scope}:${hookId}`,
 		hookPoint: hookPoint as HookPoint,
 		command: command.argv,
+		...(options.pluginRoot ? { pluginRoot: options.pluginRoot } : {}),
 		...(command.shellKind ? { shellKind: command.shellKind } : {}),
 		enabled,
 		timeoutMs,
@@ -268,12 +269,15 @@ function commandValue(
 ): { readonly argv: readonly string[]; readonly shellKind?: ConfiguredHookSpec["shellKind"] } {
 	if (typeof value === "string" && value.trim()) {
 		if (value.includes("\0")) throw new HookConfigError("invalid_command");
-		const command = interpolatePluginRoot(value.trim(), options.pluginRoot);
 		const profile = resolveShellProfile({
 			...(options.platform ? { platform: options.platform } : {}),
 			...(options.env ? { env: options.env } : {}),
 			...(options.shellPath ? { shellPath: options.shellPath } : {}),
 		});
+		const command = options.pluginRoot ? replacePluginRootPlaceholders(value.trim(), (name) => (
+			profile.kind === "cmd" ? `%${name}%`
+				: profile.kind === "powershell" ? `\${env:${name}}` : `\${${name}}`
+		)) : value.trim();
 		return {
 			argv: Object.freeze([
 				profile.executable,
@@ -300,23 +304,18 @@ function commandValue(
 	};
 }
 
-// Plugin bundles are authored for POSIX, CMD, and PowerShell shells. Interpolate
-// the bundle root before the shell runs so one manifest works on every host
-// instead of depending on that shell's own variable syntax.
+// Literal argv can contain the path directly. Shell source instead references
+// the host-bound environment variable so path contents never become shell code.
 export function interpolatePluginRoot(command: string, pluginRoot: string | undefined): string {
 	if (!pluginRoot) return command;
-	let resolved = command;
-	for (const name of PLUGIN_ROOT_VARIABLES) {
-		for (const placeholder of [
-			`\${${name}}`,
-			`$${name}`,
-			`$env:${name}`,
-			`%${name}%`,
-		]) {
-			resolved = resolved.replaceAll(placeholder, pluginRoot);
-		}
-	}
-	return resolved;
+	return replacePluginRootPlaceholders(command, () => pluginRoot);
+}
+
+function replacePluginRootPlaceholders(command: string, replacement: (name: string) => string): string {
+	const names = PLUGIN_ROOT_VARIABLES.join("|");
+	const pattern = new RegExp(`\\$\\{(${names})\\}|\\$(?:env:)?(${names})(?![A-Za-z0-9_])|%(${names})%`, "gu");
+	return command.replace(pattern, (_match: string, braced: string | undefined, plain: string | undefined, cmd: string | undefined) =>
+		replacement(braced ?? plain ?? cmd!));
 }
 
 // PowerShell treats a leading quoted token as a string literal, while CMD and

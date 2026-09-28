@@ -83,6 +83,16 @@ test("writes a private atomic allowlist without command or environment values", 
 	assert.equal((await store.statusFor(second)).allowed, true);
 });
 
+test("changing a bound plugin root invalidates shell hook approval", async (t) => {
+	const fixture = await allowlistFixture(t);
+	const store = new HookAllowlistStore({ homeDir: fixture.homeDir });
+	const spec = { ...hookSpec(fixture, ["sh", "-c", 'node "${CODEX_PLUGIN_ROOT}/hook.mjs"']),
+		pluginRoot: join(fixture.workspaceRoot, "plugin-a") };
+	await store.approve(spec);
+	assert.equal((await store.statusFor(spec)).allowed, true);
+	assert.equal((await store.statusFor({ ...spec, pluginRoot: join(fixture.workspaceRoot, "plugin-b") })).reason, "digest_changed");
+});
+
 test("fails closed on malformed allowlist records", async (t) => {
 	const fixture = await allowlistFixture(t);
 	const store = new HookAllowlistStore({ homeDir: fixture.homeDir });

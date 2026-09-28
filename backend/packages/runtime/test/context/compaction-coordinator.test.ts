@@ -118,7 +118,7 @@ test("keeps fresh input out of the summary and preserves raw history", async () 
 	assert.equal(store.historyItems.length, conversation.length);
 	assert.equal(store.commitInput?.checkpoint.status, "completed");
 	assert.deepEqual(store.commitInput?.replacementItems, [
-		conversation[0], conversation[2], compactionSummaryItem("Earlier work and decisions."),
+		compactionSummaryItem("Earlier work and decisions."),
 		conversation[4], conversation[5],
 	]);
 	assert.deepEqual(store.providerConversation.map((message) => message.content),
@@ -772,6 +772,7 @@ test("summarizes the active tool turn after a context rejection", async () => {
 	let summaryItems: readonly CanonicalConversationItem[] = [];
 	const result = await createCoordinator({
 		store,
+		tokenLimit: 1_000,
 		summarize: async (input) => {
 			summaryItems = input.items;
 			return "old work summary";
@@ -822,7 +823,7 @@ test("mid-turn compaction uses the normal summary path and drops completed tool 
 			type: "tool_result",
 			callId: "call-read",
 			toolName: "Read",
-			output: "README contents ".repeat(40),
+			output: "README contents ".repeat(400),
 			success: true,
 		},
 	];
@@ -838,7 +839,7 @@ test("mid-turn compaction uses the normal summary path and drops completed tool 
 
 	const result = await createCoordinator({
 		store,
-		tokenLimit: 80,
+		tokenLimit: 500,
 		reservedOutputTokens: 10,
 		summarize: async (input) => {
 			summaryItems = input.items;
@@ -935,6 +936,38 @@ test("all local compaction sources omit file rehydration", async (t) => {
 		);
 	}
 });
+
+for (const limitScope of ["body_after_prefix", "total"] as const) {
+	for (const hardLimit of [true, false]) {
+		test(`retention fits ${limitScope} with hard ceiling ${hardLimit} and does not immediately compact again`, async () => {
+			const counter = new TokenCounter();
+			const conversation: CanonicalConversationItem[] = Array.from({ length: 4 }, (_, index): CanonicalConversationItem[] => [
+				{ type: "user", text: `request ${index} ` + "task ".repeat(4_000) },
+				{ type: "assistant", text: "Acknowledged." },
+			]).flat();
+			const original = structuredClone(conversation);
+			const store = new FakeCompactionStore(conversation, []);
+			let requests = 0;
+			const coordinator = createCoordinator({ store, tokenCounter: counter, baseContext: "system ".repeat(9_400),
+				tokenLimit: 24_000, reservedOutputTokens: 13_000, ...(hardLimit ? { hardLimitTokens: 24_000 } : {}), limitScope,
+				retainedUserMaxTokens: undefined,
+				summarize: async () => { requests++; return "Task still needs implementation."; },
+			});
+			const input = { clientTurnId: "client", turnId: "turn", source: "mid_turn" as const, freshItemIds: new Set<string>(),
+				emit: (): void => {}, signal: new AbortController().signal };
+			const first = await coordinator.compact({ ...input, conversation });
+			assert.equal(first.status, "compressed");
+			assert.ok(first.afterTokens < 24_000);
+			assert.ok(first.afterTokens - counter.count("system ".repeat(9_400)) < 11_000);
+			assert.ok(first.providerConversation.some((item) => item.type === "user" && item.text.startsWith("request 3")));
+			assert.deepEqual(conversation, original);
+			const second = await coordinator.compact({ ...input, conversation: [...first.providerConversation,
+				{ type: "assistant", text: "One tool completed." }] });
+			assert.equal(second.status, "not_needed");
+			assert.equal(requests, 1);
+		});
+	}
+}
 
 function createCoordinator(overrides: Partial<Omit<CompactionCoordinatorOptions, "store">> & {
 	readonly store: FakeCompactionStore;

@@ -13,9 +13,9 @@ export interface TrainingConversationContext {
 }
 
 /** Read prompt/context and unique tool definitions, not a snapshot for every provider request. */
-export function loadTrainingConversationContext(store: TrainingExportStore, sessionId: string): TrainingConversationContext {
+export function loadTrainingConversationContext(store: TrainingExportStore, sessionId: string, turns?: ReadonlySet<string>): TrainingConversationContext {
 	const ledger = store.modelInputLedger;
-	const references = ledger.listProviderRequestReferences(sessionId);
+	const references = ledger.listProviderRequestReferences(sessionId).filter((ref) => turns === undefined || turns.has(ref.turnId));
 	const first = references[0];
 	let initialRequest: ProviderRequest | undefined;
 	let unavailable = false;

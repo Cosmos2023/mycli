@@ -143,10 +143,17 @@
   Pre-turn compaction excludes only the fresh incoming suffix. Manual and in-turn compaction
   summarize the full active window; in-turn triggers run after tool results are durable.
 - Replacement history is recent real user-message text + handoff summary; pre-turn compaction
-  appends the unchanged fresh suffix afterward. Default retained user text is 20,000 tokens, with
-  a visible truncation marker at the boundary. Old summaries, assistant output, tool protocol and
+  appends the unchanged fresh suffix afterward. Default retained user text has a 20,000-token cap,
+  reduced to fit the active window: subtract the fixed prefix from the hard ceiling and from a
+  total-scope trigger, use the smaller body budget, reserve 20% for continuation, then subtract
+  the actual summary envelope and fresh suffix. Apply the trigger bound even without a hard ceiling.
+  Count retained user role envelopes and show a truncation marker at the boundary. Old summaries, assistant output, tool protocol and
   old images are represented by the new summary rather than retained verbatim. Respect the storage
   replacement batch bound as well. The original readable transcript remains append-only.
+- An oversized completed summary or fresh suffix can leave zero retained-user budget; neither is
+  truncated to make room. Tests cover both trigger scopes, with/without a hard ceiling, a large
+  fixed prefix, preservation of recent intent, and no immediate repeat compaction after a small
+  assistant continuation. A fixed 20,000-token retained tail independent of the window is invalid.
 - Local compaction never rereads files. `rehydration` stays empty for all sources. The next ordinary
   provider request supplies current base/developer instructions and bootstraps runtime context in
   the new timeline window. Recompute `afterTokens` without a minimum-savings acceptance gate.

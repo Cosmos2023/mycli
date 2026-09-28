@@ -220,6 +220,8 @@ owner_pid
 `;
 
 export interface TranscriptEventWindowOptions {
+	/** Read the original ancestor prefix through each durable fork boundary. */
+	readonly includeAncestors?: boolean;
 	readonly beforeSequence?: number;
 	readonly afterSequence?: number;
 	readonly limit?: number;
@@ -1278,6 +1280,20 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 				throw new RangeError("beforeSequence and afterSequence are mutually exclusive");
 			}
 			const limit = boundedLimit(options.limit, MAX_EVENT_WINDOW_LIMIT);
+			if (options.includeAncestors && this.#hasLineageParent(normalizedSessionId)) {
+				const parameters: unknown[] = [];
+				const segments = this.#lineageSegments(normalizedSessionId).map((segment) => {
+					parameters.push(segment.sessionId);
+					if (segment.maxSequence === undefined) return "(session_id = ?)";
+					parameters.push(segment.maxSequence);
+					return "(session_id = ? AND sequence_no <= ?)";
+				});
+				const cursor = after ?? before;
+				if (cursor !== undefined) parameters.push(cursor);
+				return this.#eventWindow(`(${segments.join(" OR ")})`
+					+ (cursor === undefined ? "" : ` AND sequence_no ${after === undefined ? "<" : ">"} ?`),
+				parameters, after === undefined ? "DESC" : "ASC", limit, after === undefined);
+			}
 			if (after !== undefined) {
 				return this.#eventWindow(
 					`session_id = ? AND sequence_no > ?`,

@@ -20,6 +20,29 @@ test("Windows console code page output falls back instead of mojibake", () => {
 	assert.deepEqual(output.finish(), { text: "", replacementCount: 0, encoding: "fallback" });
 });
 
+test("console fallback preserves undecoded bytes across every split", () => {
+	const bytes = Uint8Array.from([0x41, 0xd6, 0xd0, 0xbe, 0xdc, 0xbe, 0xf8]);
+	for (let split = 0; split <= bytes.length; split += 1) {
+		const output = new TerminalOutputNormalizer({ fallbackEncoding: "gbk" });
+		const chunks = [output.push(bytes.subarray(0, split)), output.push(bytes.subarray(split)), output.finish()];
+		assert.equal(chunks.map((chunk) => chunk.text).join(""), "A中拒绝", `split=${split}`);
+		assert.equal(chunks.reduce((sum, chunk) => sum + chunk.replacementCount, 0), 0);
+	}
+	const incomplete = new TerminalOutputNormalizer({ fallbackEncoding: "windows-1252" });
+	assert.equal(incomplete.push(Uint8Array.of(0xc2)).text, "");
+	assert.equal(incomplete.finish().text, "Â");
+});
+
+test("UTF-8 probing with fallback preserves split multibyte text and BOM handling", () => {
+	const bytes = new TextEncoder().encode("\ufeffA中😀B");
+	for (let split = 0; split <= bytes.length; split += 1) {
+		const output = new TerminalOutputNormalizer({ fallbackEncoding: "gbk" });
+		const chunks = [output.push(bytes.subarray(0, split)), output.push(bytes.subarray(split)), output.finish()];
+		assert.equal(chunks.map((chunk) => chunk.text).join(""), "A中😀B");
+		assert.ok(chunks.every((chunk) => chunk.encoding !== "fallback"));
+	}
+});
+
 test("carriage-return progress becomes append-only lines", () => {
 	const output = new TerminalOutputNormalizer();
 	assert.deepEqual(output.push("step 1\rstep 2\r\nfinished"), {

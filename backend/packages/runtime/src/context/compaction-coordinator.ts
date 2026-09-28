@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { NODE_RUNTIME_CONTEXT_DEFAULTS } from "@mycli/config";
 import {
 	decideCompaction,
 	type CanonicalConversationItem,
@@ -119,7 +120,6 @@ export interface CompactionResult {
 
 interface CompactionSelection {
 	readonly summaryItems: readonly CanonicalConversationItem[];
-	readonly retainedUsers: readonly CanonicalConversationItem[];
 	readonly freshSuffix: readonly CanonicalConversationItem[];
 }
 
@@ -285,9 +285,21 @@ export class CompactionCoordinator {
 			return interruptedResult();
 		}
 
+		const summaryItem = compactionSummaryItem(summary);
+		const trigger = (this.#options.tokenLimit - this.#options.reservedOutputTokens) * (this.#options.triggerRatio ?? 1);
+		const bodyBudget = Math.min((this.#options.hardLimitTokens ?? Infinity) - baseTokens,
+			trigger - (this.#options.limitScope === "body_after_prefix" ? 0 : baseTokens));
+		const replacementTokens = countConversationTokens(this.#tokenCounter, [summaryItem, ...selection.freshSuffix]);
+		// Reserve 20% of the available body for subsequent work; filling it to
+		// the trigger would compact again after the very next small tool result.
+		// Count the actual summary/fresh suffix and never truncate either one.
+		const retainedBudget = Math.min(this.#options.retainedUserMaxTokens ?? NODE_RUNTIME_CONTEXT_DEFAULTS.compactionTailMaxTokens,
+			Math.max(0, Math.floor(bodyBudget * 0.8) - replacementTokens));
+		const retainedUsers = retainCompactionUserMessages(selection.summaryItems, this.#tokenCounter, retainedBudget)
+			.slice(-Math.max(1, TRANSCRIPT_EVENT_MAX_BATCH_ITEMS - selection.freshSuffix.length - 1));
 		const storedConversation = Object.freeze([
-			...selection.retainedUsers,
-			compactionSummaryItem(summary),
+			...retainedUsers,
+			summaryItem,
 			...selection.freshSuffix,
 		]);
 		const rehydration: readonly RehydratedFile[] = Object.freeze([]);
@@ -306,7 +318,7 @@ export class CompactionCoordinator {
 			inputHash,
 			replacementHash,
 			replacementMessages,
-			retainedTailMessages: selection.retainedUsers.map(toStoredMessage),
+			retainedTailMessages: retainedUsers.map(toStoredMessage),
 			freshSuffixCount: selection.freshSuffix.length,
 			rehydration,
 			status: "completed",
@@ -387,8 +399,6 @@ export class CompactionCoordinator {
 		const summaryItems = conversation.slice(0, priorLength);
 		return {
 			summaryItems,
-			retainedUsers: retainCompactionUserMessages(summaryItems, this.#tokenCounter, this.#options.retainedUserMaxTokens)
-				.slice(-Math.max(1, TRANSCRIPT_EVENT_MAX_BATCH_ITEMS - freshCount - 1)),
 			freshSuffix: conversation.slice(priorLength),
 		};
 	}

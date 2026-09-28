@@ -13,6 +13,39 @@ import {
 
 const NOW = "2026-08-14T00:00:00.000Z";
 
+test("bounded event pages traverse nested fork prefixes in both directions", async (t) => {
+	const { repository } = await repositoryFixture(t);
+	completeTextTurn(repository, "root", "root-turn", "root-client", "root request", "root answer");
+	const rootEvents = repository.loadEventWindow("root").events;
+	repository.forkSession({ sourceSessionId: "root", targetSessionId: "child" });
+	completeTextTurn(repository, "root", "late-root", "late-root", "excluded root", "excluded answer");
+	completeTextTurn(repository, "child", "child-turn", "child-client", "child request", "child answer");
+	const childEvents = repository.loadEventWindow("child").events;
+	repository.forkSession({ sourceSessionId: "child", targetSessionId: "grandchild" });
+	completeTextTurn(repository, "child", "late-child", "late-child", "excluded child", "excluded answer");
+	assert.deepEqual(repository.loadEventWindow("grandchild").events, [], "default remains local only");
+	const expected = [...rootEvents, ...childEvents].map((event) => event.sequenceNo);
+	const backward: number[] = [];
+	let beforeSequence: number | undefined;
+	for (;;) {
+		const page = repository.loadEventWindow("grandchild", { limit: 2, includeAncestors: true, ...(beforeSequence ? { beforeSequence } : {}) });
+		backward.unshift(...page.events.map((event) => event.sequenceNo));
+		if (!page.hasMore) break;
+		beforeSequence = page.events[0]!.sequenceNo;
+	}
+	assert.deepEqual(backward, expected);
+	const forward: number[] = [];
+	let afterSequence = rootEvents[0]!.sequenceNo;
+	forward.push(afterSequence);
+	for (;;) {
+		const page = repository.loadEventWindow("grandchild", { limit: 2, includeAncestors: true, afterSequence });
+		forward.push(...page.events.map((event) => event.sequenceNo));
+		if (!page.hasMore) break;
+		afterSequence = page.events.at(-1)!.sequenceNo;
+	}
+	assert.deepEqual(forward, expected);
+});
+
 test("forks a normalized parent prefix by completed event boundary without copying payloads", async (t) => {
 	const fixture = await repositoryFixture(t);
 	completeToolTurn(fixture.repository, "source", "turn-1", "client-1", "first request");

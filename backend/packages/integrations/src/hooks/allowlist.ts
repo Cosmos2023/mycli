@@ -69,7 +69,7 @@ export class HookAllowlistStore {
 	}
 
 	async statusFor(spec: ConfiguredHookSpec): Promise<HookApprovalStatus> {
-		const commandDigest = hookCommandDigest(spec.command);
+		const commandDigest = hookCommandDigest(spec.command, spec.pluginRoot);
 		const loaded = await this.#loadInternal();
 		if (loaded.issues.length > 0) return status(false, "allowlist_invalid", commandDigest);
 		if (!loaded.exists) return status(false, "allowlist_missing", commandDigest);
@@ -233,11 +233,11 @@ export function hookIdentity(spec: ConfiguredHookSpec): string {
 	return `${spec.scope}:${spec.hookId}:${spec.hookPoint}`;
 }
 
-export function hookCommandDigest(command: readonly string[]): string {
+export function hookCommandDigest(command: readonly string[], pluginRoot?: string): string {
 	if (command.length === 0 || command.some((item) => !item || item.includes("\0"))) {
 		throw new TypeError("hook command must contain canonical argv");
 	}
-	return sha256(command.join("\0"));
+	return sha256(pluginRoot === undefined ? command.join("\0") : JSON.stringify({ command, pluginRoot }));
 }
 
 export function hookConfigPathHash(configPath: string): string {
@@ -253,7 +253,7 @@ function approvalRecord(spec: ConfiguredHookSpec, now: Date): HookApprovalRecord
 		identity: hookIdentity(spec),
 		scope: spec.scope,
 		configPathHash: hookConfigPathHash(spec.configPath),
-		commandDigest: hookCommandDigest(spec.command),
+		commandDigest: hookCommandDigest(spec.command, spec.pluginRoot),
 		approvedAt: now.toISOString(),
 	});
 }

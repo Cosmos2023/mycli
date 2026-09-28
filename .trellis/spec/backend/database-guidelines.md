@@ -1605,24 +1605,42 @@ accounting update stream. See `docs/goals.md` for the public lifecycle contract.
 
 ## Training export boundary
 
+### 1. Scope / Trigger
+
+Changes to conversation JSONL export, fork ancestry, or historical prompt reconstruction.
+
+### 2. Signatures
+
 `exportSessionTrainingData(store, options, writeChunk)` writes one schema-v3 JSONL conversation
 with `source.session_id`, `messages` and distinct `tools`. Do not dump every provider request,
 raw event archive or cumulative training prefix. Each actual message/attachment appears once;
 preserve genuine repeated user/assistant messages rather than deduplicating by text.
 
+`loadEventWindow(sessionId, { includeAncestors: true, beforeSequence?, afterSequence?, limit? })`
+opts into bounded original ancestry paging. The default remains local-only.
+
+### 3. Contracts
+
 Read the bounded original transcript in sequence, not the readable 2,000-item projection or the
 latest compacted window. Do not append compaction replacement tails or UI status telemetry.
 Failures, interruptions, rollbacks, images and unmatched calls do not filter out conversations.
-Reconstruct only the first request for initial instructions and inherited fork context; subsequent
-context changes and unique tool snapshots come directly from the ledger. Current config/prompts
-are not historical sources. Context hints use their recorded updates and skip unchanged values.
+Ancestor pages stop at each durable fork boundary, including fresh forks with no local request.
+Before/after cursors remain mutually exclusive.
+Nested fork pages preserve global sequence order and exclude subsequent ancestor work.
+Reconstruct only the first included request per source session for historical instructions;
+subsequent context changes and unique tool snapshots come directly from the ledger, filtered by
+included source turns. Use request-only inherited history solely for legacy prefixes lacking
+transcript ancestry. Child instructions first appear at the child boundary; unchanged instructions
+are emitted once. Current config/prompts are not historical sources. Context hints use their
+recorded updates and skip unchanged values.
 Do not inject context between a tool batch and its results. Manual compaction ids are not turns.
 
 Project known stored plaintext reasoning (including blob-backed content), and label reasoning
 summaries separately. Never interpret encrypted blocks, signatures or redacted thinking as text.
 Standalone reasoning display content already represented by an assistant block is not duplicated.
-Keep typed image bytes out of text-redaction regexes. Scope normalized tool-call ids by source turn
-so native ids reused across turns cannot cross-pair results. Preserve invalid arguments for curation.
+Keep typed image bytes out of text-redaction regexes. Scope normalized tool-call ids, reasoning
+deduplication and context updates by both source session and turn, so reused ids across fork
+sessions cannot cross-pair results. Preserve invalid arguments for curation.
 
 Keep multiline text and tool schemas intact while masking secrets. No new truncation or implicit
 sample-size filter is allowed. Stored tool output may already be capped before persistence; token
@@ -1641,5 +1659,33 @@ Stream one JSON object with escaped message strings and a single terminating new
 owner-only temporary file. Atomic no-overwrite publication protects existing files and symlinks;
 abort/IO failure removes the partial file. Slash export owns idle session control and shutdown
 drains its cancellation before closing SQLite. No provider invocation or training job occurs.
+
+### 4. Validation & Error Matrix
+
+| Condition | Result |
+| --- | --- |
+| Fresh fork without local requests | Export original bounded ancestor messages |
+| Missing initial ledger context | Keep messages and report `initial_context_unavailable` |
+| Invalid lineage boundary/cycle | Fail with `StorageFailure`; never broaden ancestry |
+| Both before/after cursors supplied | Reject the invalid window request |
+| Cancellation or writer failure | Abort publication and remove the partial output |
+
+### 5. Good / Base / Bad Cases
+
+- Good: an ancestor compacted before a nested fork still contributes each original message once.
+- Base: a local session preserves the same single conversation row and first-request reconstruction.
+- Bad: using the child's first provider request as the only source of inherited conversation.
+
+### 6. Tests Required
+
 Tests cover unique message/image counts across many provider steps and compaction, source paging,
 legacy/missing input, inherited prefixes, secrets, file races, cancellation and CLI/TUI parity.
+`transcript-event-lineage.test.ts` checks nested forward/backward windows and excludes post-fork
+ancestor events. `training-export.test.ts` covers fresh, continued and nested forks, compacted
+ancestors, absent parent ledger context, and reused session/turn/tool identities.
+
+### 7. Wrong vs Correct
+
+Wrong: `loadEventWindow(childId)` plus inherited items reconstructed from a local request; a fresh
+fork has neither source. Correct: `loadEventWindow(childId, { includeAncestors: true, limit: 256 })`
+and historical context loaded per included source session/turn.

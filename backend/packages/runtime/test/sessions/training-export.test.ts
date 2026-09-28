@@ -80,6 +80,46 @@ test("an inherited fork prefix is emitted once and subsequent local history is a
 	for (const text of ["Inherited question", "Inherited answer", "inspect", "Final response."]) assert.equal(conversation.messages.filter((message) => message.content === text).length, 1);
 });
 
+test("fresh and continued nested forks export original ancestry once within each fork boundary", async (t) => {
+	const { store, begin, commit, finish, now } = await fixture(t);
+	const addTool = (sessionId: string): void => {
+		store.appendAssistantToolCalls({ sessionId, clientTurnId: "same", assistantText: "Inspect.",
+			calls: [{ callId: "same-call", name: "Read", argumentsJson: "{}" }] });
+		store.appendToolResult({ sessionId, clientTurnId: "same", summary: "Read", result: {
+			callId: "same-call", toolName: "Read", success: true, output: `${sessionId} result`,
+		} });
+	};
+	begin("same"); commit("same", 1); addTool("session"); finish("same");
+	for (let index = 0; index < 600; index++) store.appendDisplayActivity({ sessionId: "session", turnId: "same",
+		eventId: `display-${index}`, activityType: "status", text: "Telemetry", createdAt: now() });
+	store.appendEvent({ schemaVersion: 1, sessionId: "session", eventId: "compact", eventType: "compaction", modelVisible: false,
+		createdAt: now(), payload: { windowId: "window", sourceProviderIndex: 4, summary: "Compressed ancestor",
+			replacement: [{ type: "user", text: "Compressed ancestor" }] } });
+	store.forkSession({ sourceSessionId: "session", targetSessionId: "child" });
+	const fresh = await collect(store, { sessionId: "child" });
+	assert.equal(fresh.report.turns, 1);
+	assert.equal(fresh.report.tool_calls, 1);
+	assert.equal(fresh.conversation.messages.filter((message) => message.content === "inspect").length, 1);
+	assert.ok(fresh.conversation.messages.some((message) => message.content === "Final response."));
+	assert.doesNotMatch(fresh.raw, /Compressed ancestor|Telemetry/);
+	begin("excluded"); commit("excluded", 1, { permissionContext: "Excluded late root context" }); finish("excluded");
+	begin("same", "child"); commit("same", 1, { sessionId: "child" }); addTool("child"); finish("same", "child");
+	store.forkSession({ sourceSessionId: "child", targetSessionId: "grandchild" });
+	begin("excluded-child", "child"); commit("excluded-child", 1, { sessionId: "child", permissionContext: "Excluded late child context" }); finish("excluded-child", "child");
+	const nested = await collect(store, { sessionId: "grandchild" });
+	assert.equal(nested.report.turns, 2, "reused turn ids belong to different sessions");
+	assert.equal(nested.conversation.messages.filter((message) => message.content === "inspect").length, 2);
+	assert.equal(nested.conversation.messages.filter((message) => message.content === "Final response.").length, 2);
+	assert.equal(nested.conversation.messages.filter((message) => message.role === "system").length, 1);
+	assert.equal(nested.conversation.tools.length, 1);
+	const calls = nested.conversation.messages.flatMap((message) => message.role === "assistant" ? message.tool_calls ?? [] : []);
+	const results = nested.conversation.messages.filter((message) => message.role === "tool");
+	assert.equal(calls.length, 2);
+	assert.notEqual(calls[0]!.id, calls[1]!.id);
+	assert.deepEqual(results.map((message) => message.tool_call_id), calls.map((call) => call.id));
+	assert.doesNotMatch(nested.raw, /Excluded late|Compressed ancestor|Telemetry/);
+});
+
 test("empty or missing-ledger sessions export valid conversation rows without inventing prompts", async (t) => {
 	const { store, begin } = await fixture(t);
 	assert.deepEqual((await collect(store)).conversation, { schema_version: 3, source: { session_id: "session" }, messages: [], tools: [] });
@@ -96,6 +136,20 @@ test("empty or missing-ledger sessions export valid conversation rows without in
 	const broken = await collect(view);
 	assert.deepEqual(broken.conversation.messages, result.conversation.messages);
 	assert.doesNotMatch(JSON.stringify(broken), /private database detail/);
+});
+
+test("a fork of legacy history introduces known child instructions only at the child boundary", async (t) => {
+	const { store, begin, commit, finish } = await fixture(t);
+	begin("legacy"); finish("legacy");
+	store.forkSession({ sourceSessionId: "session", targetSessionId: "child" });
+	const fresh = await collect(store, { sessionId: "child" });
+	assert.deepEqual(fresh.conversation.messages, [{ role: "user", content: "inspect" }, { role: "assistant", content: "Final response." }]);
+	assert.deepEqual(fresh.report.warnings, ["initial_context_unavailable"]);
+	begin("child-turn", "child"); commit("child-turn", 1, { sessionId: "child" }); finish("child-turn", "child");
+	const continued = await collect(store, { sessionId: "child" });
+	assert.deepEqual(continued.conversation.messages.slice(0, 2), fresh.conversation.messages);
+	assert.deepEqual(continued.conversation.messages[2], { role: "system", content: INSTRUCTIONS.content });
+	assert.equal(continued.conversation.messages.filter((message) => message.content === "inspect").length, 2);
 });
 
 test("single-row streaming respects the initial transcript boundary and cancellation", async (t) => {
@@ -132,13 +186,14 @@ async function fixture(t: test.TestContext) {
 	let tick = 0; const now = (): string => new Date(Date.parse("2026-09-15T00:00:00.000Z") + tick++).toISOString();
 	const store = openRuntimeSessionStore({ dbPath: join(root, "sessions.db"), reconcileRuntimeState: false, clock: now });
 	t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
-	const begin = (turnId: string): void => { store.reserveTurn({ sessionId: "session", turnId, clientTurnId: turnId, clientUserMessageId: `${turnId}:user`, requestFingerprint: `sha256:${"a".repeat(64)}`, userText: "inspect", workspaceRoot: root, threadId: "session", startedAt: now() }); };
-	const commit = (turnId: string, providerStep: number, options: { readonly history?: readonly CanonicalConversationItem[]; readonly permissionContext?: string } = {}) => commitRuntimeProviderStep({
-		sessionId: "session", turnId, providerStep, requestConfig: { provider: "openai", protocol: "responses", model: "test-model" }, instructionSnapshot: INSTRUCTIONS,
-		tools: [TOOL], history: options.history ?? store.loadConversationItems("session"), currentUserRequest: "inspect", sources: { permissionContext: options.permissionContext ?? "Original permission rules." },
+	const begin = (turnId: string, sessionId = "session"): void => { store.reserveTurn({ sessionId, turnId, clientTurnId: turnId, clientUserMessageId: `${turnId}:user`, requestFingerprint: `sha256:${"a".repeat(64)}`, userText: "inspect", workspaceRoot: root, threadId: sessionId, startedAt: now() }); };
+	const commit = (turnId: string, providerStep: number, options: { readonly history?: readonly CanonicalConversationItem[]; readonly permissionContext?: string; readonly sessionId?: string } = {}) => commitRuntimeProviderStep({
+		sessionId: options.sessionId ?? "session", turnId, providerStep, requestConfig: { provider: "openai", protocol: "responses", model: "test-model" },
+		instructionSnapshot: { ...INSTRUCTIONS, snapshotId: `${options.sessionId ?? "session"}:instructions` },
+		tools: [TOOL], history: options.history ?? store.loadConversationItems(options.sessionId ?? "session"), currentUserRequest: "inspect", sources: { permissionContext: options.permissionContext ?? "Original permission rules." },
 		ledger: store.modelInputLedger, maxPromptTokens: 100_000, clock: now,
 	});
-	const finish = (turnId: string): void => { store.turnTerminalizations.terminalize({ kind: "completed", sessionId: "session", clientTurnId: turnId, assistantText: "Final response.", usage: {}, completedAt: now() }); };
+	const finish = (turnId: string, sessionId = "session"): void => { store.turnTerminalizations.terminalize({ kind: "completed", sessionId, clientTurnId: turnId, assistantText: "Final response.", usage: {}, completedAt: now() }); };
 	return { store, begin, commit, finish, now };
 }
 

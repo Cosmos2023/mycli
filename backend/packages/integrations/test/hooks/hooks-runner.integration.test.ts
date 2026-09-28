@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
+import { access, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -7,12 +7,29 @@ import type { HookInvocation } from "@mycli/core";
 import type { SandboxProfile } from "@mycli/tools";
 import {
 	ConfiguredHookRunner,
+	discoverHookConfig,
 	HookAllowlistStore,
 	type ConfiguredHookSpec,
 	type ConfiguredHookTraceSummary,
 } from "../../src/index.ts";
 
 const FIXTURE = join(import.meta.dirname, "..", "fixtures", "hook-command.mjs");
+
+test("plugin root shell metacharacters remain literal through discovery and execution", { skip: process.platform === "win32" }, async (t) => {
+	const fixture = await runnerFixture(t);
+	const pluginRoot = join(fixture.workspaceRoot, 'literal $HOME $(printf injected) `printf injected` "quote" $&');
+	await mkdir(join(fixture.workspaceRoot, ".mycli"), { recursive: true });
+	await writeFile(join(fixture.workspaceRoot, ".mycli", "hooks.json"), JSON.stringify({ hooks: [{
+		id: "literal-root", hook_point: "session_start", command: 'printf "%s" "${CODEX_PLUGIN_ROOT}"',
+	}] }));
+	const discovery = await discoverHookConfig({ workspaceRoot: fixture.workspaceRoot, homeDir: fixture.homeDir,
+		pluginRoot, shellPath: "/bin/sh" });
+	assert.deepEqual(discovery.diagnostics, []);
+	const spec = discovery.hooks[0]!;
+	await fixture.allowlist.approve(spec);
+	const result = await configuredRunner(fixture).run(spec, invocation("session_start"), freshSignal());
+	assert.deepEqual(result, { action: "allow", additionalContexts: [pluginRoot] });
+});
 
 test("hook launcher forwards helper-owned environment after hook sanitization", async (t) => {
 	const fixture = await runnerFixture(t);

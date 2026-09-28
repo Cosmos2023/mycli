@@ -163,6 +163,10 @@ hooks, which still run under the existing workspace sandbox. Prompt/agent hook t
 Codex hook events are not implemented. OpenAI-hosted Apps cannot execute in mycli: an Apps
 declaration produces `plugin_apps_unavailable` while other components remain usable.
 
+Shell commands resolve plugin roots through environment variables, so special characters in the
+installation path remain literal. The `${VAR}`, `$VAR`, `$env:VAR` and `%VAR%` spellings are
+translated for the selected shell. Literal argv arrays receive the path directly.
+
 ## Marketplace Format
 
 The default manifest is `.agents/plugins/marketplace.json`; `.agents/plugins/api_marketplace.json`

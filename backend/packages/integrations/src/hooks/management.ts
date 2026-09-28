@@ -181,7 +181,7 @@ async function managementRow(
 		workingDirectory: spec.workingDirectory,
 		envPolicy: spec.envPolicy,
 		...(spec.shellKind ? { shellKind: spec.shellKind } : {}),
-		commandDigest: hookCommandDigest(spec.command),
+		commandDigest: hookCommandDigest(spec.command, spec.pluginRoot),
 		configPathHash: hookConfigPathHash(spec.configPath),
 		allowlistStatus: approval.allowed ? "allowed" : "not_allowed",
 		allowlistReason: approval.reason,
