@@ -1,1 +1,7 @@
 backend/packages/contracts/src/generated/*.ts text eol=lf
+# Tests hash these fixtures byte for byte and compare a rendered block against
+# this report, so none of them may be rewritten to CRLF on a checkout with
+# core.autocrlf enabled.
+docs/provider-catalog-evidence.md text eol=lf
+tests/fixtures/error-system/emitters.json text eol=lf
+tests/fixtures/error-system/failures.json text eol=lf
