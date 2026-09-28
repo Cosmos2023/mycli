@@ -2,7 +2,6 @@ import { accessSync, constants } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import {
-	delimiter as posixDelimiter,
 	dirname,
 	join,
 	normalize as posixNormalize,
@@ -13,6 +12,9 @@ import { fileURLToPath } from "node:url";
 import { RIPGREP_TARGETS, ripgrepOutputPath, ripgrepPlatformKey } from "./ripgrep-targets.ts";
 
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+// node:path exposes the host delimiter, so a POSIX target on Windows must not
+// borrow it: PATH entries join with ":" there whatever the host is.
+const POSIX_DELIMITER = ":";
 const require = createRequire(import.meta.url);
 
 export interface ResolveRipgrepOptions {
@@ -61,7 +63,7 @@ export function prependRipgrepToPath(options: ResolveRipgrepOptions = {}): Ripgr
 	const executable = resolveRipgrep({ ...options, platform, pathValue: existing });
 	if (!executable) return Object.freeze({ path: existing });
 	const directory = dirname(executable);
-	const delimiter = platform === "win32" ? win32.delimiter : posixDelimiter;
+	const delimiter = platform === "win32" ? win32.delimiter : POSIX_DELIMITER;
 	const parts = existing.split(delimiter).filter(Boolean);
 	const normalizedDirectory = comparablePath(directory, platform);
 	const filtered = parts.filter((part) => comparablePath(part, platform) !== normalizedDirectory);
@@ -108,7 +110,7 @@ function environmentPathKey(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): 
 }
 
 function findOnPath(pathValue: string, platform: NodeJS.Platform): string | undefined {
-	const delimiter = platform === "win32" ? win32.delimiter : posixDelimiter;
+	const delimiter = platform === "win32" ? win32.delimiter : POSIX_DELIMITER;
 	const executable = platform === "win32" ? "rg.exe" : "rg";
 	for (const directory of pathValue.split(delimiter).filter(Boolean)) {
 		const candidate = platform === "win32"

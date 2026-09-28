@@ -545,10 +545,16 @@ test("Shell sanitizes environment and applies the frozen sandbox before manager 
 		"/",
 		"/",
 	]);
-	assert.deepEqual(manager.starts[0]?.env, {
+	const started = manager.starts[0];
+	assert.ok(started);
+	const { MYCLI_RIPGREP_PATH_DIR, PATH, ...sanitized } = started.env;
+	// A host that has the platform ripgrep package installed injects its directory
+	// ahead of the sanitized PATH, so only that prefix may differ.
+	assert.equal(PATH, MYCLI_RIPGREP_PATH_DIR === undefined
+		? "/usr/bin" : `${MYCLI_RIPGREP_PATH_DIR}:/usr/bin`);
+	assert.deepEqual(sanitized, {
 		HOME: "/home/demo",
 		MYCLI_CI: "1",
-		PATH: "/usr/bin",
 		PWD: canonicalRoot,
 	});
 	assert.equal(JSON.stringify(manager.starts[0]?.env).includes("must-not-reach-child"), false);
