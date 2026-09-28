@@ -2477,6 +2477,40 @@
         }
       }
     },
+    "SandboxCapabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["filesystem_rules", "denied_reads", "structured_egress", "independent_policies", "host_loopback_access"],
+      "properties": {
+        "filesystem_rules": { "$ref": "#/$defs/CapabilitySupport" },
+        "denied_reads": { "$ref": "#/$defs/CapabilitySupport" },
+        "structured_egress": { "$ref": "#/$defs/CapabilitySupport" },
+        "independent_policies": { "$ref": "#/$defs/CapabilitySupport" },
+        "host_loopback_access": { "$ref": "#/$defs/CapabilitySupport" }
+      }
+    },
+    "CapabilitySupport": {
+      "type": "string",
+      "enum": ["supported", "unsupported", "unknown"]
+    },
+    "PermissionBounds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["read_scope", "network_scope", "readonly_roots", "denied_read_rules", "allow_local_binding"],
+      "properties": {
+        "read_scope": { "type": "string", "enum": ["platform_default", "allowlist"] },
+        "network_scope": { "type": "string", "enum": ["disabled", "unrestricted", "domain_allowlist", "structured_egress"] },
+        "readonly_roots": { "type": "integer", "minimum": 0 },
+        "denied_read_rules": { "type": "integer", "minimum": 0 },
+        "allow_local_binding": { "type": "boolean" },
+        "loopback_ports": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": { "type": "integer", "minimum": 1, "maximum": 65535 }
+        }
+      }
+    },
     "Permissions": {
       "type": "object",
       "properties": {
@@ -2490,7 +2524,13 @@
           "type": "integer"
         },
         "effective": {
-          "type": "object"
+          "type": "object",
+          "properties": {
+            "bounds": { "$ref": "#/$defs/PermissionBounds" }
+          }
+        },
+        "sandbox_capabilities": {
+          "$ref": "#/$defs/SandboxCapabilities"
         },
         "sandbox_readiness": {
           "type": "object"

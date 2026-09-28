@@ -3,7 +3,7 @@
   "baseline": "python-m7-final",
   "gateway": {
 	"rpc_count": 59,
-    "event_count": 49,
+    "event_count": 50,
     "required_rpc": [
       "session.bootstrap",
 	  "session.new",
@@ -34,6 +34,7 @@
       "goal.update"
     ],
     "required_events": [
+	  "network.blocked",
       "runtime.ready",
       "item.started",
       "item.completed",

@@ -43,6 +43,7 @@
     "user"
   ],
   "eventStreams": [
+	"network.blocked",
     "approval.request",
     "approval.respond",
     "clarify.request",

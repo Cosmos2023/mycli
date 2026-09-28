@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mycli.local/contracts/network-access.schema.json",
+  "title": "NetworkAccessDetails",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["reason"],
+  "properties": {
+    "host": {"type": "string", "minLength": 1, "maxLength": 253, "pattern": "^[a-zA-Z0-9.:\\[\\]-]+$"},
+    "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+    "protocol": {"enum": ["http", "https", "tcp"]},
+    "method": {"type": "string", "maxLength": 24, "pattern": "^[A-Z]+$"},
+    "reason": {"enum": ["approval_required", "domain_denied", "method_denied", "private_address", "dns_failed", "approval_denied", "approval_unavailable", "approval_timeout", "request_cancelled", "port_denied", "invalid_request", "capacity_exceeded", "connection_failed"]}
+  }
+}

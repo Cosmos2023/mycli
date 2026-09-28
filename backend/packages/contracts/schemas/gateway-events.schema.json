@@ -1,5 +1,16 @@
 {
 	"$defs": {
+		"network.blocked": {
+			"name": "network.blocked",
+			"type": "object",
+			"required": ["session_id", "call_id", "details"],
+			"properties": {
+				"session_id": {"type": "string", "minLength": 1, "maxLength": 256},
+				"turn_id": {"type": "string", "maxLength": 256},
+				"call_id": {"type": "string", "minLength": 1, "maxLength": 256},
+				"details": {"$ref": "network-access.schema.json"}
+			}
+		},
 		"mcp.elicitation.respond": {
 		  "name": "mcp.elicitation.respond",
 		  "$ref": "mcp-elicitation.schema.json#/$defs/resolved"
@@ -32,6 +43,7 @@
     "approval.request": {
       "name": "approval.request",
       "properties": {
+		"network_request": {"$ref": "network-access.schema.json"},
         "action": {
           "type": "string"
         },
@@ -637,6 +649,7 @@
     "interactive.cancelled": {
       "name": "interactive.cancelled",
       "properties": {
+		"network_request": {"$ref": "network-access.schema.json"},
         "child_session_id": {
           "maxLength": 256,
           "minLength": 1,
@@ -673,13 +686,11 @@
           "type": "string"
         }
       },
-      "required": [
-        "session_id",
-        "child_session_id",
-        "generation",
-        "client_turn_id",
-        "turn_id"
-      ],
+      "required": ["session_id"],
+	  "anyOf": [
+		{"required": ["child_session_id", "generation", "client_turn_id", "turn_id"]},
+		{"required": ["network_request", "decision_id"]}
+	  ],
       "oneOf": [
         {
           "required": ["decision_id"]
@@ -1879,6 +1890,7 @@
     "tool.complete": {
       "name": "tool.complete",
       "properties": {
+        "agent_interaction": { "$ref": "gateway-tool-record.schema.json#/$defs/GatewayAgentInteraction" },
         "terminal_interaction": { "$ref": "gateway-tool-record.schema.json#/$defs/GatewayTerminalInteraction" },
         "tool_record": { "$ref": "gateway-tool-record.schema.json" },
         "call_id": {
@@ -1925,6 +1937,7 @@
     "tool.failed": {
       "name": "tool.failed",
       "properties": {
+        "agent_interaction": { "$ref": "gateway-tool-record.schema.json#/$defs/GatewayAgentInteraction" },
         "terminal_interaction": { "$ref": "gateway-tool-record.schema.json#/$defs/GatewayTerminalInteraction" },
         "tool_record": { "$ref": "gateway-tool-record.schema.json" },
         "call_id": {
@@ -2015,6 +2028,7 @@
     "tool.start": {
       "name": "tool.start",
       "properties": {
+        "agent_interaction": { "$ref": "gateway-tool-record.schema.json#/$defs/GatewayAgentInteraction" },
         "terminal_interaction": { "$ref": "gateway-tool-record.schema.json#/$defs/GatewayTerminalInteraction" },
         "tool_record": { "$ref": "gateway-tool-record.schema.json" },
         "args_preview": {
@@ -2854,6 +2868,15 @@
       ],
       "type": "object"
     },
+		{
+			"type": "object", "additionalProperties": false,
+			"required": ["jsonrpc", "method", "params"],
+			"properties": {
+				"jsonrpc": {"const": "2.0"},
+				"method": {"const": "network.blocked"},
+				"params": {"$ref": "#/$defs/network.blocked"}
+			}
+		},
 		{
 		  "type": "object",
 		  "required": [

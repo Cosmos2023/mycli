@@ -19,6 +19,7 @@ export type Permission = "read-only" | "workspace" | "full-access";
 export type Objects = {
   [k: string]: unknown;
 }[];
+export type CapabilitySupport = "supported" | "unsupported" | "unknown";
 export type Strings = string[];
 export type Identity = string;
 export type ProviderAttemptRecord = ProviderAttemptFields & {
@@ -885,12 +886,32 @@ export interface Permissions {
   profiles?: Objects;
   command_allowance_count?: number;
   effective?: {
+    bounds?: PermissionBounds;
     [k: string]: unknown;
   };
+  sandbox_capabilities?: SandboxCapabilities;
   sandbox_readiness?: {
     [k: string]: unknown;
   };
   [k: string]: unknown;
+}
+export interface PermissionBounds {
+  read_scope: "platform_default" | "allowlist";
+  network_scope: "disabled" | "unrestricted" | "domain_allowlist" | "structured_egress";
+  readonly_roots: number;
+  denied_read_rules: number;
+  allow_local_binding: boolean;
+  /**
+   * @maxItems 64
+   */
+  loopback_ports?: number[];
+}
+export interface SandboxCapabilities {
+  filesystem_rules: CapabilitySupport;
+  denied_reads: CapabilitySupport;
+  structured_egress: CapabilitySupport;
+  independent_policies: CapabilitySupport;
+  host_loopback_access: CapabilitySupport;
 }
 export interface ShellSnapshot {
   shell_id: string;
@@ -1169,6 +1190,7 @@ export interface GatewayToolRecord {
   display_omitted_chars?: number;
   shell?: GatewayShellRecord;
   terminal_interaction?: GatewayTerminalInteraction;
+  agent_interaction?: GatewayAgentInteraction;
 }
 export interface GatewayShellRecord {
   command_preview?: string;
@@ -1197,6 +1219,11 @@ export interface GatewayTerminalInteraction {
   command_preview?: string;
   interaction_succeeded?: boolean;
   process_running?: boolean;
+}
+export interface GatewayAgentInteraction {
+  kind: "spawn" | "message" | "followup" | "interrupt";
+  target: string;
+  message_preview?: string;
 }
 export interface SubmitParams {
   message: string;

@@ -75,6 +75,11 @@ export function sanitizeRuntimeErrorDetail(value: unknown): string | undefined {
 	return sanitizeRuntimeErrorText(value, PUBLIC_DETAIL_MAX_CHARS);
 }
 
+/** Redact a public message preview without treating code references as stack traces. */
+export function sanitizePublicTextPreview(value: unknown): string | undefined {
+	return sanitizeRuntimeErrorText(value, PUBLIC_DETAIL_MAX_CHARS, false);
+}
+
 export function canonicalRuntimeFailureMessage(code: string, candidate?: string, errorContext?: ErrorContext): string {
 	if (errorContext) return errorSummary(errorContext);
 	const runtimeCode = isRuntimeErrorCode(code) ? code : "provider_error";
@@ -105,7 +110,7 @@ export function turnFailureNotice(code: string, candidate?: string, errorContext
 	return /[.!?。！？]$/u.test(sentence) ? sentence : `${sentence}.`;
 }
 
-function sanitizeRuntimeErrorText(value: unknown, maxChars: number): string | undefined {
+function sanitizeRuntimeErrorText(value: unknown, maxChars: number, stripDiagnostics = true): string | undefined {
 	if (typeof value !== "string") return undefined;
 	const redacted = stripControlCharacters(value.replace(ANSI_SEQUENCE, ""))
 		.replace(BEARER_TOKEN, "Bearer [REDACTED]")
@@ -118,11 +123,11 @@ function sanitizeRuntimeErrorText(value: unknown, maxChars: number): string | un
 		.replace(/[A-Za-z]:\\Users\\[^\\\s]+/gu, "~")
 		.split(/\r?\n/u)
 		.map((line) => line.trim())
-		.filter((line) => line.length > 0 && !STACK_DETAIL.test(line))
+		.filter((line) => line.length > 0 && (!stripDiagnostics || !STACK_DETAIL.test(line)))
 		.join(" ")
 		.replace(/\s+/gu, " ")
 		.trim();
-	const sanitized = redacted.replace(SDK_EMPTY_BODY_STATUS_PREFIX, "").trim();
+	const sanitized = stripDiagnostics ? redacted.replace(SDK_EMPTY_BODY_STATUS_PREFIX, "").trim() : redacted;
 	return sanitized ? [...sanitized].slice(0, maxChars).join("") : undefined;
 }
 

@@ -30,9 +30,20 @@
     "display_truncated": { "type": "boolean" },
     "display_omitted_chars": { "$ref": "#/$defs/Count" },
     "shell": { "$ref": "#/$defs/GatewayShellRecord" },
-    "terminal_interaction": { "$ref": "#/$defs/GatewayTerminalInteraction" }
+    "terminal_interaction": { "$ref": "#/$defs/GatewayTerminalInteraction" },
+    "agent_interaction": { "$ref": "#/$defs/GatewayAgentInteraction" }
   },
   "$defs": {
+    "GatewayAgentInteraction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "target"],
+      "properties": {
+        "kind": { "enum": ["spawn", "message", "followup", "interrupt"] },
+        "target": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "message_preview": { "type": "string", "maxLength": 1000 }
+      }
+    },
     "Preview": { "type": "string", "maxLength": 8192 },
     "Count": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
     "NonNegativeNumber": { "type": "number", "minimum": 0, "maximum": 9007199254740991 },

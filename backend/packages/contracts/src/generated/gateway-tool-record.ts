@@ -163,6 +163,7 @@ export interface GatewayToolRecord {
   display_omitted_chars?: Count;
   shell?: GatewayShellRecord;
   terminal_interaction?: GatewayTerminalInteraction;
+  agent_interaction?: GatewayAgentInteraction;
 }
 export interface ErrorIdentityV1 {
   id: string;
@@ -302,4 +303,9 @@ export interface GatewayTerminalInteraction {
   command_preview?: Preview;
   interaction_succeeded?: boolean;
   process_running?: boolean;
+}
+export interface GatewayAgentInteraction {
+  kind: "spawn" | "message" | "followup" | "interrupt";
+  target: string;
+  message_preview?: string;
 }

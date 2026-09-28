@@ -1,5 +1,6 @@
 import type { GatewayShellRecord, GatewayToolRecord } from "../generated/gateway-tool-record.ts";
 import { projectTerminalInteraction } from "./terminal-interaction.ts";
+import { projectAgentInteraction, agentInteractionKind } from "./agent-interaction.ts";
 import { readErrorContext } from "../errors/error-context.ts";
 import { errorPublicDetails, errorSummary } from "../errors/presentation.ts";
 
@@ -51,6 +52,7 @@ export function projectGatewayToolRecord(input: {
 	const hidden = truncated ? 1 : !hasDisplay && content ? Math.max(0, lineCount(content) - 10) || undefined : undefined;
 	const presentation = PRESENTATIONS.find((value) => value === display.presentation) ?? "tool";
 	const terminalInteraction = projectTerminalInteraction(metadata.terminal_interaction);
+	const agentInteraction = projectAgentInteraction(metadata.agent_interaction);
 	const readSummary = !hasDisplay && status === "success" ? readRangeSummary(name, metadata) : undefined;
 	const errorContext = status === "error" || status === "cancelled" ? readErrorContext(metadata.error_context) : undefined;
 	const integrationDetails = errorContext?.source === "integration" ? errorPublicDetails(errorContext) : undefined;
@@ -61,6 +63,7 @@ export function projectGatewayToolRecord(input: {
 		call_id: text(metadata.call_id, 512) ?? text(metadata.callId, 512),
 		status,
 		...(terminalInteraction ? { terminal_interaction: terminalInteraction } : {}),
+		...(agentInteraction && agentInteraction.kind === agentInteractionKind(name) ? { agent_interaction: agentInteraction } : {}),
 		mutating,
 		target,
 		duration_ms: hasDisplay ? number(metrics.duration_ms) : number(metadata.duration_ms)

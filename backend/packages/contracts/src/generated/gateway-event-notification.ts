@@ -12,6 +12,11 @@ export type GatewayEventNotification =
     }
   | {
       jsonrpc: "2.0";
+      method: "network.blocked";
+      params: Network;
+    }
+  | {
+      jsonrpc: "2.0";
       method: "mcp.elicitation.respond";
       params: McpElicitation;
     }
@@ -245,17 +250,21 @@ export type GatewayEventNotification =
       method: "workspace.trust.changed";
       params: WorkspaceTrust;
     };
-export type Interactive = {
-  child_session_id: string;
-  client_turn_id: string;
+export type Interactive = InteractiveCancelled & {
+  network_request?: NetworkAccessDetails;
+  child_session_id?: string;
+  client_turn_id?: string;
   decision_id?: string;
-  generation: number;
+  generation?: number;
   request_id?: string;
   session_id: string;
-  turn_id: string;
+  turn_id?: string;
   [k: string]: any;
-} & InteractiveCancelled;
+} & InteractiveCancelled1;
 export type InteractiveCancelled = {
+  [k: string]: any;
+};
+export type InteractiveCancelled1 = {
   [k: string]: any;
 };
 export type ErrorContextV1 = ErrorIdentityV1 &
@@ -606,6 +615,33 @@ export interface Hook1 {
   message?: string;
   [k: string]: any;
 }
+export interface Network {
+  session_id: string;
+  turn_id?: string;
+  call_id: string;
+  details: NetworkAccessDetails;
+  [k: string]: any;
+}
+export interface NetworkAccessDetails {
+  host?: string;
+  port?: number;
+  protocol?: "http" | "https" | "tcp";
+  method?: string;
+  reason:
+    | "approval_required"
+    | "domain_denied"
+    | "method_denied"
+    | "private_address"
+    | "dns_failed"
+    | "approval_denied"
+    | "approval_unavailable"
+    | "approval_timeout"
+    | "request_cancelled"
+    | "port_denied"
+    | "invalid_request"
+    | "capacity_exceeded"
+    | "connection_failed";
+}
 export interface McpElicitation {
   request_id: string;
   session_id: string;
@@ -655,6 +691,7 @@ export interface Extension {
   version: number;
 }
 export interface Approval {
+  network_request?: NetworkAccessDetails;
   action?: string;
   client_turn_id?: string;
   child_session_id?: string;
@@ -1431,6 +1468,7 @@ export interface Thinking {
   [k: string]: any;
 }
 export interface Tool {
+  agent_interaction?: GatewayAgentInteraction;
   terminal_interaction?: GatewayTerminalInteraction;
   tool_record?: GatewayToolRecord;
   call_id: string;
@@ -1443,6 +1481,11 @@ export interface Tool {
   summary_truncated: boolean;
   tool_id: string;
   [k: string]: any;
+}
+export interface GatewayAgentInteraction {
+  kind: "spawn" | "message" | "followup" | "interrupt";
+  target: string;
+  message_preview?: string;
 }
 export interface GatewayTerminalInteraction {
   shell_id: string;
@@ -1476,6 +1519,7 @@ export interface GatewayToolRecord {
   display_omitted_chars?: number;
   shell?: GatewayShellRecord;
   terminal_interaction?: GatewayTerminalInteraction;
+  agent_interaction?: GatewayAgentInteraction;
 }
 export interface GatewayShellRecord {
   command_preview?: string;
@@ -1498,6 +1542,7 @@ export interface GatewayShellRecord {
   shell_edition?: string;
 }
 export interface Tool1 {
+  agent_interaction?: GatewayAgentInteraction;
   terminal_interaction?: GatewayTerminalInteraction;
   tool_record?: GatewayToolRecord;
   call_id: string;
@@ -1525,6 +1570,7 @@ export interface Tool2 {
   [k: string]: any;
 }
 export interface Tool3 {
+  agent_interaction?: GatewayAgentInteraction;
   terminal_interaction?: GatewayTerminalInteraction;
   tool_record?: GatewayToolRecord;
   args_preview?: string;

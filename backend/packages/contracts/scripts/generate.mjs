@@ -36,6 +36,7 @@ const targets = [
 	["gateway-events.schema.json", "gateway-event-notification.ts"],
 	["gateway-rpc.schema.json", "gateway-rpc.ts"],
 	["mcp-elicitation.schema.json", "mcp-elicitation.ts"],
+	["network-access.schema.json", "network-access.ts"],
 	["runtime-turn.schema.json", "runtime-turn-record.ts"],
 	["provider-attempt.schema.json", "provider-attempt.ts"],
 	["runtime-state.schema.json", "runtime-state-record.ts"],
@@ -103,6 +104,7 @@ const contractValidation = generator({
 contractValidation.addKeyword({ keyword: "name", schemaType: "string", valid: true });
 contractValidation.addSchema(schema("error-context.schema.json"), "https://mycli.local/contracts/error-context.schema.json");
 contractValidation.addSchema(schema("mcp-elicitation.schema.json"));
+contractValidation.addSchema(schema("network-access.schema.json"));
 contractValidation.addSchema(schema("catalog.schema.json"));
 contractValidation.addSchema(schema("session-goal.schema.json"));
 contractValidation.addSchema(schema("gateway-tool-record.schema.json"));
@@ -117,6 +119,7 @@ await writeOrCheck(
 	resolve(validatorRoot, "contract-validation.ts"),
 	validatorBanner + standaloneModule(contractValidation, {
 		validateCatalog: "https://mycli.local/contracts/catalog.schema.json",
+		validateNetworkAccessDetails: "https://mycli.local/contracts/network-access.schema.json",
 		validateSessionGoal: "https://mycli.local/contracts/session-goal.schema.json",
 		validateGatewayToolRecord: "https://mycli.local/contracts/gateway-tool-record.schema.json",
 		validateRuntimeTurnRecord: "https://mycli.local/schemas/runtime-turn.schema.json",

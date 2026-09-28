@@ -56,6 +56,7 @@ function pluginSchemaAjv(): AjvCompiler {
 	ajv.addKeyword({ keyword: "name", schemaType: "string", valid: true });
 	ajv.addSchema(errorContextSchema, "https://mycli.local/contracts/error-context.schema.json");
 	ajv.addSchema(JSON.parse(readFileSync(new URL("../schemas/mcp-elicitation.schema.json", import.meta.url), "utf8")) as object);
+	ajv.addSchema(JSON.parse(readFileSync(new URL("../schemas/network-access.schema.json", import.meta.url), "utf8")) as object);
 	pluginSchemaCompiler = ajv;
 	return ajv;
 }

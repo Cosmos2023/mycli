@@ -17,8 +17,11 @@ export type {
 export { GATEWAY_RPC_METHODS, GatewayRpcValidationError, isGatewayMethod, parseGatewayParams, parseGatewayResult } from "./gateway/rpc.ts";
 export type { GatewayMethod, GatewayParams, GatewayResult, GatewayTranscriptItem } from "./gateway/rpc.ts";
 export type { GatewayRpcMethods } from "./generated/gateway-rpc.ts";
+export type { SandboxCapabilities, PermissionBounds } from "./generated/gateway-rpc.ts";
+export { sandboxCapabilityLines } from "./gateway/sandbox-capabilities.ts";
 export type { PluginCatalog, PluginCatalogEntry, PluginMarketplaceEntry, PluginChange, PluginOperation, PluginCapabilitySummary, PluginDetail } from "./generated/gateway-rpc.ts";
-export type { GatewayToolRecord, GatewayShellRecord, GatewayTerminalInteraction } from "./generated/gateway-tool-record.ts";
+export type { GatewayToolRecord, GatewayShellRecord, GatewayTerminalInteraction, GatewayAgentInteraction } from "./generated/gateway-tool-record.ts";
+export { agentInteractionFromArguments, agentInteractionKind, projectAgentInteraction } from "./gateway/agent-interaction.ts";
 export { terminalInteractionFromArguments, projectTerminalInteraction } from "./gateway/terminal-interaction.ts";
 export { GATEWAY_TOOL_PREVIEW_MAX_CHARS, projectGatewayToolRecord, gatewayToolLifecycleRecord } from "./gateway/tool-record.ts";
 export {
@@ -115,6 +118,8 @@ export { providerAttemptId } from "./provider-attempt.ts";
 export { projectGatewayErrorData, projectGatewayErrorPayload } from "./gateway/error-context-projection.ts";
 export { LOCAL_CONNECTION_REASONS, localConnectionReason, storageErrorReason } from "./errors/boundaries.ts";
 export type { McpElicitationRequest, McpElicitationField } from "./generated/mcp-elicitation.ts";
+export type { NetworkAccessDetails } from "./generated/network-access.ts";
+export { networkAccessReasonText, networkAccessTargetText, networkAccessDetailsFromUnknown } from "./network-access.ts";
 export { MAX_SKILL_REFERENCES, parseSkillReferences, skillReferencesInText } from "./gateway/skill-reference.ts";
 export type { SkillReference } from "./gateway/skill-reference.ts";
 
