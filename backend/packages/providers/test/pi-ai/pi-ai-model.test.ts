@@ -120,7 +120,7 @@ const CURATED_DEFAULTS = [
 	["groq", "openai/gpt-oss-120b", "openai"],
 	["together", "moonshotai/Kimi-K2.7-Code", "together"],
 	["moonshotai", "kimi-k2.7-code", "deepseek"],
-	["nvidia", "openai/gpt-oss-120b", "openai"],
+	["nvidia", "openai/gpt-oss-20b", "openai"],
 	["cerebras", "gpt-oss-120b", "openai"],
 ] as const satisfies readonly [PiAiModelConfig["provider"], string, string][];
 
@@ -149,7 +149,7 @@ test("clones curated pi-ai defaults and applies explicit mycli overrides", async
 	const nvidia = await createPiAiSnapshot(config({
 		provider: "nvidia",
 		protocol: "chat_completions",
-		model: "openai/gpt-oss-120b",
+		model: "openai/gpt-oss-20b",
 	}));
 	assert.deepEqual(nvidia.model.headers, { "NVCF-POLL-SECONDS": "3600" });
 });

@@ -40,7 +40,7 @@ test("resolves curated pi-ai provider profiles", () => {
 		["groq", "Groq", "https://api.groq.com/openai/v1", "openai/gpt-oss-120b"],
 		["together", "Together", "https://api.together.ai/v1", "moonshotai/Kimi-K2.7-Code"],
 		["moonshotai", "Moonshot AI", "https://api.moonshot.ai/v1", "kimi-k2.7-code"],
-		["nvidia", "NVIDIA", "https://integrate.api.nvidia.com/v1", "openai/gpt-oss-120b"],
+		["nvidia", "NVIDIA", "https://integrate.api.nvidia.com/v1", "openai/gpt-oss-20b"],
 		["cerebras", "Cerebras", "https://api.cerebras.ai/v1", "gpt-oss-120b"],
 	] as const;
 

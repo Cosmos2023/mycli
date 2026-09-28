@@ -5,7 +5,7 @@ import ts from "typescript";
 import { loadPiAiProviderDirectory } from "../../src/registry/provider-directory.ts";
 import type { ProviderDirectoryStatus } from "../../src/registry/provider-directory-types.ts";
 
-export const REVIEWED_PI_AI_VERSION = "0.84.4";
+export const REVIEWED_PI_AI_VERSION = "0.85.1";
 
 interface AdapterHooks {
 	readonly fetch: "supported" | "rejected" | "ignored" | "sse_only";

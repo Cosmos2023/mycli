@@ -33,8 +33,12 @@ in mycli and validated against the workspace-pinned pi-ai release.
 | Groq | `groq` | `openai/gpt-oss-120b` | `https://api.groq.com/openai/v1` | `medium` |
 | Together | `together` | `moonshotai/Kimi-K2.7-Code` | `https://api.together.ai/v1` | `high` |
 | Moonshot AI | `moonshotai` | `kimi-k2.7-code` | `https://api.moonshot.ai/v1` | `high` |
-| NVIDIA | `nvidia` | `openai/gpt-oss-120b` | `https://integrate.api.nvidia.com/v1` | disabled |
+| NVIDIA | `nvidia` | `openai/gpt-oss-20b` | `https://integrate.api.nvidia.com/v1` | disabled |
 | Cerebras | `cerebras` | `gpt-oss-120b` | `https://api.cerebras.ai/v1` | `medium` |
+
+NVIDIA now defaults to `openai/gpt-oss-20b`; the pinned SDK no longer catalogs the previous
+`openai/gpt-oss-120b` NVIDIA model. Explicit model selections in existing user configurations are
+preserved.
 
 Setup writes the model-specific reasoning default, so the first turn does not inherit an
 incompatible global effort. A custom model that is not in the compiled catalog starts with
@@ -159,11 +163,11 @@ defaults are changed.
 
 These pi-ai Qwen routes are available in `/model` without a `models.json` declaration:
 
-| Provider | Route ID | Models in pi-ai 0.84.4 |
+| Provider | Route ID | Models in pi-ai 0.85.1 |
 | --- | --- | --- |
 | Qwen Token Plan | `qwen-token-plan` | 18 |
 | Qwen Token Plan CN | `qwen-token-plan-cn` | 18 |
-| Qwen Token Plan Individual | `qwen-token-plan-individual` | 8 |
+| Qwen Token Plan Individual | `qwen-token-plan-individual` | 9 |
 
 Open `/model`, use Esc to open the provider list, and choose the appropriate Qwen Token Plan route.
 The first selection opens login when its API key is missing. The full matching-protocol pi-ai
@@ -225,7 +229,9 @@ models to `/model` without rewriting this file. Existing legacy flat catalogs re
 explicit-subset behavior.
 
 A pi-ai provider that exposes multiple supported protocols or requires an endpoint needs an explicit
-route alias. This keeps one protocol and endpoint bound to one route identity:
+route alias. For example, OpenRouter also exposes native Anthropic Messages models through an
+explicitly selected `anthropic_messages` catalog route. Each alias binds one protocol and endpoint
+to one route identity:
 
 ```json
 {
@@ -339,6 +345,10 @@ model metadata in `models.json`:
   }
 }
 ```
+
+The current SDK also accepts `supportsMaxOutputTokens` for Responses gateways,
+`supportsMidConvoEffort` for Anthropic Messages, and integer `vllmPriority` for Chat Completions.
+Pi-ai owns their request serialization; mycli validates the protocol and value first.
 
 Use `compat` only when a private relay differs from pi-ai's catalog metadata or automatic
 detection. Values are validated against the selected API before traffic. Model values override

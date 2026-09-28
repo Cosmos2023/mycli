@@ -68,7 +68,7 @@ test("Node backend round trips curated provider readiness rows and trace identit
 		["groq", "Groq", "openai/gpt-oss-120b"],
 		["together", "Together", "moonshotai/Kimi-K2.7-Code"],
 		["moonshotai", "Moonshot AI", "kimi-k2.7-code"],
-		["nvidia", "NVIDIA", "openai/gpt-oss-120b"],
+		["nvidia", "NVIDIA", "openai/gpt-oss-20b"],
 		["cerebras", "Cerebras", "gpt-oss-120b"],
 	] as const;
 	const curatedIds = PROVIDER_IDS.filter((provider) => providers.some(([id]) => id === provider));

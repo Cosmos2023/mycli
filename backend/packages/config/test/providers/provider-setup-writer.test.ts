@@ -11,7 +11,7 @@ test("provider setup round trips every curated provider through private files", 
 		["groq", "openai/gpt-oss-120b", "https://api.groq.com/openai/v1"],
 		["together", "moonshotai/Kimi-K2.7-Code", "https://api.together.ai/v1"],
 		["moonshotai", "kimi-k2.7-code", "https://api.moonshot.ai/v1"],
-		["nvidia", "openai/gpt-oss-120b", "https://integrate.api.nvidia.com/v1"],
+		["nvidia", "openai/gpt-oss-20b", "https://integrate.api.nvidia.com/v1"],
 		["cerebras", "gpt-oss-120b", "https://api.cerebras.ai/v1"],
 	] as const;
 

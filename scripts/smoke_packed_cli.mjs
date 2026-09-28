@@ -274,11 +274,11 @@ import { fileURLToPath } from "node:url";
 import {
 	HookAllowlistStore,
 	loadPluginManifest,
-	McpClient,
 	PluginProcessHost,
 	SkillRegistry,
 	SubagentController,
 } from "${APPLICATION_PACKAGE_MODULE_PATH}/dist/node_modules/@mycli/integrations/dist/index.js";
+import { McpClient } from "${APPLICATION_PACKAGE_MODULE_PATH}/dist/node_modules/@mycli/integrations/dist/mcp/index.js";
 
 assert.equal(typeof HookAllowlistStore, "function");
 assert.equal(typeof McpClient, "function");
@@ -344,7 +344,7 @@ const curated = [
 	["groq", "openai/gpt-oss-120b", "medium"],
 	["together", "moonshotai/Kimi-K2.7-Code", "high"],
 	["moonshotai", "kimi-k2.7-code", "high"],
-	["nvidia", "openai/gpt-oss-120b", "none"],
+	["nvidia", "openai/gpt-oss-20b", "none"],
 	["cerebras", "gpt-oss-120b", "medium"],
 ];
 // Individual snapshots now load only their provider. Explicit discovery owns the full catalog.
@@ -352,7 +352,8 @@ const directory = await loadPiAiProviderDirectory();
 assert.ok(directory.providers.length >= 40);
 for (const [id, model] of curated) {
 	const provider = directory.providers.find((entry) => entry.catalogProviderId === id);
-	assert.equal(provider?.status, "serviceable");
+	assert.equal(provider?.status, id === "openrouter" ? "configuration_required" : "serviceable");
+	assert.ok(provider.protocols.includes("chat_completions"));
 	assert.ok(provider.models.some((entry) => entry.id === model));
 }
 const profiles = listProviderProfiles().filter((profile) => (
@@ -391,7 +392,7 @@ const server = createServer((request, response) => {
 			case "/v1/chat/completions":
 				writeChat(response);
 				break;
-			case "/v1/messages":
+			case "/v1/messages?beta=true":
 				writeAnthropic(response);
 				break;
 			default:
@@ -471,7 +472,7 @@ try {
 assert.deepEqual(requests, [
 	"/v1/responses",
 	"/v1/chat/completions",
-	"/v1/messages",
+	"/v1/messages?beta=true",
 	...Array(7).fill("/v1/chat/completions"),
 ]);
 process.stdout.write("provider-protocols-ok\n");

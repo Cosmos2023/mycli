@@ -30,6 +30,7 @@ const SHA256_PATTERN = /^[a-f0-9]{64}$/u;
 export interface PiAiReplayProjection {
 	readonly thinking: readonly ThinkingContent[];
 	readonly responseId?: string;
+	readonly providerThinkingLevel?: string;
 	readonly textSignature?: string;
 	readonly nativeToolIds: ReadonlyMap<string, string>;
 	readonly toolThoughtSignatures: ReadonlyMap<string, string>;
@@ -115,6 +116,7 @@ export function piAiProviderStateEvent(
 		}]
 		: []);
 	const hasNativeMetadata = message.responseId !== undefined
+		|| message.providerThinkingLevel !== undefined
 		|| textBlocks.some((block) => block.textSignature !== undefined)
 		|| thinkingBlocks.length > 0
 		|| toolCalls.some((call) => call.nativeId !== call.callId || call.thoughtSignature !== undefined);
@@ -124,6 +126,7 @@ export function piAiProviderStateEvent(
 		version: REPLAY_VERSION,
 		transport,
 		...(message.responseId ? { responseId: message.responseId } : {}),
+		...(message.providerThinkingLevel !== undefined ? { providerThinkingLevel: message.providerThinkingLevel } : {}),
 		textBlocks: Object.freeze(textBlocks),
 		thinkingBlocks: Object.freeze(thinkingBlocks),
 		toolCalls: Object.freeze(toolCalls),
@@ -297,6 +300,12 @@ function replayContent(
 		&& (typeof value.responseId !== "string" || !value.responseId)) {
 		return emptyProjection("malformed");
 	}
+	if (value.providerThinkingLevel !== undefined
+		&& (typeof value.providerThinkingLevel !== "string"
+			|| value.providerThinkingLevel.length === 0
+			|| value.providerThinkingLevel.length > 128)) {
+		return emptyProjection("malformed");
+	}
 	const textSignature = textBlocks.length === 1
 		&& typeof textBlocks[0].textSignature === "string"
 		? textBlocks[0].textSignature
@@ -332,6 +341,7 @@ function replayContent(
 	return Object.freeze({
 		thinking,
 		...(typeof value.responseId === "string" ? { responseId: value.responseId } : {}),
+		...(typeof value.providerThinkingLevel === "string" ? { providerThinkingLevel: value.providerThinkingLevel } : {}),
 		...(textSignature ? { textSignature } : {}),
 		nativeToolIds,
 		toolThoughtSignatures,

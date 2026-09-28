@@ -279,8 +279,8 @@ export const BUILTIN_MODEL_CATALOG: readonly ModelCatalogEntry[] = Object.freeze
 		contextWindowTokens: 262_144,
 		maxOutputTokens: 131_072,
 	}),
-	builtinEntry("nvidia", "openai/gpt-oss-120b", "NVIDIA GPT OSS coding model", {
-		displayName: "GPT-OSS-120B",
+	builtinEntry("nvidia", "openai/gpt-oss-20b", "NVIDIA GPT OSS coding model", {
+		displayName: "GPT-OSS-20B",
 		contextWindowTokens: 128_000,
 		maxOutputTokens: 8_192,
 	}),

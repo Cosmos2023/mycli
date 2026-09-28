@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { ProviderRequest, ReasoningEffort } from "@mycli/core";
+import type { ProviderReplayState, ProviderRequest, ReasoningEffort } from "@mycli/core";
 import { ProviderFailure } from "../../src/errors.ts";
 import type { PiAiModelConfig } from "../../src/pi-ai/pi-ai-model.ts";
 import { PiAiProvider } from "../../src/pi-ai/pi-ai-provider.ts";
@@ -305,6 +305,54 @@ test("maps every reasoning effort to its protocol-specific wire value", async ()
 	}
 });
 
+test("lets pi-ai use the new Responses cache TTL and omit unsupported token caps", async (t) => {
+	const server = await startProviderMockServer({ protocol: "responses" });
+	t.after(() => server.close());
+	const request: ProviderRequest = {
+		...minimalRequest("openai", "responses"), model: "gpt-5.6-sol", cacheRetention: "long",
+		sessionId: "cache-session", maxOutputTokens: 128,
+	};
+	const provider = new PiAiProvider({ config: {
+		...configFor(request, server.baseUrl), compat: { supportsMaxOutputTokens: false },
+	} });
+	for await (const event of provider.stream(request, { signal: new AbortController().signal })) void event;
+	assert.equal(server.requests.length, 1);
+	const body = server.requests[0]!.body;
+	assert.equal(body.max_output_tokens, undefined);
+	assert.equal(body.prompt_cache_key, "cache-session");
+	assert.equal(body.prompt_cache_retention, undefined);
+	assert.deepEqual(body.prompt_cache_options, { ttl: "30m" });
+});
+
+test("preserves Anthropic historical effort when a later request changes effort", async (t) => {
+	const server = await startProviderMockServer({ protocol: "anthropic_messages" });
+	t.after(() => server.close());
+	const request: ProviderRequest = {
+		...minimalRequest("anthropic", "anthropic_messages"), model: "claude-opus-5", reasoningEffort: "low",
+		items: [{ type: "user", text: "hello" }],
+	};
+	const provider = new PiAiProvider({ config: configFor(request, server.baseUrl) });
+	let state: ProviderReplayState | undefined;
+	for await (const event of provider.stream(request, { signal: new AbortController().signal })) {
+		if (event.type === "provider_state") state = event.state;
+	}
+	assert(state);
+	assert.equal(state.value.providerThinkingLevel, "low");
+	const nextRequest: ProviderRequest = { ...request, reasoningEffort: "high", items: [
+		...request.items!,
+		{ type: "assistant", text: "OK", providerState: JSON.parse(JSON.stringify(state)) as ProviderReplayState },
+		{ type: "user", text: "continue" },
+	] };
+	for await (const event of provider.stream(nextRequest, { signal: new AbortController().signal })) void event;
+	assert.equal(server.requests.length, 2);
+	const messages = records(server.requests[1]!.body.messages);
+	assert.deepEqual(messages.map((message) => message.role), ["user", "system", "assistant", "user", "system"]);
+	assert.deepEqual(messages.filter((message) => message.role === "system").map((message) => message.output_config), [
+		{ effort: "low" }, { effort: "high" },
+	]);
+	assert.deepEqual(records(messages[2]!.content), [{ type: "text", text: "OK" }]);
+});
+
 test("disables Anthropic thinking when the output cap cannot contain its budget", async () => {
 	const body = await capturePayload({
 		...minimalRequest("anthropic", "anthropic_messages"),
@@ -320,7 +368,7 @@ const CURATED_PAYLOAD_CASES = [
 	["groq", "openai/gpt-oss-120b", "medium", "developer", "max_completion_tokens", true],
 	["together", "moonshotai/Kimi-K2.7-Code", "high", "system", "max_tokens", false],
 	["moonshotai", "kimi-k2.7-code", "high", "system", "max_tokens", false],
-	["nvidia", "openai/gpt-oss-120b", "none", "system", "max_tokens", false],
+	["nvidia", "openai/gpt-oss-20b", "none", "system", "max_tokens", false],
 	["cerebras", "gpt-oss-120b", "medium", "system", "max_completion_tokens", true],
 ] as const satisfies readonly [
 	ProviderRequest["provider"],
@@ -401,7 +449,7 @@ test("uses pi-ai detection for an uncatalogued curated model", async () => {
 
 test("rejects reasoning for a catalog model that does not support it", async () => {
 	await assertUnsupportedBeforeRequest(
-		curatedRequest("nvidia", "openai/gpt-oss-120b", "xhigh"),
+		curatedRequest("nvidia", "openai/gpt-oss-20b", "xhigh"),
 	);
 });
 

@@ -85,7 +85,7 @@ const PROFILES: Readonly<Record<ProviderId, ProviderProfile>> = {
 		displayName: "NVIDIA",
 		defaultProtocol: "chat_completions",
 		defaultBaseUrl: "https://integrate.api.nvidia.com/v1",
-		defaultModel: "openai/gpt-oss-120b",
+		defaultModel: "openai/gpt-oss-20b",
 	},
 	cerebras: {
 		provider: "cerebras",

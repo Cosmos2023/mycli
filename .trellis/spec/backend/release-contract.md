@@ -158,6 +158,9 @@ the registry.
 * Native-provider packed fixtures select reasoning settings supported by their catalog model.
   Do not inherit a synthetic model's disabled-thinking setting: that can reject the request before
   any transport or retry is exercised. Assert the native request count and durable retry sequence.
+* The installed integrations smoke imports `McpClient` from the dedicated compiled
+  `integrations/dist/mcp/index.js` entry. The root entry intentionally excludes that runtime export;
+  checking an obsolete root import fails before the installed feature checks can execute.
 * Ripgrep resolver tests must cover platform-package priority and explicitly pass
   `platformPackageRoot: null` when exercising user-vendor fallback or isolated environment
   sanitization on a development install that contains the optional package.

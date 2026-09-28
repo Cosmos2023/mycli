@@ -28,7 +28,7 @@ test("provider registry routes Anthropic through pi-ai", async (context) => {
 	}));
 
 	assert.equal(server.requests.length, 1);
-	assert.equal(server.requests[0]?.path, "/v1/messages");
+	assert.equal(server.requests[0]?.path, "/v1/messages?beta=true");
 	assert.equal(server.requests[0]?.body.model, "claude-test");
 	assert.deepEqual(result.find((event) => event.type === "text_delta"), {
 		type: "text_delta",
@@ -88,7 +88,7 @@ test("provider registry delegates catalog aliases to the selected pi-ai provider
 	const provider = new ProviderRegistry({ fetch: captureFetch }).create(config({
 		provider: alias,
 		protocol: "chat_completions",
-		model: "openai/gpt-oss-120b",
+		model: "openai/gpt-oss-20b",
 		apiBaseUrl: `${server.baseUrl}/v1`,
 		supportsImages: false,
 	}), route({
@@ -100,7 +100,7 @@ test("provider registry delegates catalog aliases to the selected pi-ai provider
 	await collect(provider.stream(request({
 		provider: alias,
 		protocol: "chat_completions",
-		model: "openai/gpt-oss-120b",
+		model: "openai/gpt-oss-20b",
 		cacheRetention: "none",
 	}), { signal: new AbortController().signal }));
 
@@ -131,12 +131,14 @@ test("provider registry applies model compat over route compat for a private rel
 			supportsDeveloperRole: false,
 			maxTokensField: "max_tokens",
 			supportsLongCacheRetention: false,
+			vllmPriority: 2,
 		}),
 		modelCompat: Object.freeze({
 			"relay-reasoner": Object.freeze({
 				supportsDeveloperRole: true,
 				maxTokensField: "max_completion_tokens",
 				supportsStore: true,
+				vllmPriority: -1,
 			}),
 		}),
 		snapshotVersion: 1,
@@ -158,6 +160,7 @@ test("provider registry applies model compat over route compat for a private rel
 	assert.equal(body.max_completion_tokens, 64);
 	assert.equal(body.store, false);
 	assert.equal(body.prompt_cache_key, undefined);
+	assert.equal(body.priority, -1);
 	assert.deepEqual((body.messages as readonly unknown[])[0], {
 		role: "developer",
 		content: "system\n\nrelay policy",
@@ -184,7 +187,7 @@ const CURATED_PROVIDERS = [
 	["groq", "openai/gpt-oss-120b", "medium"],
 	["together", "moonshotai/Kimi-K2.7-Code", "high"],
 	["moonshotai", "kimi-k2.7-code", "high"],
-	["nvidia", "openai/gpt-oss-120b", "none"],
+	["nvidia", "openai/gpt-oss-20b", "none"],
 	["cerebras", "gpt-oss-120b", "medium"],
 ] as const satisfies readonly [
 	ProviderRequest["provider"],

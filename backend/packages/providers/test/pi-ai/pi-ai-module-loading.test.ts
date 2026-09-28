@@ -41,7 +41,7 @@ test("snapshot selection loads only the selected catalog provider", async () => 
 		const snapshot = await createPiAiSnapshot({
 			provider: "nvidia",
 			protocol: "chat_completions",
-			model: "openai/gpt-oss-120b",
+			model: "openai/gpt-oss-20b",
 			apiBaseUrl: "https://custom.example/v1",
 			apiKey: "test-key",
 			supportsImages: false,
@@ -74,13 +74,13 @@ test("pi-ai-declared registry routes skip builtin provider lookup", async () => 
 			apiBaseUrl: "https://declared.example/v1",
 			authRef: "nvidia",
 			activation: "active",
-			modelPolicy: { kind: "declared", modelIds: ["openai/gpt-oss-120b"] },
+			modelPolicy: { kind: "declared", modelIds: ["openai/gpt-oss-20b"] },
 			snapshotVersion: 1,
 		};
 		const config = {
 			provider: "nvidia",
 			protocol: "chat_completions",
-			model: "openai/gpt-oss-120b",
+			model: "openai/gpt-oss-20b",
 			apiBaseUrl: "https://declared.example/v1",
 			apiKey: "test-key",
 			supportsImages: false,

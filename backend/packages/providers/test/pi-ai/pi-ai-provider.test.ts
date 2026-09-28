@@ -18,7 +18,7 @@ import {
 import { toPiAiContext } from "../../src/pi-ai/pi-ai-context.ts";
 import type { PiAiApi, PiAiModelConfig } from "../../src/pi-ai/pi-ai-model.ts";
 import { PiAiProvider } from "../../src/pi-ai/pi-ai-provider.ts";
-import { piAiReplayTransportIdentity } from "../../src/pi-ai/pi-ai-replay.ts";
+import { piAiProviderStateEvent, piAiReplayTransportIdentity } from "../../src/pi-ai/pi-ai-replay.ts";
 
 test("normalizes pi-ai deltas, tools, usage, replay, and completion", async () => {
 	let capturedOptions: SimpleStreamOptions | undefined;
@@ -306,6 +306,42 @@ test("round-trips versioned pi-ai replay without replacing canonical content", a
 		code: "provider_replay_degraded",
 		reason: "transport_mismatch",
 	}]);
+});
+
+test("persists standalone provider effort and validates it before replay", () => {
+	const transport = piAiReplayTransportIdentity({
+		routeId: "anthropic", catalogProviderId: "anthropic", api: "anthropic-messages",
+		model: "claude-opus-5", apiBaseUrl: "https://anthropic.example",
+	});
+	const event = piAiProviderStateEvent(assistant({
+		api: "anthropic-messages", provider: "anthropic", model: "claude-opus-5",
+		content: [{ type: "text", text: "answer" }], providerThinkingLevel: "low",
+	}), "anthropic", transport);
+	assert(event?.type === "provider_state");
+	const state = event.state;
+	for (const level of ["low", undefined, "", 12, null, {}, "x".repeat(129)]) {
+		const projection = toPiAiContext(request({
+			provider: "anthropic", protocol: "anthropic_messages", model: "claude-opus-5",
+			items: [{ type: "assistant", text: "answer", providerState: {
+				...state, value: { ...state.value, providerThinkingLevel: level },
+			} }],
+		}), "anthropic-messages", "anthropic", transport);
+		const replayed = projection.context.messages[0];
+		assert(replayed?.role === "assistant");
+		assert.deepEqual(replayed.content, [{ type: "text", text: "answer" }]);
+		assert.equal(replayed.providerThinkingLevel, level === "low" ? "low" : undefined);
+		assert.deepEqual(projection.replayDiagnostics, level === "low" || level === undefined ? [] : [{
+			code: "provider_replay_degraded", reason: "malformed",
+		}]);
+	}
+	const foreign = toPiAiContext(request({
+		provider: "anthropic", protocol: "anthropic_messages", model: "claude-opus-5",
+		items: [{ type: "assistant", text: "answer", providerState: state }],
+	}), "anthropic-messages", "anthropic", { ...transport, endpointSha256: "0".repeat(64) });
+	const foreignMessage = foreign.context.messages[0];
+	assert(foreignMessage?.role === "assistant");
+	assert.equal(foreignMessage.providerThinkingLevel, undefined);
+	assert.deepEqual(foreign.replayDiagnostics, [{ code: "provider_replay_degraded", reason: "transport_mismatch" }]);
 });
 
 test("degrades replay for every mismatched or malformed transport identity", () => {

@@ -37,6 +37,7 @@ const RESPONSES_BOOLEAN_KEYS = new Set<keyof OpenAIResponsesCompat>([
 	"supportsAdditionalTools",
 	"supportsToolSearch",
 	"supportsExplicitPromptCacheMode",
+	"supportsMaxOutputTokens",
 ]);
 
 const ANTHROPIC_BOOLEAN_KEYS = new Set<keyof AnthropicMessagesCompat>([
@@ -48,6 +49,7 @@ const ANTHROPIC_BOOLEAN_KEYS = new Set<keyof AnthropicMessagesCompat>([
 	"forceAdaptiveThinking",
 	"allowEmptySignature",
 	"supportsStrictTools",
+	"supportsMidConvoEffort",
 	"supportsToolReferences",
 ]);
 
@@ -113,6 +115,9 @@ function validateCompletionsField(key: string, value: unknown): CompatValue {
 		return booleanValue(key, value);
 	}
 	switch (key) {
+		case "vllmPriority":
+			if (typeof value !== "number" || !Number.isSafeInteger(value)) throw invalidValue(key);
+			return value;
 		case "maxTokensField":
 			return enumValue(key, value, new Set(["max_completion_tokens", "max_tokens"]));
 		case "thinkingFormat":

@@ -20,7 +20,7 @@ const CURATED_RUNTIME_CASES = [
 	["groq", "openai/gpt-oss-120b", "medium", true],
 	["together", "moonshotai/Kimi-K2.7-Code", "high", true],
 	["moonshotai", "kimi-k2.7-code", "high", true],
-	["nvidia", "openai/gpt-oss-120b", "none", false],
+	["nvidia", "openai/gpt-oss-20b", "none", false],
 	["cerebras", "gpt-oss-120b", "medium", true],
 ] as const satisfies readonly [ProviderId, string, ReasoningEffort, boolean][];
 

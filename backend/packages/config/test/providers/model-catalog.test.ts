@@ -347,7 +347,7 @@ test("builtin catalog pins each curated provider default", () => {
 		["groq", "openai/gpt-oss-120b", "GPT OSS 120B", ["low", "medium", "high"], "medium", 131_072, 65_536],
 		["together", "moonshotai/Kimi-K2.7-Code", "Kimi K2.7 Code", ["none", "high"], "high", 262_144, 131_072],
 		["moonshotai", "kimi-k2.7-code", "Kimi K2.7 Code", ["high"], "high", 262_144, 131_072],
-		["nvidia", "openai/gpt-oss-120b", "GPT-OSS-120B", [], undefined, 128_000, 8_192],
+		["nvidia", "openai/gpt-oss-20b", "GPT-OSS-20B", [], undefined, 128_000, 8_192],
 		["cerebras", "gpt-oss-120b", "GPT OSS 120B", ["low", "medium", "high"], "medium", 131_072, 40_960],
 	] as const;
 
@@ -376,7 +376,7 @@ test("builtin model reasoning defaults fail closed for uncatalogued models", () 
 	assert.deepEqual(builtinModelReasoningDefaults({
 		provider: "nvidia",
 		protocol: "chat_completions",
-		model: "openai/gpt-oss-120b",
+		model: "openai/gpt-oss-20b",
 	}), { reasoningEffort: "none", thinkingEnabled: false });
 	assert.deepEqual(builtinModelReasoningDefaults({
 		provider: "openrouter",

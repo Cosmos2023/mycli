@@ -94,7 +94,7 @@ test("keeps pi-ai wire compatibility private to provider construction", async ()
 	assert.deepEqual(reasoner.reasoningEfforts, ["low", "high", "max"]);
 
 	const nvidia = requiredProvider(directory.providers, "nvidia");
-	const nvidiaReasoner = nvidia.models.find((model) => model.id === "openai/gpt-oss-120b");
+	const nvidiaReasoner = nvidia.models.find((model) => model.id === "openai/gpt-oss-20b");
 	assert(nvidiaReasoner);
 	assert.deepEqual(nvidiaReasoner.reasoningEfforts, ["minimal", "low", "medium", "high"]);
 

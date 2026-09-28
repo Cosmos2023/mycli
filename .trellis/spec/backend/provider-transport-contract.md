@@ -150,7 +150,7 @@ individual model declarations. `@mycli/config` stores immutable JSON DTOs; only
   reason and output ceiling; missing upstream usage remains unknown.
 - `onPayload` is absent for ordinary requests. Its allowed uses are inserting
   `{type: "web_search", external_web_access: true}` into a live OpenAI Responses request and
-  preserving canonical image detail, which pi-ai 0.84.4 does not yet expose. Image transforms
+  preserving canonical image detail, which pi-ai 0.85.1 does not yet expose. Image transforms
   touch only image detail fields, preserve untagged images and occurrence order, and are rebuilt
   for each request. Original detail is admitted only for explicitly marked Responses models in
   the existing model catalog; unknown models and other protocols use high. These product image
@@ -244,6 +244,13 @@ individual model declarations. `@mycli/config` stores immutable JSON DTOs; only
   closed-controller error. Caller cancellation wins; an internal transport abort is not a user interrupt.
 - A thrown local exception is not a remote SDK terminal error envelope. Do not decode arbitrary
   local `Error.message` as remote JSON or make all generic provider errors retryable.
+- Pi-ai 0.85.1 replay retains optional `providerThinkingLevel` inside the version-2 assistant
+  state and projects it back only after transport and canonical-content validation. Accept a
+  non-empty string of at most 128 characters; malformed values degrade replay, and legacy states
+  without it remain valid. Anthropic effort changes must preserve historical effort markers.
+- Compat validation includes Responses `supportsMaxOutputTokens`, Anthropic
+  `supportsMidConvoEffort`, and Chat Completions safe-integer `vllmPriority`. Serialization stays
+  inside the SDK; these fields must never be implemented through payload rewriting.
 - Replay remains canonical and transport-bound. Early consumers abort the upstream pi-ai iterator
   and call `return()` so a stopped consumer cannot leave a hidden request running.
 - A projected tool result uses the same native ID as its projected assistant tool call (for

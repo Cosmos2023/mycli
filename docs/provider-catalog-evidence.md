@@ -1,10 +1,10 @@
 # Builtin Provider Catalog Evidence
 
-Pinned SDK: `@earendil-works/pi-ai@0.84.4`. This report describes offline source and
+Pinned SDK: `@earendil-works/pi-ai@0.85.1`. This report describes offline source and
 mocked transport evidence, not verified live accounts.
 
-The actual `builtinProviders()` catalog contains 40 providers: 27 serviceable, 7 requiring
-configuration, and 6 unsupported. The 34 serviceable/configurable providers expose 43 supported
+The actual `builtinProviders()` catalog contains 40 providers: 26 serviceable, 8 requiring
+configuration, and 6 unsupported. The 34 serviceable/configurable providers expose 44 supported
 provider/protocol routes. Every route is exercised through `PiAiProvider` with its actual builtin
 provider identity, catalog model and native dispatch, an explicit offline endpoint, and a dummy
 request API key. No generic `pi_ai_declared` route substitutes for builtin evidence.
@@ -65,7 +65,7 @@ tested by the real SDK matrix in `test/pi-ai/pi-ai-builtin-routes.test.ts`.
 | openai-codex | openai-codex-responses | api/openai-codex-responses.js; createProvider API dispatch | oauth | unsupported: unsupported_auth | openai-codex-responses: fetch=sse_only, onResponse=sse_only |
 | opencode | anthropic-messages, google-generative-ai, openai-completions, openai-responses | api/anthropic-messages.js, api/google-generative-ai.js, api/openai-completions.js, api/openai-responses.js; createProvider API dispatch | apiKey (OpenCode API key) | configuration_required: endpoint_required, protocol_selection_required | anthropic-messages: fetch=supported, onResponse=supported; google-generative-ai: fetch=rejected, onResponse=absent; openai-completions: fetch=supported, onResponse=supported; openai-responses: fetch=supported, onResponse=supported |
 | opencode-go | anthropic-messages, openai-completions, openai-responses | api/anthropic-messages.js, api/openai-completions.js, api/openai-responses.js; createProvider API dispatch | apiKey (OpenCode API key) | configuration_required: endpoint_required, protocol_selection_required | anthropic-messages: fetch=supported, onResponse=supported; openai-completions: fetch=supported, onResponse=supported; openai-responses: fetch=supported, onResponse=supported |
-| openrouter | openai-completions | api/openai-completions.js; createProvider API dispatch | apiKey (OpenRouter API key), oauth | serviceable: request_api_key | openai-completions: fetch=supported, onResponse=supported |
+| openrouter | anthropic-messages, openai-completions | api/anthropic-messages.js, api/openai-completions.js; createProvider API dispatch | apiKey (OpenRouter API key), oauth | configuration_required: protocol_selection_required | anthropic-messages: fetch=supported, onResponse=supported; openai-completions: fetch=supported, onResponse=supported |
 | qwen-token-plan | openai-completions | api/openai-completions.js; createProvider API dispatch | apiKey (Qwen Token Plan API key) | serviceable: request_api_key | openai-completions: fetch=supported, onResponse=supported |
 | qwen-token-plan-cn | openai-completions | api/openai-completions.js; createProvider API dispatch | apiKey (Qwen Token Plan CN API key) | serviceable: request_api_key | openai-completions: fetch=supported, onResponse=supported |
 | qwen-token-plan-individual | openai-completions | api/openai-completions.js; createProvider API dispatch | apiKey (Qwen Token Plan Individual API key) | serviceable: request_api_key | openai-completions: fetch=supported, onResponse=supported |
@@ -97,7 +97,7 @@ Codex SSE has fetch/response hooks, but its WebSocket branch requires separate e
 OpenCode's Google models remain excluded even though its other three APIs are configurable.
 The six unsupported providers and all live credential families remain unvalidated by this suite.
 
-Native OAuth dispatch is covered for Anthropic, OpenRouter, xAI, Kimi Coding, and all three
+Native OAuth dispatch is covered for Anthropic, both OpenRouter APIs, xAI, Kimi Coding, and all three
 GitHub Copilot APIs. These tests use real SDK auth adapters with offline grants and verify healthy
 completion, structured stream failures, and fatal HTTP quota failures. Shared refresh tests cover
 serialized updates across independent SDK instances, restart, refresh failure, cancellation, and

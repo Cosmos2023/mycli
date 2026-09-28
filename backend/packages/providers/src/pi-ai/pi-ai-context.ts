@@ -188,6 +188,7 @@ function piAiAssistantMessage(
 		...(replay.responseId || (item.type === "assistant_tool_calls" && item.responseId)
 			? { responseId: replay.responseId ?? (item.type === "assistant_tool_calls" ? item.responseId : undefined) }
 			: {}),
+		...(replay.providerThinkingLevel !== undefined ? { providerThinkingLevel: replay.providerThinkingLevel } : {}),
 		usage: emptyPiAiUsage(),
 		stopReason: item.type === "assistant_tool_calls" ? "toolUse" : "stop",
 		timestamp: 0,
