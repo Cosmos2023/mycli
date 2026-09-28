@@ -5,6 +5,25 @@ import { join } from "node:path";
 import test from "node:test";
 import { ExecutionPolicyCoordinator } from "../../src/index.ts";
 
+test("changed managed egress can narrow a restored run but cannot broaden it", async (t) => {
+	const workspace = await temporaryWorkspace(t);
+	const first = { to: [{ cidr: "10.0.0.0/8" }] };
+	const second = { to: [{ cidr: "192.168.0.0/16" }] };
+	const narrow = { default: "deny", allow: [first] } as const;
+	const broad = { default: "deny", allow: [first, second] } as const;
+	const profile = { mode: "danger-full-access", filesystem: "unrestricted", network: "enabled", writableRoots: [], networkEgress: narrow } as const;
+	const restore = (saved: typeof narrow | typeof broad, managed: typeof narrow | typeof broad) => {
+		const coordinator = new ExecutionPolicyCoordinator({ workspaceRoot: workspace, constraints: { source: "managed", networkEgress: managed } });
+		const restored = coordinator.restoreTurn("restore", { toolsEnabled: true, profile: { ...profile, networkEgress: saved } });
+		assert.deepEqual(coordinator.sandboxOverrideProfile().networkEgress, restored.profile.networkEgress,
+			"approving an override must retain the frozen network ceiling");
+		return restored;
+	};
+	assert.deepEqual(restore(narrow, broad).profile.networkEgress, narrow);
+	assert.deepEqual(restore(broad, narrow).profile.networkEgress, narrow);
+	assert.throws(() => restore(narrow, { default: "deny", allow: [second] }), /cannot safely narrow/);
+});
+
 test("execution policy coordinator fails closed before configuration", async (t) => {
 	const workspace = await temporaryWorkspace(t);
 	const coordinator = new ExecutionPolicyCoordinator({ workspaceRoot: workspace });
@@ -38,6 +57,19 @@ test("managed Windows readonly and network options survive grants and turn snaps
 	coordinator.finishTurn("parity");
 	coordinator.configure({ trust: "trusted", permission: "full-access" });
 	assert.deepEqual(coordinator.snapshot().profile.readOnlyRoots, current.readOnlyRoots);
+});
+
+test("restored turns preserve structured egress without relying on current managed settings", async (t) => {
+	const workspace = await temporaryWorkspace(t);
+	const networkEgress = { default: "deny", allow: [{ to: [{ cidr: "10.0.0.0/8" }], ports: [{ protocol: "tcp", port: 443 }] }] } as const;
+	const parent = new ExecutionPolicyCoordinator({ workspaceRoot: workspace, constraints: { source: "managed", networkEgress } });
+	parent.configure({ trust: "trusted", permission: "full-access" });
+	const original = parent.beginTurn("parent");
+	const child = new ExecutionPolicyCoordinator({ workspaceRoot: workspace });
+	const restored = child.restoreTurn("child", structuredClone(original));
+	assert.deepEqual(restored.profile.networkEgress, networkEgress);
+	assert.notEqual(restored.profile.networkEgress, original.profile.networkEgress);
+	assert.ok(Object.isFrozen(restored.profile.networkEgress?.allow?.[0]?.ports));
 });
 
 test("execution policy coordinator freezes a turn and applies changes to the next turn", async (t) => {
@@ -304,6 +336,69 @@ async function temporaryWorkspace(t: test.TestContext): Promise<string> {
 	)));
 	return workspace;
 }
+
+test("managed loopback limits initialize new turns and intersect restored turns and approvals", async (t) => {
+	const workspace = await temporaryWorkspace(t);
+	const ports = [5432, 8080];
+	const constraints = { source: "managed" as const, allowLocalBinding: true, networkDomains: ["example.com"], loopbackPorts: ports };
+	const coordinator = new ExecutionPolicyCoordinator({ workspaceRoot: workspace, constraints });
+	coordinator.configure({ trust: "trusted", permission: "full-access" });
+	ports.push(9000);
+	const initial = coordinator.beginTurn("initial");
+	assert.deepEqual(initial.profile.loopbackPorts, [5432, 8080]);
+	coordinator.finishTurn("initial");
+	const frozen = { ...initial, profile: { ...initial.profile, loopbackPorts: [5432, 6000] } };
+	assert.deepEqual(coordinator.restoreTurn("restored", frozen).profile.loopbackPorts, [5432]);
+	coordinator.grant({ turnId: "restored", scope: "session", permissions: { network: { enabled: true } } });
+	assert.deepEqual(coordinator.snapshot().profile.loopbackPorts, [5432]);
+	assert.deepEqual(coordinator.sandboxOverrideProfile().loopbackPorts, [5432]);
+	assert.ok(Object.isFrozen(coordinator.snapshot().profile.loopbackPorts));
+	for (const limits of [undefined, { ...constraints, loopbackPorts: undefined }, { ...constraints, loopbackPorts: [5432, 8080, 9000] }]) {
+		const resumed = new ExecutionPolicyCoordinator({ workspaceRoot: workspace, constraints: limits });
+		assert.deepEqual(resumed.restoreTurn("empty", { ...initial, profile: { ...initial.profile, loopbackPorts: [] } }).profile.loopbackPorts, []);
+		assert.deepEqual(resumed.sandboxOverrideProfile().loopbackPorts, []);
+	}
+	const legacy = new ExecutionPolicyCoordinator({ workspaceRoot: workspace, constraints });
+	const narrowed = legacy.restoreTurn("legacy", { ...initial, profile: { ...initial.profile, loopbackPorts: undefined, allowLocalBinding: false } });
+	assert.equal(narrowed.profile.allowLocalBinding, false);
+	assert.deepEqual(narrowed.profile.loopbackPorts ?? [], []);
+	const egressCoordinator = new ExecutionPolicyCoordinator({ workspaceRoot: workspace,
+		constraints: { source: "managed", networkEgress: { default: "deny" } } });
+	assert.throws(() => egressCoordinator.restoreTurn("mixed", initial), /loopback_ports/u);
+	for (const domains of [[], ["*.example.com", "other.com"]]) {
+		const bounded = new ExecutionPolicyCoordinator({ workspaceRoot: workspace,
+			constraints: { ...constraints, networkDomains: domains } });
+		const restored = bounded.restoreTurn("domains", { ...initial, profile: { ...initial.profile, networkDomains: ["api.example.com"] } });
+		assert.deepEqual(restored.profile.networkDomains, domains.length ? ["api.example.com"] : []);
+		assert.deepEqual(bounded.sandboxOverrideProfile().networkDomains, restored.profile.networkDomains);
+	}
+});
+
+test("limited proxy mode survives grants, approved overrides and recovery with relaxed managed settings", async (t) => {
+	const workspace = await temporaryWorkspace(t);
+	const networkProxy = { mode: "limited" as const, enableSocks5: false, allowUpstreamProxy: false, approvalDomains: ["api.example.com"] };
+	const coordinator = new ExecutionPolicyCoordinator({ workspaceRoot: workspace,
+		constraints: { source: "managed", networkDomains: ["api.example.com"], networkProxy } });
+	coordinator.configure({ trust: "trusted", permission: "workspace" });
+	const frozen = coordinator.beginTurn("limited");
+	coordinator.grant({ turnId: "limited", scope: "session", permissions: { network: { enabled: true } } });
+	assert.deepEqual(coordinator.snapshot().profile.networkProxy, networkProxy);
+	assert.deepEqual(coordinator.sandboxOverrideProfile().networkProxy, networkProxy);
+	const newOptions = new ExecutionPolicyCoordinator({ workspaceRoot: workspace, constraints: { source: "managed",
+		networkDomains: ["api.example.com"], networkProxy: { mode: "full", enableSocks5: true, allowUpstreamProxy: true } } });
+	assert.deepEqual(newOptions.restoreTurn("legacy", { ...frozen, profile: { ...frozen.profile, networkProxy: undefined } }).profile.networkProxy,
+		{ mode: "full", enableSocks5: false, allowUpstreamProxy: false });
+	for (const constraints of [undefined, { source: "managed" as const, networkDomains: ["*.example.com", "outside.test"],
+		networkProxy: { mode: "full" as const, enableSocks5: true, allowUpstreamProxy: true } }]) {
+		const restored = new ExecutionPolicyCoordinator({ workspaceRoot: workspace, constraints });
+		const profile = restored.restoreTurn("resume", frozen).profile;
+		assert.deepEqual(profile.networkProxy, networkProxy);
+		assert.deepEqual(profile.networkDomains, ["api.example.com"]);
+		assert.ok(Object.isFrozen(profile.networkProxy));
+		assert.deepEqual(restored.sandboxOverrideProfile().networkProxy, networkProxy);
+		assert.deepEqual(restored.sandboxOverrideProfile().networkDomains, ["api.example.com"]);
+	}
+});
 
 test("managed denies survive Full Access, grants, and restored turns", async (t) => {
 	const workspace = await temporaryWorkspace(t);

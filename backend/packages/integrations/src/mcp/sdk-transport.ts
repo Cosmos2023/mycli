@@ -50,7 +50,7 @@ export async function createMcpTransport(options: McpTransportOptions, signal: A
 				if (profile.networkDomains.length === 0) launchProfile = { ...profile, network: "disabled" };
 				else {
 					if (process.platform !== "darwin" && process.platform !== "win32") throw new ProcessSandboxError("network_proxy_unavailable");
-					proxy = await startNetworkProxy({ domains: profile.networkDomains });
+					proxy = await startNetworkProxy({ domains: profile.networkDomains, policy: profile.networkProxy });
 				}
 			}
 			signal.throwIfAborted();

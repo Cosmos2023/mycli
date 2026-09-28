@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { freezeLoopbackPorts, intersectLoopbackAccess, intersectNetworkDomains, intersectNetworkProxyPolicy, type NetworkProxyPolicy } from "@mycli/core";
 import { startNetworkProxy, type NetworkProxyLease } from "../network/network-proxy.ts";
 import { realpath, stat } from "node:fs/promises";
 import {
@@ -43,6 +44,7 @@ import {
 	resolveShellProfile,
 	type ShellProfile,
 } from "./shell-profile.ts";
+import type { NetworkProxyInteraction, NetworkProxyOwner } from "../network/network-proxy.ts";
 import type {
 	ToolAdapter,
 	ToolAdapterResult,
@@ -66,6 +68,9 @@ export interface ShellToolOptions {
 	readonly profile?: ShellProfile;
 	readonly platform?: NodeJS.Platform;
 	readonly env?: Readonly<NodeJS.ProcessEnv>;
+	/** Host-owned proxy settings, separate from a child's persisted environment. */
+	readonly networkProxySourceEnv?: Readonly<NodeJS.ProcessEnv>;
+	readonly networkProxyInteraction?: (owner: NetworkProxyOwner) => NetworkProxyInteraction;
 	readonly shellPath?: string;
 	readonly timeoutSeconds?: number;
 	readonly maxOutputTokens?: number;
@@ -73,7 +78,7 @@ export interface ShellToolOptions {
 	readonly columns?: number;
 	readonly createChunkId?: () => string;
 	readonly processSandboxProbes?: ProcessSandboxProbes;
-	readonly networkProxyFactory?: (domains: readonly string[]) => Promise<NetworkProxyLease>;
+	readonly networkProxyFactory?: (domains: readonly string[], policy?: NetworkProxyPolicy, interaction?: NetworkProxyInteraction) => Promise<NetworkProxyLease>;
 }
 
 interface ShellInvocation {
@@ -102,7 +107,8 @@ export class ShellTool implements ToolAdapter {
 	readonly #columns: number;
 	readonly #createChunkId: () => string;
 	readonly #processSandboxProbes: ProcessSandboxProbes;
-	readonly #networkProxyFactory: (domains: readonly string[]) => Promise<NetworkProxyLease>;
+	readonly #networkProxyFactory: NonNullable<ShellToolOptions["networkProxyFactory"]>;
+	readonly #networkProxyInteraction: ShellToolOptions["networkProxyInteraction"];
 
 	constructor(options: ShellToolOptions) {
 		if (!options.workspaceRoot.trim()) throw new TypeError("workspaceRoot must be non-empty");
@@ -127,7 +133,9 @@ export class ShellTool implements ToolAdapter {
 		this.#columns = positiveInteger(options.columns ?? DEFAULT_COLUMNS, "columns");
 		this.#createChunkId = options.createChunkId ?? defaultChunkId;
 		this.#processSandboxProbes = Object.freeze({ ...options.processSandboxProbes });
-		this.#networkProxyFactory = options.networkProxyFactory ?? ((domains) => startNetworkProxy({ domains }));
+		const proxySourceEnv = Object.freeze({ ...(options.networkProxySourceEnv ?? this.#env) });
+		this.#networkProxyFactory = options.networkProxyFactory ?? ((domains, policy, interaction) => startNetworkProxy({ domains, policy, ...interaction, sourceEnv: proxySourceEnv }));
+		this.#networkProxyInteraction = options.networkProxyInteraction;
 	}
 
 	async execute(
@@ -240,11 +248,22 @@ export class ShellTool implements ToolAdapter {
 				deniedReadGlobs: [...new Set([...(policy.deniedReadGlobs ?? []), ...(options.executionPolicy.deniedReadGlobs ?? [])])],
 			};
 		}
+		const loopback = requireEscalated && options.sandboxOverridePolicy
+			&& (policy.loopbackPorts !== undefined || options.executionPolicy.loopbackPorts !== undefined)
+			? intersectLoopbackAccess(options.executionPolicy, policy) : options.executionPolicy;
 		policy = { ...policy,
 			...(options.executionPolicy.readOnlyRoots === undefined ? {} : { readOnlyRoots: Object.freeze([
 				...new Set([...(policy.readOnlyRoots ?? []), ...options.executionPolicy.readOnlyRoots]),
 			]) }),
-			...(options.executionPolicy.allowLocalBinding === undefined ? {} : { allowLocalBinding: options.executionPolicy.allowLocalBinding }),
+			...(loopback.allowLocalBinding === undefined ? {} : { allowLocalBinding: loopback.allowLocalBinding }),
+			...(loopback.loopbackPorts === undefined ? {} : { loopbackPorts: freezeLoopbackPorts(loopback.loopbackPorts) }),
+			...(options.executionPolicy.loopbackPorts === undefined && options.executionPolicy.networkProxy === undefined ? {} : {
+				network: policy.network === "disabled" ? "disabled" : options.executionPolicy.network,
+				networkDomains: intersectNetworkDomains(policy.networkDomains, options.executionPolicy.networkDomains),
+			}),
+			...(policy.networkProxy === undefined && options.executionPolicy.networkProxy === undefined ? {} : {
+				networkProxy: intersectNetworkProxyPolicy(policy.networkProxy, options.executionPolicy.networkProxy),
+			}),
 			...(options.executionPolicy.writableTemp === undefined ? {} : { writableTemp: options.executionPolicy.writableTemp }),
 		};
 		const effectivePolicy = policy.networkDomains === undefined ? policy : {
@@ -285,7 +304,11 @@ export class ShellTool implements ToolAdapter {
 						"Domain-constrained Shell networking is currently supported only on macOS and Windows.");
 				}
 				options.signal.throwIfAborted();
-				networkProxy = await this.#networkProxyFactory(effectivePolicy.networkDomains);
+				const interaction = this.#networkProxyInteraction?.({ sessionId: options.ownerSessionId, turnId: options.ownerTurnId, callId: options.callId });
+				networkProxy = await this.#networkProxyFactory(effectivePolicy.networkDomains, effectivePolicy.networkProxy, {
+					...interaction, ...(interaction?.requestApproval ? { requestApproval: (request, signal) =>
+						interaction.requestApproval!(request, AbortSignal.any([signal, options.signal])) } : {}),
+				});
 				options.signal.throwIfAborted();
 				launch = prepareSandboxedProcess(argv, profile, probes, networkProxy);
 			}

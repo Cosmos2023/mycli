@@ -6861,6 +6861,9 @@ if (successfulPoll && !matchingShell) continue;
 - Gateway queries: `permissions.list({})`, `status.inspect({})`, and `session.bootstrap(...)`.
 - TUI projection:
   `permissionStateFromUnknown(value) -> MycliShellPermissionState | null`.
+- Backend capability projection:
+  `windowsSandboxCapabilities(readiness) -> SandboxCapabilities | undefined`.
+- Shared isolation requirement: `requiresProcessSandbox(policy: ExecutionPolicy) -> boolean`.
 
 ### 3. Contracts
 
@@ -6874,6 +6877,26 @@ if (successfulPoll && !matchingShell) continue;
 - Every profile row carries nominal `sandbox_mode`, `filesystem`, `network`, and
   `approval_behavior` effects. The TUI consumes those fields and does not maintain a second copy of
   preset semantics.
+- Optional `effective.bounds` carries `read_scope=platform_default|allowlist`,
+  `network_scope=disabled|unrestricted|domain_allowlist|structured_egress`, nonnegative integer
+  `readonly_roots` and `denied_read_rules`, and boolean `allow_local_binding`. Undefined read roots
+  differ from an empty allowlist; an empty domain list never means unrestricted networking.
+  Counts describe configured rules, not enumerated accessible files or platform grants.
+- Optional `effective.bounds.loopback_ports` carries at most 64 unique TCP port numbers (1–65535),
+  not addresses or private service names. Preserve absence versus empty. When present, display
+  these ports instead of the all-port boolean exception; show offline inactivity for disabled
+  networking or empty domains, and label live grants as outgoing `127.0.0.1` / `::1` only. Invalid
+  lists invalidate the optional bounds projection. Keep long lists width-safe and inspectable.
+- Optional `sandbox_capabilities` (management JSON: `capabilities`) carries the closed enum
+  `supported|unsupported|unknown` for `filesystem_rules` (custom read roots and readonly subtrees),
+  `denied_reads`, `structured_egress`, `independent_policies`, and `host_loopback_access`.
+  Only a compatible Windows helper supplies known backend support. PSEC supports the first four
+  and does not support inbound host loopback. Legacy supports denied reads, lacks the other
+  advanced policies, and reports inbound loopback as unknown. Incompatible/missing helpers
+  report unknown; non-Windows and effective no-isolation policies omit this Windows report.
+  Capability is independent of readiness and never claims per-command policy acceptance or an
+  isolation test result. Use the fixed value-free `sandboxCapabilityLines` formatter in CLI,
+  Doctor details and TUI; old/malformed TUI extensions are omitted without breaking presets.
 - `sandbox_readiness` uses the closed states `ready`, `setup_required`, `unavailable`, and
   `not_required`, plus the closed codes `ready`, `setup_incomplete`, `helper_missing`,
   `handshake_failed`, `enforcement_unavailable`, `unsupported_platform`, and `not_required`.
@@ -6883,6 +6906,8 @@ if (successfulPoll && !matchingShell) continue;
   base readiness fields and never infer compatibility from rendered text.
 - Full Access maps readiness to `not_required` only when the effective profile needs no process
   isolation. A managed network/root/domain restriction keeps platform readiness relevant.
+  Both process launch and projection use `requiresProcessSandbox`: mode, structured egress,
+  denied reads, readonly subtrees and explicit read roots must all retain their existing semantics.
 - macOS checks the fixed Seatbelt executable. Linux first finds a fixed bubblewrap candidate and
   then runs one bounded read-only capability probe covering user, PID, and network namespaces;
   executable presence alone is not readiness. The probe has a five-second timeout and a 16-KiB
@@ -6930,6 +6955,9 @@ if (successfulPoll && !matchingShell) continue;
 | Selected Full Access is constrained by managed policy | Report the constrained effective profile and retained readiness |
 | Gateway receives an invalid preset | `invalid_params`; keep the previous selected/effective state |
 | TUI receives an older permission payload | Keep the preset rows; omit unknown effective/readiness facts |
+| Missing/incompatible Windows helper | All capability fields remain unknown; do not infer PSEC from state text |
+| Full Access plus egress/readonly/denied/read-root restriction | Keep sandbox readiness; never project not_required |
+| Zero allowed domains | Show zero allowed domains, not unrestricted network |
 
 ### 5. Good/Base/Bad Cases
 
@@ -6946,6 +6974,8 @@ if (successfulPoll && !matchingShell) continue;
 - Bad: call the Windows setup helper, request UAC, or expose stderr while rendering status/preview.
 - Bad: install a system dependency, delete the Windows sandbox account, or remove firewall rules as
   an implicit recovery action.
+- Bad: render a ready handshake as proof of isolation, show capability support as a session grant,
+  or treat `allow_local_binding` as guaranteed host-to-sandbox reachability.
 
 ### 6. Tests Required
 
@@ -6961,6 +6991,10 @@ if (successfulPoll && !matchingShell) continue;
 - Doctor tests assert the process check uses the same readiness state/code and remains bounded.
 - TUI reducer and selector tests assert typed projection, managed/readiness labels, old-payload
   fallback, and width-safe rendering.
+- Capability tests cover compatible PSEC, legacy without backend, missing/mismatched helpers, and
+  setup-independent support. Contract tests reject malformed extensions; gateway tests assert
+  status/permission equality and value-free effective bounds. Doctor retains all descriptions
+  through sanitization. Narrow TUI details remain inspectable through Ctrl+A.
 - Full app, tools, TUI, lint, typecheck, and contract-drift suites remain green.
 
 ### 7. Wrong vs Correct

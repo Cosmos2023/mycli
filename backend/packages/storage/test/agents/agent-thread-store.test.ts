@@ -490,6 +490,44 @@ function reserveInput(threadId: string, taskName: string) {
 	};
 }
 
+test("agent port ceilings survive SQLite reopen, including empty lists", async (t) => {
+	const fixture = await storeFixture(t);
+	for (const [index, loopbackPorts] of [[], [5432]].entries()) {
+		const input = reserveInput(`ports-${index}`, `ports_${index}`);
+		fixture.store.agentThreads.reserve({ ...input, spawnConfig: { ...input.spawnConfig,
+			executionPolicy: { ...input.spawnConfig.executionPolicy, allowLocalBinding: true, loopbackPorts } } });
+	}
+	fixture.store.close();
+	const reopened = new SQLiteSessionStore({ dbPath: fixture.dbPath });
+	t.after(() => reopened.close());
+	for (const [index, ports] of [[], [5432]].entries()) {
+		const policy = reopened.agentThreads.get(`ports-${index}`)?.spawnConfig?.executionPolicy;
+		assert.deepEqual(policy?.loopbackPorts, ports);
+		assert.ok(Object.isFrozen(policy?.loopbackPorts));
+	}
+	for (const ports of [[0], [65536], Array(65).fill(443)]) {
+		const input = reserveInput("bad-ports", "bad_ports");
+		assert.throws(() => reopened.agentThreads.reserve({ ...input, spawnConfig: { ...input.spawnConfig,
+			executionPolicy: { ...input.spawnConfig.executionPolicy, loopbackPorts: ports } } }), /loopback_ports/u);
+	}
+});
+
+test("limited proxy authority survives SQLite reopen and rejects contradictory persisted settings", async (t) => {
+	const fixture = await storeFixture(t);
+	const networkProxy = { mode: "limited" as const, enableSocks5: true, allowUpstreamProxy: false, approvalDomains: ["example.com"] };
+	const input = reserveInput("proxy", "proxy");
+	fixture.store.agentThreads.reserve({ ...input, spawnConfig: { ...input.spawnConfig,
+		executionPolicy: { ...input.spawnConfig.executionPolicy, networkProxy } } });
+	fixture.store.close();
+	const reopened = new SQLiteSessionStore({ dbPath: fixture.dbPath }); t.after(() => reopened.close());
+	const policy = reopened.agentThreads.get("proxy")?.spawnConfig?.executionPolicy;
+	assert.deepEqual(policy?.networkProxy, networkProxy);
+	assert.ok(Object.isFrozen(policy?.networkProxy));
+	const invalid = reserveInput("invalid-proxy", "invalid_proxy");
+	assert.throws(() => reopened.agentThreads.reserve({ ...invalid, spawnConfig: { ...invalid.spawnConfig,
+		executionPolicy: { ...invalid.spawnConfig.executionPolicy, networkProxy, allowLocalBinding: true } } }));
+});
+
 function spawnConfig(): AgentSpawnConfigSnapshot {
 	return {
 		workspaceRoot: "/workspace",

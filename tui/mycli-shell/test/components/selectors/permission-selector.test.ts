@@ -63,6 +63,40 @@ const permissions: MycliShellPermissionState = {
 	],
 };
 
+test("permission details show effective restrictions and backend limits with narrow-screen inspection", () => {
+	const decoded = permissionStateFromUnknown({ ...permissions,
+		effective: { ...permissions.effective, network: "enabled", bounds: {
+			read_scope: "allowlist", network_scope: "domain_allowlist", readonly_roots: 1,
+			denied_read_rules: 2, allow_local_binding: true, raw_paths: "private-sentinel",
+		} },
+		sandbox_capabilities: { filesystem_rules: "supported", denied_reads: "supported", structured_egress: "supported",
+			independent_policies: "supported", host_loopback_access: "unsupported", raw_output: "private-sentinel" },
+	});
+	assert.ok(decoded);
+	assert.doesNotMatch(JSON.stringify(decoded), /private-sentinel/u);
+	const selector = new PermissionSelectorComponent({ permissions: decoded,
+		onSelect() {}, onClearAllowances() {}, onCancel() {}, maxHeight: () => 80,
+	});
+	const output = stripAnsi(selector.render(100).join("\n"));
+	assert.match(output, /Read scope: 1 configured roots/u);
+	assert.match(output, /Network scope: 0 allowed domains \(proxy only\)/u);
+	assert.doesNotMatch(output, /all local ports/u);
+	assert.match(output, /Host access to sandbox local servers: unsupported/u);
+	const withDomains = new PermissionSelectorComponent({
+		permissions: { ...decoded, effective: { ...decoded.effective!, networkDomains: 1 } },
+		onSelect() {}, onClearAllowances() {}, onCancel() {}, maxHeight: () => 80,
+	});
+	assert.match(stripAnsi(withDomains.render(100).join("\n")), /all local ports/u);
+	for (const width of [24, 32, 48]) {
+		selector.handleInput("\x01");
+		for (const line of selector.render(width)) assert.ok(visibleWidth(line) <= width);
+		selector.handleInput("\x01");
+	}
+	assert.equal(permissionStateFromUnknown({ ...permissions, sandbox_capabilities: { filesystem_rules: "yes" } })?.sandboxCapabilities, undefined);
+	assert.equal(permissionStateFromUnknown({ ...permissions, effective: { ...permissions.effective, bounds: { read_scope: "allowlist" } } })?.effective?.bounds, undefined);
+	assert.equal(permissionStateFromUnknown(permissions)?.sandboxCapabilities, undefined);
+});
+
 test("permission selector preserves and renders PSEC readiness from the gateway", () => {
 	const decoded = permissionStateFromUnknown({ ...permissions,
 		sandbox_readiness: { state: "ready", code: "ready", platform: "win32", isolation: "windows_psec" },
@@ -73,6 +107,35 @@ test("permission selector preserves and renders PSEC readiness from the gateway"
 		onSelect() {}, onClearAllowances() {}, onCancel() {},
 	});
 	assert.match(stripAnsi(selector.render(80).join("\n")), /Sandbox: ready.*Windows PSEC/u);
+});
+
+test("permission details distinguish bounded TCP ports, empty lists and offline policies", () => {
+	const bounds = { read_scope: "platform_default", network_scope: "domain_allowlist", readonly_roots: 0,
+		denied_read_rules: 0, allow_local_binding: true };
+	for (const ports of [[], [443, 5432], Array.from({ length: 64 }, (_, i) => 50000 + i)]) {
+		for (const offline of [false, true]) {
+			const decoded = permissionStateFromUnknown({ ...permissions,
+				effective: { ...permissions.effective, networkDomains: offline ? 0 : 1,
+					bounds: { ...bounds, loopback_ports: ports } } });
+			assert.ok(decoded);
+			assert.deepEqual(decoded.effective?.bounds?.loopback_ports, ports);
+			const selector = new PermissionSelectorComponent({ permissions: decoded,
+				onSelect() {}, onClearAllowances() {}, onCancel() {}, maxHeight: () => 100 });
+			const output = stripAnsi(selector.render(160).join("\n"));
+			assert.match(output, ports.length ? /Local TCP ports: /u : /Local TCP ports: none/u);
+			assert.doesNotMatch(output, /all local ports/u);
+			if (ports.length < 3) assert.match(output, offline ? /inactive: offline/u : /outgoing only/u);
+			for (const width of [24, 32, 48]) {
+				selector.handleInput("\x01");
+				for (const line of selector.render(width)) assert.ok(visibleWidth(line) <= width);
+				selector.handleInput("\x01");
+			}
+		}
+	}
+	for (const invalid of [null, [0], [443, 443], ["5432"], Array(65).fill(443)]) {
+		assert.equal(permissionStateFromUnknown({ ...permissions,
+			effective: { ...permissions.effective, bounds: { ...bounds, loopback_ports: invalid } } })?.effective?.bounds, undefined);
+	}
 });
 
 test("permission selector renders Codex-style profiles and stays width safe", (context) => {

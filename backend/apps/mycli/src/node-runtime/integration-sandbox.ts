@@ -9,10 +9,10 @@ export function mcpSandboxProfile(workspaceRoot: string, config: McpServerConfig
 	coordinator.configure({ trust: "trusted", permission: config.sandbox?.mode ? "workspace" : "full-access" });
 	const base = coordinator.snapshot().profile;
 	const readonly = config.sandbox?.mode === "read-only";
-	return Object.freeze({ ...base,
+	return offlineProcessProfile(Object.freeze({ ...base,
 		...(readonly ? { mode: "read-only" as const, filesystem: "read_only" as const, writableRoots: Object.freeze([]) } : {}),
 		network: config.sandbox?.network === "disabled" ? "disabled" : base.network,
-		workspaceRoot, cwd: config.cwd ?? workspaceRoot });
+		workspaceRoot, cwd: config.cwd ?? workspaceRoot }));
 }
 
 export function workspaceSandboxProfile(
@@ -50,5 +50,23 @@ function constrainProcessProfile(profile: SandboxProfile, constraints: Execution
 		constraints: { ...constraints, ...(constraints.deniedReadGlobs?.length ? {
 			deniedReadRoots: resolveDeniedReadRoots(workspaceRoot, constraints), deniedReadGlobs: [],
 		} : {}) } });
-	return Object.freeze({ ...profile, ...coordinator.restoreTurn("process", { toolsEnabled: true, profile }).profile });
+	// This is a new integration process: seed configured authority before freezing it.
+	const initial = { ...profile,
+		...(constraints.allowLocalBinding === undefined ? {} : { allowLocalBinding: constraints.allowLocalBinding }),
+		...(constraints.loopbackPorts === undefined ? {} : {
+			loopbackPorts: constraints.loopbackPorts, networkDomains: constraints.networkDomains,
+		}),
+		...(constraints.networkProxy === undefined ? {} : {
+			networkProxy: constraints.networkProxy, networkDomains: constraints.networkDomains,
+		}),
+	};
+	return offlineProcessProfile(Object.freeze({ ...profile, ...coordinator.restoreTurn("process", { toolsEnabled: true, profile: initial }).profile }));
+}
+
+function offlineProcessProfile(profile: SandboxProfile): SandboxProfile {
+	if (profile.network !== "disabled") return profile;
+	const { networkEgress, ...offline } = profile;
+	// An offline process cannot use an egress exception. Retain the network deny
+	// while keeping the native request free of contradictory network modes.
+	return networkEgress === undefined ? profile : Object.freeze(offline);
 }

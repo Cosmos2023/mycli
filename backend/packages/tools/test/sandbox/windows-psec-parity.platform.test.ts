@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
+import { createSocket } from "node:dgram";
+import { setTimeout as delay } from "node:timers/promises";
 import { link, mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer, type Server, type Socket } from "node:net";
 import { createInterface, type Interface } from "node:readline";
@@ -227,7 +229,11 @@ test("PSEC explicit local binding enables IPv4 and IPv6 loopback while strict pr
 	const f = await fixture(t);
 	const proxy = await server(t, "127.0.0.1");
 	const foreign = await server(t, "127.0.0.1");
-	const ipv6 = await server(t, "::1");
+	let ipv6 = await server(t, "::1");
+	for (let attempt = 0; attempt < 8 && (ipv6 === proxy || ipv6 === foreign); attempt += 1) {
+		ipv6 = await server(t, "::1");
+	}
+	assert.ok(ipv6 !== proxy && ipv6 !== foreign, "loopback selection fixture needs distinct ports");
 	const code = `import net from 'node:net'; const results=[];
 for(const [port,host] of ${JSON.stringify([[proxy, "127.0.0.1"], [foreign, "127.0.0.1"], [ipv6, "::1"]])}) {
 results.push(await new Promise(resolve=>{const s=net.connect(port,host);s.on('connect',()=>{s.destroy();resolve(true)});
@@ -236,6 +242,25 @@ console.log(JSON.stringify(results));`;
 	const profile = { ...f.profile, network: "enabled" as const, networkDomains: ["example.com"] };
 	assert.deepEqual(JSON.parse(await run(code, profile, proxy)), [true, false, false]);
 	assert.deepEqual(JSON.parse(await run(code, { ...profile, allowLocalBinding: true }, proxy)), [true, true, true]);
+	assert.deepEqual(JSON.parse(await run(code, { ...profile, allowLocalBinding: true, loopbackPorts: [] }, proxy)), [true, false, false]);
+	assert.deepEqual(JSON.parse(await run(code, { ...profile, loopbackPorts: [foreign] }, proxy)), [true, true, false]);
+	assert.deepEqual(JSON.parse(await run(code, { ...profile, loopbackPorts: [ipv6] }, proxy)), [true, false, true]);
+	assert.deepEqual(JSON.parse(await run(code, { ...profile, allowLocalBinding: true, loopbackPorts: [foreign, ipv6], network: "disabled" })), [false, false, false]);
+	const udp = createSocket("udp4");
+	udp.bind(0, "127.0.0.1");
+	await once(udp, "listening");
+	t.after(() => udp.close());
+	const udpPort = udp.address().port;
+	const control = once(udp, "message", { signal: t.signal });
+	udp.send("control", udpPort, "127.0.0.1");
+	await control;
+	let received = 0;
+	udp.on("message", () => { received += 1; });
+	await run(`import dgram from 'node:dgram'; const s=dgram.createSocket('udp4');
+s.on('error',()=>{});s.send('blocked',${udpPort},'127.0.0.1',()=>{});setTimeout(()=>s.close(),300);`,
+		{ ...profile, allowLocalBinding: true, loopbackPorts: [udpPort] }, proxy);
+	await delay(300);
+	assert.equal(received, 0, "TCP port permission must not permit UDP packets");
 	for (const host of ["127.0.0.1", "::1"]) {
 		const bound = await run(`import net from 'node:net';
 const s=net.createServer();s.listen(0,${JSON.stringify(host)},()=>{console.log(s.address().address);s.close();});`,

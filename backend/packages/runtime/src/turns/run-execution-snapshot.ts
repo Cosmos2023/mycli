@@ -1,6 +1,10 @@
 import { isAbsolute, normalize } from "node:path";
 import {
 	modelInputSha256,
+	freezeLoopbackPorts,
+	freezeNetworkProxyPolicy,
+	validateNetworkProxyPolicy,
+	validateLoopbackPortPolicy,
 	stableModelInputJson,
 	type ToolDefinition,
 } from "@mycli/core";
@@ -317,12 +321,19 @@ function executionPolicy(value: unknown): ExecutionPolicy {
 	const networkEgress: NetworkEgressPolicy | undefined = policy.networkEgress === undefined
 		? undefined
 		: freezeNetworkEgress(policy.networkEgress as NetworkEgressPolicy);
+	const loopbackPorts = policy.loopbackPorts === undefined ? undefined : freezeLoopbackPorts(policy.loopbackPorts);
+	validateLoopbackPortPolicy({ loopbackPorts, networkDomains, networkEgress });
+	const networkProxy = policy.networkProxy === undefined ? undefined : freezeNetworkProxyPolicy(policy.networkProxy);
+	validateNetworkProxyPolicy({ networkProxy, networkDomains, networkEgress,
+		allowLocalBinding: policy.allowLocalBinding as boolean | undefined, loopbackPorts });
 	return Object.freeze({
 		mode: policy.mode,
 		filesystem: policy.filesystem,
 		network: policy.network,
 		...(networkDomains === undefined ? {} : { networkDomains }),
+		...(networkProxy === undefined ? {} : { networkProxy }),
 		...(networkEgress === undefined ? {} : { networkEgress }),
+		...(loopbackPorts === undefined ? {} : { loopbackPorts }),
 		...(policy.deniedReadRoots === undefined ? {} : { deniedReadRoots: policyRootList(policy.deniedReadRoots, "denied read roots") }),
 		...(policy.readOnlyRoots === undefined ? {} : { readOnlyRoots: policyRootList(policy.readOnlyRoots, "readonly roots") }),
 		...(policy.allowLocalBinding === undefined ? {} : { allowLocalBinding: policy.allowLocalBinding as boolean }),

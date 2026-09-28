@@ -1,5 +1,7 @@
 import { isAbsolute, normalize } from "node:path";
 import type { WorkspaceTrustState } from "@mycli/config";
+import { freezeNetworkProxyPolicy, intersectNetworkProxyPolicy, validateNetworkProxyPolicy, type NetworkProxyPolicy } from "@mycli/core";
+import { networkEgressIsSubset, freezeLoopbackPorts, intersectLoopbackAccess, intersectNetworkDomains, validateLoopbackPortPolicy } from "@mycli/core";
 import type {
 	PermissionGrantScope,
 	PermissionRequestProfile,
@@ -28,10 +30,12 @@ export interface ExecutionPolicyConstraints {
 	readonly source: "managed" | "runtime";
 	readonly network?: "enabled" | "disabled";
 	readonly networkDomains?: readonly string[];
+	readonly networkProxy?: NetworkProxyPolicy;
 	readonly networkEgress?: NetworkEgressPolicy;
 	readonly readableRoots?: readonly string[];
 	readonly readOnlyRoots?: readonly string[];
 	readonly allowLocalBinding?: boolean;
+	readonly loopbackPorts?: readonly number[];
 	readonly writableTemp?: boolean;
 	readonly deniedReadRoots?: readonly string[];
 	readonly deniedReadGlobs?: readonly string[];
@@ -148,7 +152,7 @@ export class ExecutionPolicyCoordinator {
 		}
 		const restored = Object.freeze({
 			toolsEnabled: policy.toolsEnabled,
-			profile: this.#applyConstraints(copyExecutionPolicy(policy.profile)),
+			profile: this.#applyConstraints(copyExecutionPolicy(policy.profile), true),
 		});
 		this.#active = Object.freeze({
 			turnId,
@@ -159,7 +163,21 @@ export class ExecutionPolicyCoordinator {
 	}
 
 	sandboxOverrideProfile(): ExecutionPolicy {
-		return this.#applyConstraints(executionPolicy("full-access", this.#workspaceRoot));
+		const active = this.#active?.policy.profile;
+		const networkEgress = active?.networkEgress;
+		return this.#applyConstraints(Object.freeze({
+			...executionPolicy("full-access", this.#workspaceRoot),
+			...(networkEgress === undefined ? {} : { networkEgress }),
+			...(active?.networkProxy === undefined ? {} : {
+				networkProxy: active.networkProxy, network: active.network, networkDomains: active.networkDomains,
+			}),
+			...(active?.allowLocalBinding === undefined ? {} : { allowLocalBinding: active.allowLocalBinding }),
+			...(active?.loopbackPorts === undefined ? {} : {
+				loopbackPorts: active.loopbackPorts,
+				network: active.network,
+				networkDomains: active.networkDomains,
+			}),
+		}), active !== undefined);
 	}
 
 	finishTurn(turnId: string): void {
@@ -236,7 +254,7 @@ export class ExecutionPolicyCoordinator {
 		);
 	}
 
-	#applyConstraints(policy: ExecutionPolicy): ExecutionPolicy {
+	#applyConstraints(policy: ExecutionPolicy, preserveLoopback = false): ExecutionPolicy {
 		if (!this.#constraints) return policy;
 		const constrainedRoots = this.#constraints.writableRoots;
 		const roots = constrainedRoots === undefined
@@ -247,25 +265,40 @@ export class ExecutionPolicyCoordinator {
 		const network = this.#constraints.network === "disabled"
 			? "disabled"
 			: policy.network;
-		const networkDomains = this.#constraints.networkDomains ?? policy.networkDomains;
-		const networkEgress = this.#constraints.networkEgress ?? policy.networkEgress;
+		const networkDomains = preserveLoopback && (policy.loopbackPorts !== undefined || this.#constraints.loopbackPorts !== undefined
+			|| policy.networkProxy !== undefined || this.#constraints.networkProxy !== undefined)
+			? intersectNetworkDomains(policy.networkDomains, this.#constraints.networkDomains)
+			: this.#constraints.networkDomains ?? policy.networkDomains;
+		const networkEgress = constrainedNetworkEgress(policy.networkEgress, this.#constraints.networkEgress);
+		const priorProxy = preserveLoopback && policy.networkProxy === undefined && this.#constraints.networkProxy !== undefined
+			? { mode: "full" as const, enableSocks5: false, allowUpstreamProxy: false } : policy.networkProxy;
+		const networkProxy = intersectNetworkProxyPolicy(priorProxy, this.#constraints.networkProxy);
 		const readableRoots = this.#constraints.readableRoots ?? policy.readableRoots;
 		const readOnlyRoots = uniqueStrings([...(policy.readOnlyRoots ?? []), ...(this.#constraints.readOnlyRoots ?? [])]);
-		const allowLocalBinding = this.#constraints.allowLocalBinding ?? policy.allowLocalBinding;
+		const loopback = preserveLoopback
+			&& (this.#constraints.loopbackPorts !== undefined || this.#constraints.allowLocalBinding !== undefined)
+			? intersectLoopbackAccess(policy, this.#constraints)
+			: {
+				allowLocalBinding: this.#constraints.allowLocalBinding ?? policy.allowLocalBinding,
+				loopbackPorts: this.#constraints.loopbackPorts ?? policy.loopbackPorts,
+			};
+		const { allowLocalBinding, loopbackPorts } = loopback;
 		const writableTemp = this.#constraints.writableTemp ?? policy.writableTemp;
 		const deniedReadRoots = uniqueStrings([...(policy.deniedReadRoots ?? []), ...(this.#constraints.deniedReadRoots ?? [])]);
 		const deniedReadGlobs = uniqueStrings([...(policy.deniedReadGlobs ?? []), ...(this.#constraints.deniedReadGlobs ?? [])]);
 		const hasDenies = deniedReadRoots.length > 0 || deniedReadGlobs.length > 0;
 		if (!hasDenies && readOnlyRoots.length === 0 && allowLocalBinding === policy.allowLocalBinding
+			&& loopbackPorts === policy.loopbackPorts
 			&& writableTemp === policy.writableTemp && constrainedRoots === undefined
 			&& network === policy.network
 			&& networkDomains === policy.networkDomains
+			&& networkProxy === policy.networkProxy
 			&& networkEgress === policy.networkEgress
 			&& readableRoots === policy.readableRoots) return policy;
 		return immutablePolicy(
 			{ ...policy, ...(hasDenies ? { deniedReadRoots, deniedReadGlobs } : {}),
 				...(readOnlyRoots.length ? { readOnlyRoots } : {}),
-				...(allowLocalBinding === undefined ? {} : { allowLocalBinding }),
+				allowLocalBinding, loopbackPorts, networkProxy,
 				...(writableTemp === undefined ? {} : { writableTemp }) },
 			roots,
 			network,
@@ -330,13 +363,17 @@ function normalizeConstraints(
 	for (const value of [constraints.allowLocalBinding, constraints.writableTemp]) {
 		if (value !== undefined && typeof value !== "boolean") throw new TypeError("execution policy option must be boolean");
 	}
+	validateLoopbackPortPolicy(constraints);
+	validateNetworkProxyPolicy(constraints);
 	return Object.freeze({
 		source: constraints.source,
+		...(constraints.networkProxy === undefined ? {} : { networkProxy: freezeNetworkProxyPolicy(constraints.networkProxy) }),
 		...(constraints.networkEgress === undefined
 			? {}
 			: { networkEgress: freezeNetworkEgress(constraints.networkEgress) }),
 		...(constraints.readOnlyRoots === undefined ? {} : { readOnlyRoots: Object.freeze(constraints.readOnlyRoots.map(executionPolicyRoot)) }),
 		...(constraints.allowLocalBinding === undefined ? {} : { allowLocalBinding: constraints.allowLocalBinding }),
+		...(constraints.loopbackPorts === undefined ? {} : { loopbackPorts: freezeLoopbackPorts(constraints.loopbackPorts) }),
 		...(constraints.writableTemp === undefined ? {} : { writableTemp: constraints.writableTemp }),
 		...(constraints.deniedReadRoots === undefined ? {} : {
 			deniedReadRoots: uniqueStrings(constraints.deniedReadRoots.map((root) => {
@@ -407,7 +444,10 @@ function immutablePolicy(
 ): ExecutionPolicy {
 	const unrestricted = base.filesystem === "unrestricted" && !forceRestricted;
 	const hasWritableRoots = writableRoots.length > 0;
+	validateLoopbackPortPolicy({ loopbackPorts: base.loopbackPorts, networkDomains, networkEgress });
+	validateNetworkProxyPolicy({ ...base, networkDomains, networkEgress });
 	return Object.freeze({
+		...(base.networkProxy === undefined ? {} : { networkProxy: freezeNetworkProxyPolicy(base.networkProxy) }),
 		mode: unrestricted
 			? "danger-full-access"
 			: hasWritableRoots ? "workspace-write" : "read-only",
@@ -419,6 +459,7 @@ function immutablePolicy(
 		...(base.deniedReadRoots === undefined ? {} : { deniedReadRoots: Object.freeze([...base.deniedReadRoots]) }),
 		...(base.readOnlyRoots === undefined ? {} : { readOnlyRoots: Object.freeze([...base.readOnlyRoots]) }),
 		...(base.allowLocalBinding === undefined ? {} : { allowLocalBinding: base.allowLocalBinding }),
+		...(base.loopbackPorts === undefined ? {} : { loopbackPorts: freezeLoopbackPorts(base.loopbackPorts) }),
 		...(base.writableTemp === undefined ? {} : { writableTemp: base.writableTemp }),
 		...(base.deniedReadGlobs === undefined ? {} : { deniedReadGlobs: Object.freeze([...base.deniedReadGlobs]) }),
 		...(networkDomains === undefined ? {} : {
@@ -431,14 +472,25 @@ function immutablePolicy(
 	});
 }
 
+function constrainedNetworkEgress(current: NetworkEgressPolicy | undefined, ceiling: NetworkEgressPolicy | undefined): NetworkEgressPolicy | undefined {
+	if (networkEgressIsSubset(current, ceiling)) return current;
+	if (networkEgressIsSubset(ceiling, current)) return ceiling;
+	throw new TypeError("network egress constraints cannot safely narrow the frozen run policy");
+}
+
 function copyExecutionPolicy(policy: ExecutionPolicy): ExecutionPolicy {
+	validateLoopbackPortPolicy(policy);
+	validateNetworkProxyPolicy(policy);
 	return Object.freeze({
 		mode: policy.mode,
 		filesystem: policy.filesystem,
 		network: policy.network,
+		...(policy.networkProxy === undefined ? {} : { networkProxy: freezeNetworkProxyPolicy(policy.networkProxy) }),
+		...(policy.networkEgress === undefined ? {} : { networkEgress: freezeNetworkEgress(policy.networkEgress) }),
 		...(policy.deniedReadRoots === undefined ? {} : { deniedReadRoots: Object.freeze([...policy.deniedReadRoots]) }),
 		...(policy.readOnlyRoots === undefined ? {} : { readOnlyRoots: Object.freeze([...policy.readOnlyRoots]) }),
 		...(policy.allowLocalBinding === undefined ? {} : { allowLocalBinding: policy.allowLocalBinding }),
+		...(policy.loopbackPorts === undefined ? {} : { loopbackPorts: freezeLoopbackPorts(policy.loopbackPorts) }),
 		...(policy.writableTemp === undefined ? {} : { writableTemp: policy.writableTemp }),
 		...(policy.deniedReadGlobs === undefined ? {} : { deniedReadGlobs: Object.freeze([...policy.deniedReadGlobs]) }),
 		...(policy.networkDomains === undefined ? {} : {

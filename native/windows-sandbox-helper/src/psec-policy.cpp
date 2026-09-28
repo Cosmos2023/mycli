@@ -168,6 +168,7 @@ PsecPolicy ResolvePsecPolicy(const SandboxRequest& request) {
     policy.network_enabled = request.network == NetworkPolicy::kEnabled;
     policy.proxy_port = request.network_proxy_port;
     policy.allow_local_binding = request.allow_local_binding;
+    policy.loopback_ports = request.loopback_ports;
     policy.network_egress = request.network_egress;
     policy.unrestricted_filesystem = request.filesystem == FilesystemPolicy::kUnrestricted;
     policy.read_roots = request.workspace_roots;

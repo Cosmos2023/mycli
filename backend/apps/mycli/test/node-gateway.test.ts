@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { NetworkApprovalBroker } from "../src/node-runtime/network-approval-broker.ts";
 import { TrainingExportError } from "../src/node-runtime/session-training-export.ts";
 import { createInterface } from "node:readline";
 import test from "node:test";
@@ -264,6 +265,13 @@ function permissionPayload(
 			network_domains: snapshot.profile.networkDomains?.length ?? 0,
 			session_grant: snapshot.resolution?.sessionGrant !== undefined,
 			turn_grant: snapshot.resolution?.turnGrant !== undefined,
+			bounds: {
+				read_scope: snapshot.profile.readableRoots === undefined ? "platform_default" : "allowlist",
+				network_scope: snapshot.profile.network === "disabled" ? "disabled" : "unrestricted",
+				readonly_roots: 0,
+				denied_read_rules: 0,
+				allow_local_binding: false,
+			},
 		},
 		sandbox_readiness: requiresSandbox
 			? READY_SANDBOX
@@ -309,6 +317,7 @@ function permissionPayload(
 }
 
 function gatewayHarness(options: {
+	networkApprovals?: NetworkApprovalBroker;
 	exportTraining?: NonNullable<CreateNodeGatewayOptions["sessionCommands"]>["exportTraining"];
 	validateSelectedSkills?: CreateNodeGatewayOptions["validateSelectedSkills"];
 	workspaceCommands?: CreateNodeGatewayOptions["workspaceCommands"];
@@ -378,6 +387,7 @@ function gatewayHarness(options: {
 	executionPolicySnapshot?: (
 		configuration: GatewayPolicyConfiguration,
 	) => ExecutionPolicySnapshot;
+	sandboxReadiness?: SandboxReadiness;
 	sessionService?: {
 		readonly list?: (query: SessionQuery) => readonly SessionSummary[];
 		readonly inspect?: (sessionId: string) => SessionSummary | undefined;
@@ -717,6 +727,7 @@ function gatewayHarness(options: {
 		save: async () => undefined,
 	} : undefined);
 	const gateway = createNodeGateway({
+		networkApprovals: options.networkApprovals,
 		validateSelectedSkills: options.validateSelectedSkills, workspaceCommands: options.workspaceCommands,
 		sessionId: "session-node",
 		workspaceRoot: "/repo",
@@ -724,7 +735,7 @@ function gatewayHarness(options: {
 		model: "gpt-test",
 		...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
 		toolNames: ["Read"],
-		sandboxReadiness: READY_SANDBOX,
+		sandboxReadiness: options.sandboxReadiness ?? READY_SANDBOX,
 			maxPromptTokens: options.maxPromptTokens,
 			runtime,
 			...(options.agentInteractiveRequests ? {
@@ -1890,6 +1901,52 @@ test("gateway rejects workspace trust changes while a turn is active", async () 
 	harness.releaseTurn();
 	await waitFor(() => notification(harness.messages, "turn.completed"));
 	await harness.gateway.close();
+});
+
+test("gateway preserves Windows capability and actual policy diagnostics across permission and status queries", async (context) => {
+	for (const networkScope of ["domain_allowlist", "structured_egress"] as const) {
+		const harness = gatewayHarness({
+			sandboxReadiness: { platform: "win32", state: "ready", code: "ready", isolation: "windows_psec", helperCompatible: true },
+			executionPolicySnapshot: () => ({ trusted: true, valid: true,
+				profile: { mode: "workspace-write", filesystem: "workspace_write", network: "enabled",
+					readableRoots: [], writableRoots: ["C:\\private"], readOnlyRoots: ["C:\\private\\readonly"],
+					deniedReadRoots: ["C:\\private\\secret"], deniedReadGlobs: ["*.key"], allowLocalBinding: true,
+					...(networkScope === "domain_allowlist" ? { networkDomains: [], loopbackPorts: [443, 5432] } : { networkEgress: { default: "deny" } }),
+				}, resolution: { configurationSource: "session", constraintsSource: "managed" },
+			}),
+		});
+		context.after(() => harness.gateway.close());
+		await waitFor(() => notification(harness.messages, "runtime.ready"));
+		const listed = await harness.send("permissions.list");
+		const status = await harness.send("status.inspect");
+		assert.ok("result" in listed && "result" in status);
+		assert.deepEqual(listed.result, status.result.permissions);
+		assert.deepEqual((listed.result.effective as Record<string, unknown>).bounds, {
+			read_scope: "allowlist", network_scope: networkScope,
+			readonly_roots: 1, denied_read_rules: 2, allow_local_binding: true,
+			...(networkScope === "domain_allowlist" ? { loopback_ports: [443, 5432] } : {}),
+		});
+		assert.deepEqual(listed.result.sandbox_capabilities, { filesystem_rules: "supported", denied_reads: "supported",
+			structured_egress: "supported", independent_policies: "supported", host_loopback_access: "unsupported" });
+		assert.ok(!JSON.stringify(listed.result).includes("private"));
+	}
+});
+
+test("Full Access diagnostics retain sandbox readiness for explicit file and egress constraints", async (context) => {
+	const full = testExecutionPolicySnapshot({ trust: "trusted", permission: "full-access" });
+	for (const restriction of [
+		{ networkEgress: { default: "deny" as const } }, { readableRoots: [] },
+		{ readOnlyRoots: ["/readonly"] }, { deniedReadRoots: ["/private"] }, { deniedReadGlobs: ["*.key"] },
+	]) {
+		const harness = gatewayHarness({ executionPolicySnapshot: () => ({ ...full, profile: { ...full.profile, ...restriction } }) });
+		context.after(() => harness.gateway.close());
+		await waitFor(() => notification(harness.messages, "runtime.ready"));
+		await harness.send("permissions.update", { profile: "full-access" });
+		const listed = await harness.send("permissions.list");
+		assert.ok("result" in listed);
+		assert.equal(listed.result.active, "full-access");
+		assert.deepEqual(listed.result.sandbox_readiness, READY_SANDBOX);
+	}
 });
 
 test("gateway projects managed effective policy consistently across status and permission surfaces", async () => {
@@ -5775,6 +5832,51 @@ test("unsupported methods return a stable error and observable gateway event", a
 function notification(messages: RpcMessage[], method: string) {
 	return messages.find((message) => "method" in message && !("id" in message) && message.method === method);
 }
+
+test("network requests queue through the real gateway, survive turn completion and resolve only by exact owner", async (t) => {
+	const broker = new NetworkApprovalBroker();
+	const harness = gatewayHarness({ networkApprovals: broker });
+	t.after(() => harness.gateway.close());
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+	const controller = new AbortController();
+	const owner = { sessionId: "session-node", turnId: "finished-turn", callId: "shell-call" };
+	const details = { host: "api.example.com", port: 443, protocol: "https" as const, method: "CONNECT", reason: "approval_required" as const };
+	const first = broker.interaction(owner).requestApproval!(details, controller.signal);
+	const second = broker.interaction({ ...owner, callId: "other-call" }).requestApproval!(details, controller.signal);
+	const prompt = await waitFor(() => notification(harness.messages, "approval.request"));
+	assert.equal(notificationCount(harness.messages, "approval.request"), 1);
+	parseGatewayEvent(prompt);
+	const hidden = new AbortController();
+	const cancelled = broker.interaction({ ...owner, callId: "hidden-call" }).requestApproval!(details, hidden.signal);
+	hidden.abort(); assert.equal(await cancelled, "unavailable");
+	assert.equal(notificationCount(harness.messages, "interactive.cancelled"), 0);
+	assert.equal(notificationCount(harness.messages, "approval.request"), 1);
+	let state = initialRuntimeState();
+	state = reduceRuntimeEvent(state, "approval.request", prompt.params);
+	assert.equal(state.turnRunning, false);
+	state = reduceRuntimeEvent(state, "turn.completed", { turn_id: "finished-turn" });
+	assert.ok(state.pendingApproval?.network_request);
+	const invalid = await harness.send("approval.respond", { decision_id: prompt.params.decision_id, session_id: "other", choice: "approve_once" });
+	assert.ok("error" in invalid);
+	const approved = await harness.send("approval.respond", { decision_id: prompt.params.decision_id, session_id: "session-node", choice: "approve_once" });
+	assert.equal("result" in approved && approved.result.accepted, true);
+	assert.equal(await first, "approve_once");
+	await waitFor(() => notificationCount(harness.messages, "approval.request") === 2);
+	const bootstrap = await harness.send("session.bootstrap", { protocol_version: 1 });
+	assert.equal("result" in bootstrap && (bootstrap.result.status as Record<string, unknown>).pending_decision, true);
+	await waitFor(() => notificationCount(harness.messages, "approval.request") === 3);
+	const replayed = notifications(harness.messages, "approval.request");
+	assert.equal(replayed[1]?.params.decision_id, replayed[2]?.params.decision_id);
+	const response = notification(harness.messages, "approval.respond")!;
+	state = reduceRuntimeEvent(state, "approval.respond", response.params);
+	assert.equal(state.turnRunning, false); assert.equal(state.pendingApproval, null);
+	controller.abort(); assert.equal(await second, "unavailable");
+	await waitFor(() => notification(harness.messages, "interactive.cancelled"));
+	broker.interaction(owner).onBlocked!({ ...details, reason: "domain_denied" });
+	const blocked = await waitFor(() => notification(harness.messages, "network.blocked"));
+	state = reduceRuntimeEvent(state, "network.blocked", blocked.params);
+	assert.match(state.transcript.at(-1)!.text, /Domain is outside.*域名不在/u);
+});
 
 function notificationForSession(messages: RpcMessage[], method: string, sessionId: string) {
 	return messages.find((message) => "method" in message

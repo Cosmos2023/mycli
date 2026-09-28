@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, realpath, symlink } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -21,22 +21,69 @@ test("Windows sandbox helper resolves from the package native directory", () => 
 	);
 });
 
+test("limited proxy bundles supplement read grants while explicit denies still win", async (t) => {
+	const workspace = await temporaryWorkspace(t);
+	const bundle = join(workspace, "ca.pem"); await writeFile(bundle, "public certificate");
+	const networkProxy = { mode: "limited" as const, enableSocks5: true, allowUpstreamProxy: false };
+	const profile = { ...executionPolicy("workspace", workspace), workspaceRoot: workspace, cwd: workspace, network: "enabled" as const,
+		networkDomains: ["example.com"], networkProxy, readableRoots: [workspace] };
+	const windows = { platform: "win32" as const, isExecutable: () => true, windowsHelperPath: "helper.exe" };
+	const lease = { port: 40000, policy: networkProxy, readableRoots: [bundle] };
+	const request = JSON.parse(prepareSandboxedProcess(["cmd.exe"], profile, windows, lease).args[1]!);
+	assert.deepEqual(request.readable_roots, [await realpath(workspace), await realpath(bundle)]);
+	for (const denied of [{ deniedReadRoots: [workspace] }, { deniedReadGlobs: ["*.pem"] }]) {
+		assert.throws(() => prepareSandboxedProcess(["cmd.exe"], { ...profile, ...denied }, windows, lease), { kind: "network_proxy_unavailable" });
+	}
+	assert.throws(() => prepareSandboxedProcess(["cmd.exe"], profile, windows, { ...lease, policy: { ...networkProxy, mode: "full" } }), { kind: "network_proxy_unavailable" });
+	const offline = JSON.parse(prepareSandboxedProcess(["cmd.exe"], profile, windows).args[1]!);
+	assert.equal(offline.network, "disabled");
+});
+
+test("Windows TCP loopback bounds survive requests and cannot bypass validation via Full Access", async (t) => {
+	const workspace = await temporaryWorkspace(t);
+	const helper = "C:\\mycli\\mycli-windows-sandbox.exe";
+	const profile = { ...executionPolicy("full-access", workspace), workspaceRoot: workspace, cwd: workspace,
+		networkDomains: ["example.com"], allowLocalBinding: true, loopbackPorts: [5432, 443, 5432] };
+	const windows = { ...probes("win32", [helper]), windowsHelperPath: helper };
+	const launch = prepareSandboxedProcess(["cmd.exe"], profile, windows, { port: 40000 });
+	assert.equal(launch.isolation, "windows_native");
+	assert.deepEqual(JSON.parse(launch.args[1]!).loopback_ports, [443, 5432]);
+	for (const offline of [{ ...profile, network: "disabled" as const }, { ...profile, networkDomains: [] }, profile]) {
+		const request = JSON.parse(prepareSandboxedProcess(["cmd.exe"], offline, windows).args[1]!);
+		assert.equal(request.network, "disabled");
+		assert.equal(request.network_proxy_port, undefined);
+		assert.deepEqual(request.loopback_ports, [443, 5432]);
+	}
+	assert.deepEqual(JSON.parse(prepareSandboxedProcess(["cmd.exe"], { ...profile, loopbackPorts: [] }, windows, { port: 40000 }).args[1]!).loopback_ports, []);
+	for (const platform of ["darwin", "linux"] as const) {
+		assert.throws(() => prepareSandboxedProcess(["cmd.exe"], profile, { ...windows, platform }), /Windows policy features/u);
+	}
+	for (const invalid of [{ ...profile, networkDomains: undefined }, { ...profile, loopbackPorts: [0] },
+		{ ...profile, networkEgress: { default: "deny" as const } }]) {
+		assert.throws(() => prepareSandboxedProcess(["cmd.exe"], invalid, windows), /loopback_ports/u);
+	}
+});
+
 test("Windows permission payloads are bounded and preserve advanced policy options", async (t) => {
 	const workspace = await temporaryWorkspace(t);
 	const helper = "C:\\mycli\\mycli-windows-sandbox.exe";
 	const profile = { ...executionPolicy("workspace", workspace), workspaceRoot: workspace, cwd: workspace,
-		readableRoots: [workspace], readOnlyRoots: [workspace], allowLocalBinding: true, writableTemp: false };
+		readableRoots: [workspace], readOnlyRoots: [workspace], allowLocalBinding: true, writableTemp: false,
+		networkDomains: ["example.com"], loopbackPorts: [5432] };
 	const prepare = (value: typeof profile) => prepareSandboxedProcess(["cmd.exe", "/c", "echo ok"], value,
 		{ ...probes("win32", [helper]), windowsHelperPath: helper });
 	const short = JSON.parse(prepare(profile).args[1]!);
-	assert.deepEqual(short.readable_roots, [workspace]);
-	assert.deepEqual(short.readonly_roots, [workspace]);
+	assert.deepEqual(short.readable_roots, [await realpath(workspace)]);
+	assert.deepEqual(short.readonly_roots, [await realpath(workspace)]);
 	assert.equal(short.allow_local_binding, true);
+	assert.deepEqual(short.loopback_ports, [5432]);
 	assert.equal(short.writable_tmp, false);
 	const large = prepare({ ...profile, readableRoots: Array.from({ length: 900 }, () => workspace) });
 	assert.deepEqual(large.args, ["--request-env"]);
 	const encoded = Array.from({ length: Number(large.env?.MYCLI_SANDBOX_REQUEST_COUNT) }, (_, i) => large.env?.[`MYCLI_SANDBOX_REQUEST_${i}`]).join("");
-	assert.equal(JSON.parse(Buffer.from(encoded, "base64").toString("utf8")).readable_roots.length, 900);
+	const carried = JSON.parse(Buffer.from(encoded, "base64").toString("utf8"));
+	assert.equal(carried.readable_roots.length, 900);
+	assert.deepEqual(carried.loopback_ports, [5432]);
 	assert.throws(() => prepareSandboxedProcess(["cmd.exe", "x".repeat(1_000_001)], profile,
 		{ ...probes("win32", [helper]), windowsHelperPath: helper }), /payload limit/u);
 });

@@ -67,6 +67,18 @@ the registry.
   The original `node:test` summary must contain exactly 13 passes, zero failures/skips/cancellations/todo.
   A ready PSEC handshake additionally selects the seven-test parity suite, also with zero skips. Pin
   the selected backend through the final handshake; do not force PSEC tests on the legacy backend.
+* `MYCLI_WINDOWS_SANDBOX_EVIDENCE=<path>` optionally retains a bounded (16 KiB) source acceptance
+  report, including preflight refusals and failures. Schema version 1, kind
+  `windows_sandbox_source_acceptance`, status `not_run|failed|completed`, stage, optional bounded
+  code, OS/Node version, architecture, selected backend, before/after helper SHA-256, and selected
+  suite filename/expected count/status/counters are allowlisted. Never retain raw exceptions,
+  handshake bodies, output or paths. `fresh_setup=false` always; this report cannot substitute
+  for installed-package publication evidence.
+* Strict source acceptance checks the manifest and any vendored helper before and after testing;
+  the final hash must equal the initial hash. CI writes the freshly compiled helper's SHA-256
+  manifest before running the gate and uploads bounded acceptance evidence with `if: always()`
+  for 14 days. Verified helper upload stays success-only. Failure before the runner starts leaves
+  no acceptance report and must not be presented as an isolation pass.
 * Installed Windows readiness uses bounded management JSON (16 KiB): `ok=true`, `exitCode=0`,
   `platform=win32`, `isolation=windows_restricted_token|windows_psec`, state/code `ready`, and true
   `helperCompatible`, `setupComplete`, `sandboxReady`. Setup must report completed/setup_completed.
@@ -110,6 +122,8 @@ the registry.
 | Fresh setup requested with existing or ambiguous managed state | `windows_sandbox_clean_setup_required` |
 | Windows suite skips or does not pass all 13 tests | `windows_sandbox_suite_incomplete` |
 | Selected PSEC backend skips or does not pass all seven parity tests | `windows_sandbox_suite_incomplete` |
+| Helper replaced during otherwise passing acceptance | `windows_sandbox_helper_changed`; status failed |
+| Evidence cannot be saved | `windows_sandbox_evidence_write_failed`; exit 1 |
 | Publish evidence absent, stale, malformed or mismatched | `release_windows_package_evidence_required` / `release_windows_package_evidence_invalid` |
 | Root is publishable | `release_root_must_remain_private` |
 | Application or platform manifest has the wrong package name | `release_package_name_mismatch` |
@@ -137,6 +151,8 @@ the registry.
 * Good: clean Windows job tests an installed candidate, retains its tarball and matching evidence;
   the publisher checks both hashes and publishes those exact app bytes.
 * Bad: treating helper inclusion or an existing ready installation as fresh Windows acceptance.
+* Good: persist failing suite counters and leave later suites `not_run`; zero skips remain mandatory.
+* Bad: count a source report with `fresh_setup=false` as installed clean-host evidence.
 * Bad: publish a private runtime workspace or remove it from the app artifact. This exposes an
   implementation package or creates an incomplete CLI installation.
 * Bad: use `--allow-external-blocker` in the tag workflow, treat a zero-byte evidence file as a
@@ -149,6 +165,10 @@ the registry.
 * Windows gate: unavailable/malformed status, setup cancellation, existing state, final status
   regression, every incomplete test counter and missing opt-ins fail closed. Evidence integration
   uses real temporary files and Git HEAD, accepts BOM and rejects replaced/oversized artifacts.
+* Source acceptance: fake native callbacks cover backend/identity/readiness drift, every incomplete
+  counter, unknown-field/error redaction and OS/version bounds. CLI tests write refusal evidence
+  without either maintenance opt-in; workflow tests keep evidence upload unconditional and helper
+  publication conditional. Real Windows suites still require a Windows host and both opt-ins.
 * Repository contract: seven release manifests are public, nine vendored manifests are private,
   all are coordinated, the application package and `mycli` bin identities are exact, and release
   workflow gates occur before publication.

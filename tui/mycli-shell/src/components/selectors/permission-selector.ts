@@ -1,3 +1,4 @@
+import { sandboxCapabilityLines } from "@mycli/contracts";
 import { Container, getKeybindings } from "../../tui-core/index.ts";
 import type { MycliShellPermissionProfile, MycliShellPermissionState } from "../../model.ts";
 import { safeErrorMessage } from "../../safe-ui-text.ts";
@@ -218,6 +219,29 @@ export class PermissionSelectorComponent extends Container {
 		const selected = this.permissions.profiles[this.selectedIndex];
 		const effects = selected && !selected.current ? permissionEffects(selected) : null;
 		if (effects) lines.push(theme.fg("muted", `Selected: ${effects}`));
+		const bounds = effective?.bounds;
+		if (effective && bounds) {
+			lines.push(theme.fg("muted", bounds.read_scope === "allowlist"
+				? `Read scope: ${effective.readableRoots} configured roots`
+				: "Read scope: platform defaults"));
+			lines.push(theme.fg("muted", `Configured file rules: ${effective.writableRoots} writable roots, ${bounds.readonly_roots} read-only subtrees, ${bounds.denied_read_rules} denied-read rules`));
+			const network = bounds.network_scope === "domain_allowlist"
+				? `${effective.networkDomains} allowed domains (proxy only)`
+				: bounds.network_scope === "structured_egress" ? "structured allowlist (deny by default)"
+					: bounds.network_scope;
+			lines.push(theme.fg("muted", `Network scope: ${network}`));
+			if (bounds.loopback_ports !== undefined) {
+				const ports = bounds.loopback_ports.length ? bounds.loopback_ports.join(", ") : "none";
+				const offline = bounds.network_scope === "disabled" || effective.networkDomains === 0;
+				lines.push(theme.fg("muted", `Local TCP ports: ${ports}${offline ? " (inactive: offline)" : " (127.0.0.1 / ::1; outgoing only)"}`));
+			} else if (bounds.allow_local_binding && bounds.network_scope === "domain_allowlist" && effective.networkDomains > 0) {
+				lines.push(theme.fg("warning", "Proxy loopback exception: all local ports; incoming access is not guaranteed."));
+			}
+		}
+		if (this.permissions.sandboxCapabilities) {
+			lines.push(...sandboxCapabilityLines(this.permissions.sandboxCapabilities)
+				.map((line) => theme.fg("muted", line)));
+		}
 		return lines;
 	}
 }

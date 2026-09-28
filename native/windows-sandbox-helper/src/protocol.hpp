@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <vector>
@@ -8,6 +9,7 @@
 namespace mycli::sandbox {
 
 inline constexpr std::uint32_t kProtocolVersion = 2;
+inline constexpr std::size_t kMaxLoopbackPorts = 64;
 
 enum class FilesystemPolicy {
     kReadOnly,
@@ -72,6 +74,7 @@ struct SandboxRequest {
     std::vector<std::wstring> readonly_roots;
     bool explicit_read_roots = false;
     bool allow_local_binding = false;
+    std::optional<std::vector<unsigned short>> loopback_ports;
     bool writable_tmp = false;
     bool has_psec_options = false;
     std::optional<NetworkEgressPolicy> network_egress;

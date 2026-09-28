@@ -189,6 +189,74 @@ test("replacement controller can answer the existing live clarification", { time
 	assert.equal(history.items.some((item) => item.type === "clarification" && item.text === "Node"), true);
 });
 
+test("controller detach cancels a real supervised network request while observers and the command survive", {
+	skip: process.platform !== "darwin", timeout: 30_000,
+}, async (t) => {
+	const fixture = await serviceFixture(t);
+	await writeFile(join(fixture.home, ".mycli", "managed_config.toml"), [
+		"[execution_policy]", 'allowed_network_domains = ["93.184.216.34"]',
+		"[execution_policy.network_proxy]", 'approval_domains = ["93.184.216.34"]',
+	].join("\n"));
+	let requests = 0;
+	const server = createServer((request, response) => {
+		request.resume();
+		request.on("end", () => {
+			requests++;
+			const curl = "/usr/bin/curl --silent --show-error --max-time 15 http://93.184.216.34/";
+			response.writeHead(200, { "content-type": "text/event-stream" });
+			writeResponsesEvents(response, requests % 2 === 1
+				? responsesToolEvents(`call-network-${requests}`, "Shell", {
+					command: requests === 1 ? `${curl}; ${curl}` : curl, yield_time_ms: 30_000,
+				})
+				: responsesTextEvents("Request finished.", `resp-${requests}`));
+			response.end();
+		});
+	});
+	t.after(async () => {
+		server.closeAllConnections();
+		if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const address = server.address(); assert.ok(address && typeof address === "object");
+	const service = await fixture.start({
+		MYCLI_API_KEY: "test-key", MYCLI_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
+		MYCLI_PROVIDER: "openai", MYCLI_PROTOCOL: "responses", MYCLI_THINKING_ENABLED: "false",
+		MYCLI_REQUEST_MAX_RETRIES: "0", MYCLI_STREAM_MAX_RETRIES: "0", MYCLI_CACHE_RETENTION: "none",
+	});
+	const first = await fixture.connect("controller");
+	const observer = await fixture.connect("observer");
+	await first.client.request("workspace.trust.set", { state: "trusted" });
+	await first.client.request("permissions.update", { profile: "workspace" });
+	await first.client.request("turn.submit", { message: "Make the requests.", client_turn_id: "network-first", client_user_message_id: "network-first-user" });
+	const pending = await observer.client.waitForEvent("approval.request", (event) => (
+		event.method === "approval.request" && event.params.network_request !== undefined
+	));
+	assert.ok(pending.method === "approval.request");
+	await first.attachment.close();
+	const cancelled = await observer.client.waitForEvent("interactive.cancelled");
+	assert.ok(cancelled.method === "interactive.cancelled");
+	assert.equal(cancelled.params.decision_id, pending.params.decision_id);
+	await observer.client.waitForEvent("turn.completed");
+	assert.equal(service.snapshot().state, "running");
+	assert.equal(requests, 2);
+	assert.equal(observer.events.filter((event) => event.method === "approval.request").length, 1);
+	assert.equal(observer.events.filter((event) => event.method === "network.blocked" && event.params.details.reason === "approval_unavailable").length, 2);
+	const replacement = await fixture.connect("controller");
+	await assert.rejects(replacement.client.request("approval.respond", {
+		session_id: "shared-session", decision_id: pending.params.decision_id, choice: "approve_once",
+	}), { code: "approval_not_pending" });
+	await replacement.client.request("turn.submit", { message: "Make a new request.", client_turn_id: "network-next", client_user_message_id: "network-next-user" });
+	const next = await replacement.client.waitForEvent("approval.request");
+	assert.ok(next.method === "approval.request");
+	assert.ok(next.params.network_request);
+	assert.notEqual(next.params.decision_id, pending.params.decision_id);
+	await replacement.client.request("approval.respond", {
+		session_id: "shared-session", decision_id: next.params.decision_id, choice: "reject",
+	});
+	await replacement.client.waitForEvent("turn.completed");
+	assert.equal(requests, 4);
+});
+
 interface ConnectedClient {
 	readonly attachment: BackendClientAttachment;
 	readonly client: GatewayClient;
@@ -196,6 +264,7 @@ interface ConnectedClient {
 }
 
 async function serviceFixture(t: TestContext): Promise<{
+	readonly home: string;
 	readonly workspace: string;
 	readonly shellEnvironment: Readonly<NodeJS.ProcessEnv>;
 	readonly start: (env?: NodeJS.ProcessEnv) => Promise<BackendService>;
@@ -222,6 +291,7 @@ async function serviceFixture(t: TestContext): Promise<{
 		PATH: process.env.PATH,
 	});
 	return {
+		home,
 		workspace,
 		shellEnvironment,
 		start: async (env = {}) => {

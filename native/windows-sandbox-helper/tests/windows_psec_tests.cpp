@@ -16,6 +16,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <ProcessSecurityEnvironment_generated.h>
 
 #include "psec.hpp"
 #include "psec-policy.hpp"
@@ -86,7 +87,52 @@ void Junction(const std::filesystem::path& link, const std::filesystem::path& ta
         8 + data->data_length, nullptr, 0, &returned, nullptr), "fixture junction creation");
 }
 
+void LoopbackSpecificationTests() {
+    namespace schema = ProcessSecurityEnvironmentLayout;
+    for (const auto& ports : {std::vector<unsigned short>{}, std::vector<unsigned short>{443, 5432}}) {
+        PsecPolicy policy;
+        policy.network_enabled = true;
+        policy.proxy_port = 40000;
+        policy.allow_local_binding = true;
+        policy.loopback_ports = ports;
+        const auto bytes = BuildPsecSpecification(policy);
+        flatbuffers::Verifier verifier{bytes.data(), bytes.size()};
+        Require(schema::VerifyProcessSecurityEnvironmentBuffer(verifier), "valid loopback specification");
+        const auto egress = schema::GetProcessSecurityEnvironment(bytes.data())->network_policy()->egress();
+        Require(egress->default_action() == schema::FilterAction::deny, "loopback default deny");
+        const auto rules = egress->allow();
+        Require(rules && rules->size() == (ports.empty() ? 1u : 2u), "owned proxy and bounded services");
+        const auto proxy = rules->Get(0);
+        Require(proxy->destinations()->size() == 1 && proxy->ports()->size() == 1, "proxy rule shape");
+        Require(proxy->destinations()->Get(0)->subnet()->address()->str() == "127.0.0.1" &&
+            proxy->destinations()->Get(0)->subnet()->prefix_length() == 32, "proxy IPv4 scope");
+        Require(proxy->ports()->Get(0)->protocol() == schema::IpProtocol::tcp &&
+            proxy->ports()->Get(0)->port() == 40000 && proxy->ports()->Get(0)->end_port() == 40000, "owned proxy TCP port");
+        if (!ports.empty()) {
+            const auto services = rules->Get(1);
+            Require(services->destinations()->size() == 2 && services->ports()->size() == ports.size(), "service rule shape");
+            Require(services->destinations()->Get(0)->subnet()->address()->str() == "127.0.0.1" &&
+                services->destinations()->Get(0)->subnet()->prefix_length() == 32 &&
+                services->destinations()->Get(1)->subnet()->address()->str() == "::1" &&
+                services->destinations()->Get(1)->subnet()->prefix_length() == 128, "exact service loopbacks");
+            for (flatbuffers::uoffset_t i = 0; i < services->ports()->size(); ++i) {
+                const auto port = services->ports()->Get(i);
+                Require(port->protocol() == schema::IpProtocol::tcp && port->port() == ports[i] &&
+                    port->end_port() == ports[i], "exact service TCP port");
+            }
+        }
+        policy.network_enabled = false;
+        policy.proxy_port = 0;
+        const auto offline = BuildPsecSpecification(policy);
+        const auto spec = schema::GetProcessSecurityEnvironment(offline.data());
+        Require(spec->capabilities()->str() == "registryRead" &&
+            spec->network_policy()->egress()->default_action() == schema::FilterAction::deny &&
+            spec->network_policy()->egress()->allow() == nullptr, "offline overrides loopback ports");
+    }
+}
+
 void Tests() {
+    LoopbackSpecificationTests();
     Require(PsecAvailable(), "PSEC environment or startup attribute unavailable");
     const Fixture fixture;
     const auto workspace = fixture.root / "workspace";

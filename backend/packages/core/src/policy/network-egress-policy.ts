@@ -50,6 +50,18 @@ export function freezeNetworkEgress(value: NetworkEgressPolicy): NetworkEgressPo
 	});
 }
 
+/** Conservative proof: remove whole allow rules or add deny rules; never guess CIDR inclusion. */
+export function networkEgressIsSubset(candidate: NetworkEgressPolicy | undefined, ceiling: NetworkEgressPolicy | undefined): boolean {
+	if (ceiling === undefined) return true;
+	if (candidate === undefined) return false;
+	const parent = freezeNetworkEgress(ceiling);
+	const child = freezeNetworkEgress(candidate);
+	const allowed = new Set((parent.allow ?? []).map((rule) => JSON.stringify(rule)));
+	const denied = new Set((child.deny ?? []).map((rule) => JSON.stringify(rule)));
+	return (child.allow ?? []).every((rule) => allowed.has(JSON.stringify(rule)))
+		&& (parent.deny ?? []).every((rule) => denied.has(JSON.stringify(rule)));
+}
+
 function freezeRuleList(
 	value: readonly NetworkEgressRule[] | undefined,
 	label: "allow" | "deny",

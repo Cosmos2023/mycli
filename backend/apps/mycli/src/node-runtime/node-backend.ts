@@ -6,6 +6,7 @@ import { SelectedSkillContext } from "./selected-skill-context.ts";
 import { randomUUID } from "node:crypto";
 import { PluginCatalogService } from "@mycli/integrations";
 import { McpElicitationBroker } from "./mcp-elicitation-broker.ts";
+import { NetworkApprovalBroker } from "./network-approval-broker.ts";
 import type { GatewayTransport, JsonObject } from "@mycli/gateway";
 import { GitReviewReadTool } from "../review/git-read-tool.ts";
 import { readdir, realpath, stat } from "node:fs/promises";
@@ -37,6 +38,7 @@ import {
 	writeUserProviderConfig,
 	WorkspaceTrustStore,
 } from "@mycli/config";
+import { agentExecutionPolicyForRun, inheritedAgentExecutionPolicyConstraints } from "./agent-execution-policy.ts";
 import type {
 	ConfigProfileName,
 	DetectedTerminalCapabilities,
@@ -115,8 +117,6 @@ import {
 	WorkerLeasedRootTurnRuntime,
 } from "@mycli/runtime";
 import type {
-	ExecutionPolicyConstraints,
-	ExecutionPolicySnapshot,
 	NodeTurnRuntimeOptions,
 	PreparedSession,
 	RunExecutionSnapshot,
@@ -271,6 +271,8 @@ export interface NodeBackend {
 	kill(): void;
 	diagnostic(): string;
 	startupProfile?(): StartupProfileSnapshot | undefined;
+	/** Host attachment lifecycle; never exposed as a client RPC or a permission grant. */
+	setNetworkApprovalAvailability?(available: boolean): void;
 }
 
 interface RecoverInterruptedTurnOptions {
@@ -547,6 +549,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 	const runtimeRegistry = new NodeRuntimeRegistry<ComposedNodeRuntime>();
 	const agentInteractiveRequests = new AgentInteractiveRequestBroker();
 	const mcpElicitations = new McpElicitationBroker();
+	const networkApprovals = new NetworkApprovalBroker();
 	const agentActivityBus = new AgentActivityBus();
 	let agentSupervisor: AgentSupervisor | undefined;
 	let publishSubagentProjection: (value: Readonly<Record<string, unknown>>) => void = () => undefined;
@@ -1016,6 +1019,9 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			workspaceRoot,
 			manager: shellManager,
 			env: runtimeEnvironment,
+			networkProxySourceEnv: options.env,
+			networkProxyInteraction: (owner) => ({ ...networkApprovals.interaction(owner),
+				...(options.approvalMode === "suspend" ? { requestApproval: undefined } : {}) }),
 			profile: shellProfile,
 		});
 			const allowedDeferredRegistrations = () => {
@@ -1907,6 +1913,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			runtime: initial.binding,
 			agentInteractiveRequests,
 			mcpElicitations,
+			networkApprovals,
 			loadConversation: (sessionId) => store.loadConversation(sessionId),
 			loadProviderAttempts: (input) => store.providerAttemptLedger.list(input),
 			loadTranscript: (sessionId) => {
@@ -2386,6 +2393,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				kill: () => gateway.kill(),
 				diagnostic: () => gateway.diagnostic(),
 				startupProfile: () => startupProfiler.snapshot(),
+				setNetworkApprovalAvailability: (available: boolean): void => networkApprovals.setAvailability(available),
 			});
 	} catch (error) {
 		await resourceOwner.close().catch(() => undefined);
@@ -2790,71 +2798,6 @@ function totalCompactionBudget(threshold: number, reservedOutputTokens: number):
 	return total;
 }
 
-function agentExecutionPolicySnapshot(
-	snapshot: ExecutionPolicySnapshot | undefined,
-): AgentExecutionPolicySnapshot {
-	const profile = snapshot?.profile;
-	const filesystem = profile?.filesystem ?? "read_only";
-	const permission = filesystem === "unrestricted"
-		? "full-access"
-		: filesystem === "workspace_write"
-			? "workspace"
-			: "read-only";
-	return Object.freeze({
-		trusted: snapshot?.trusted === true && snapshot.valid,
-		permission,
-		sandboxMode: profile?.mode ?? "read-only",
-		filesystem,
-		network: profile?.network ?? "disabled",
-		...(profile?.networkDomains === undefined ? {} : {
-			networkDomains: Object.freeze([...profile.networkDomains]),
-		}),
-		...(profile?.deniedReadRoots === undefined ? {} : { deniedReadRoots: Object.freeze([...profile.deniedReadRoots]) }),
-		...(profile?.readOnlyRoots === undefined ? {} : { readOnlyRoots: Object.freeze([...profile.readOnlyRoots]) }),
-		...(profile?.allowLocalBinding === undefined ? {} : { allowLocalBinding: profile.allowLocalBinding }),
-		...(profile?.writableTemp === undefined ? {} : { writableTemp: profile.writableTemp }),
-		...(profile?.deniedReadGlobs === undefined ? {} : { deniedReadGlobs: Object.freeze([...profile.deniedReadGlobs]) }),
-		...(profile?.readableRoots === undefined ? {} : {
-			readableRoots: Object.freeze([...profile.readableRoots]),
-		}),
-		writableRoots: Object.freeze([...(profile?.writableRoots ?? [])]),
-	});
-}
-
-function agentExecutionPolicyForRun(
-	snapshot: RunExecutionSnapshot | undefined,
-): AgentExecutionPolicySnapshot {
-	const policy = snapshot?.policy;
-	if (!policy) return agentExecutionPolicySnapshot(undefined);
-	return agentExecutionPolicySnapshot(Object.freeze({
-		trusted: policy.toolsEnabled,
-		valid: true,
-		profile: policy.profile,
-	}));
-}
-
-function inheritedAgentExecutionPolicyConstraints(
-	policy: AgentExecutionPolicySnapshot,
-): ExecutionPolicyConstraints {
-	return Object.freeze({
-		source: "runtime" as const,
-		network: policy.network,
-		...(policy.networkDomains === undefined ? {} : {
-			networkDomains: Object.freeze([...policy.networkDomains]),
-		}),
-		...(policy.deniedReadRoots === undefined ? {} : { deniedReadRoots: Object.freeze([...policy.deniedReadRoots]) }),
-		...(policy.readOnlyRoots === undefined ? {} : { readOnlyRoots: Object.freeze([...policy.readOnlyRoots]) }),
-		...(policy.allowLocalBinding === undefined ? {} : { allowLocalBinding: policy.allowLocalBinding }),
-		...(policy.writableTemp === undefined ? {} : { writableTemp: policy.writableTemp }),
-		...(policy.deniedReadGlobs === undefined ? {} : { deniedReadGlobs: Object.freeze([...policy.deniedReadGlobs]) }),
-		...(policy.readableRoots === undefined ? {} : {
-			readableRoots: Object.freeze([...policy.readableRoots]),
-		}),
-		...(policy.filesystem === "unrestricted" ? {} : {
-			writableRoots: Object.freeze([...policy.writableRoots]),
-		}),
-	});
-}
 
 const AGENT_ENVIRONMENT_KEYS = Object.freeze([
 	"HOME",

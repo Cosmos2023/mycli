@@ -252,7 +252,7 @@ SandboxRequest ParseAndValidateRequest(const std::wstring& request_json) {
         {"protocol_version", "command", "cwd", "workspace_roots", "writable_roots",
          "denied_read_roots", "denied_read_globs", "filesystem", "network", "mode",
          "network_proxy_port", "network_egress", "readable_roots", "readonly_roots",
-         "allow_local_binding", "writable_tmp"});
+         "allow_local_binding", "loopback_ports", "writable_tmp"});
     const auto& version = root.at("protocol_version");
     if (!version.is_number_unsigned() || version.get<std::uint64_t>() != kProtocolVersion) {
         throw std::runtime_error("sandbox protocol version mismatch");
@@ -274,7 +274,7 @@ SandboxRequest ParseAndValidateRequest(const std::wstring& request_json) {
     };
     if (!request.denied_read_globs.empty()) throw std::runtime_error("runtime must resolve denied-read globs");
     request.explicit_read_roots = root.contains("readable_roots");
-    for (const auto* field : {"readable_roots", "readonly_roots", "allow_local_binding", "writable_tmp"}) {
+    for (const auto* field : {"readable_roots", "readonly_roots", "allow_local_binding", "loopback_ports", "writable_tmp"}) {
         request.has_psec_options = request.has_psec_options || root.contains(field);
     }
     if (request.explicit_read_roots) request.readable_roots = RequireStringArray(root, "readable_roots", kMaxRoots);
@@ -293,6 +293,23 @@ SandboxRequest ParseAndValidateRequest(const std::wstring& request_json) {
         request.network_proxy_port = port.get<unsigned short>();
     }
     request.network_egress = ParseNetworkEgress(root);
+    if (root.contains("loopback_ports")) {
+        const auto& ports = root.at("loopback_ports");
+        if (!ports.is_array() || ports.size() > kMaxLoopbackPorts || request.network_egress.has_value() ||
+            (request.network == NetworkPolicy::kEnabled && request.network_proxy_port == 0)) {
+            throw std::runtime_error("loopback_ports requires proxy or disabled networking and at most 64 TCP ports");
+        }
+        request.loopback_ports.emplace();
+        for (const auto& port : ports) {
+            if (!port.is_number_unsigned() || port.get<std::uint64_t>() < 1 || port.get<std::uint64_t>() > 65535) {
+                throw std::runtime_error("invalid loopback TCP port");
+            }
+            request.loopback_ports->push_back(port.get<unsigned short>());
+        }
+        auto& normalized = *request.loopback_ports;
+        std::sort(normalized.begin(), normalized.end());
+        normalized.erase(std::unique(normalized.begin(), normalized.end()), normalized.end());
+    }
     if (request.network_egress.has_value()) {
         if (request.network != NetworkPolicy::kEnabled || request.network_proxy_port != 0) {
             throw std::runtime_error("network egress rules require enabled networking without a proxy");

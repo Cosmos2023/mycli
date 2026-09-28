@@ -2,6 +2,8 @@ export { TurnTransitionError } from "./errors.ts";
 export { GoalStateError, goalReference, matchesGoal, goalObjective, goalTokenBudget, createSessionGoal, changeGoalStatus, goalUsageTokens, addGoalCount } from "./lifecycle/session-goal.ts";
 export type { GoalRef, GoalStatus } from "./lifecycle/session-goal.ts";
 export { isSkillReferenceName } from "./skill-reference.ts";
+export { MAX_LOOPBACK_PORTS, freezeLoopbackPorts, loopbackAccessIsSubset, intersectLoopbackAccess, validateLoopbackPortPolicy } from "./policy/loopback-policy.ts";
+export type { LoopbackAccess } from "./policy/loopback-policy.ts";
 export { TOOL_RESULT_OUTPUT_MAX_CHARS } from "./conversation/tool-output.ts";
 export { toolDiscovery, parseToolDiscoveries } from "./conversation/tool-discovery.ts";
 export type { ToolDiscovery } from "./conversation/tool-discovery.ts";
@@ -224,10 +226,12 @@ export {
 } from "./conversation/model-input.ts";
 export {
 	networkDomainAllowed,
+	intersectNetworkDomains,
 	normalizeNetworkDomains,
 } from "./policy/network-domain-policy.ts";
 export {
 	freezeNetworkEgress,
+	networkEgressIsSubset,
 	NETWORK_EGRESS_LIMITS,
 } from "./policy/network-egress-policy.ts";
 export type {
@@ -262,3 +266,5 @@ export type {
 } from "./conversation/model-input.ts";
 export { parseExtensionApprovalScope, extensionApprovalKey } from "./lifecycle/extension-approval.ts";
 export type { ExtensionApprovalScope } from "./lifecycle/extension-approval.ts";
+export { freezeNetworkProxyPolicy, intersectNetworkProxyPolicy, networkProxyPolicyIsSubset, validateNetworkProxyPolicy } from "./policy/network-proxy-policy.ts";
+export type { NetworkProxyPolicy } from "./policy/network-proxy-policy.ts";

@@ -14,6 +14,7 @@ interface BackendWorkerData {
 	readonly generation: number;
 	readonly options: StartNodeBackendOptions;
 	readonly limits?: Partial<GatewayFlowControlLimits>;
+	readonly networkApprovalAvailable: boolean;
 }
 
 const port = parentPort;
@@ -62,6 +63,7 @@ function fail(error?: Error): void {
 
 try {
 	backend = await startNodeBackend(data.options);
+	backend.setNetworkApprovalAvailability?.(data.networkApprovalAvailable);
 	inputQueue = new GatewayWriteQueue(backend.transport.output, limits, fail);
 	backend.transport.input.on("error", fail);
 	backend.transport.input.on("close", () => {
@@ -76,6 +78,11 @@ try {
 			return;
 		}
 		if (envelope.generation !== data.generation) return;
+		if (envelope.type === "network_approval_availability") {
+			if (typeof envelope.available !== "boolean") { fail(); return; }
+			backend!.setNetworkApprovalAvailability?.(envelope.available);
+			return;
+		}
 		if (envelope.type === "output_ack") {
 			if (envelope.sequence === outputSequence) acknowledgeOutput?.();
 			return;

@@ -129,6 +129,37 @@ test("inherits full access exactly and rejects broader child authority", () => {
 	}, full), AgentAuthorityError);
 });
 
+test("children retain limited network methods and cannot enable new proxy transports", () => {
+	const networkProxy = { mode: "limited" as const, enableSocks5: false, allowUpstreamProxy: false };
+	const parent = { trusted: true, permission: "full-access", sandboxMode: "danger-full-access", filesystem: "unrestricted",
+		network: "enabled", writableRoots: ["/workspace"], networkDomains: ["example.com"], networkProxy } as const;
+	const inherited = narrowAgentExecutionPolicy(parent);
+	assert.deepEqual(inherited.networkProxy, networkProxy);
+	assert.ok(Object.isFrozen(inherited.networkProxy));
+	for (const broader of [undefined, { ...networkProxy, mode: "full" as const }, { ...networkProxy, enableSocks5: true }, { ...networkProxy, allowUpstreamProxy: true }]) {
+		assert.throws(() => narrowAgentExecutionPolicy(parent, { ...parent, networkProxy: broader }), AgentAuthorityError);
+	}
+});
+
+test("subagents retain immutable egress rules and reject broader destinations or removed denies", () => {
+	const allow = [{ to: [{ cidr: "10.0.0.0/8" }], ports: [{ protocol: "tcp" as const, port: 443 }] }];
+	const deny = [{ to: [{ cidr: "10.1.0.0/16" }] }];
+	const parent = { trusted: true, permission: "full-access", sandboxMode: "danger-full-access",
+		filesystem: "unrestricted", network: "enabled", writableRoots: [], networkEgress: { default: "deny", allow, deny } } as const;
+	const child = narrowAgentExecutionPolicy(parent);
+	assert.deepEqual(child.networkEgress, parent.networkEgress);
+	assert.notEqual(child.networkEgress, parent.networkEgress);
+	assert.ok(Object.isFrozen(child.networkEgress?.allow?.[0]?.to));
+	assert.throws(() => narrowAgentExecutionPolicy(parent, { ...parent, networkEgress: undefined }), AgentAuthorityError);
+	assert.throws(() => narrowAgentExecutionPolicy(parent, { ...parent, networkEgress: { default: "deny", allow } }), AgentAuthorityError);
+	assert.throws(() => narrowAgentExecutionPolicy(parent, { ...parent, networkEgress: {
+		default: "deny", deny, allow: [{ to: [{ cidr: "0.0.0.0/0" }] }],
+	} }), AgentAuthorityError);
+	assert.deepEqual(narrowAgentExecutionPolicy(parent, { ...parent, networkEgress: { default: "deny", deny } }).networkEgress,
+		{ default: "deny", deny });
+	assert.equal(narrowAgentExecutionPolicy(parent, { ...parent, network: "disabled", networkEgress: undefined }).network, "disabled");
+});
+
 test("preserves approval-required authority and allows explicit narrowing", () => {
 	const approvalRequired = {
 		trusted: true,
@@ -234,4 +265,18 @@ test("child authority preserves readonly, loopback and temporary storage limits"
 	const child = narrowAgentExecutionPolicy(parent);
 	assert.deepEqual(child, parent);
 	assert.equal(Object.isFrozen(child.readOnlyRoots), true);
+});
+
+test("child loopback authority can narrow all-port access but cannot remove or expand a port ceiling", () => {
+	const parent = { trusted: true, permission: "workspace", sandboxMode: "workspace-write", filesystem: "workspace_write", network: "enabled",
+		writableRoots: ["/workspace"], networkDomains: ["example.com"], allowLocalBinding: true, loopbackPorts: [443, 5432] } as const;
+	for (const ports of [undefined, [8080], [443, 5432, 8080]]) {
+		assert.throws(() => narrowAgentExecutionPolicy(parent, { ...parent, loopbackPorts: ports }), AgentAuthorityError);
+	}
+	for (const ports of [[], [5432]]) {
+		const child = narrowAgentExecutionPolicy(parent, { ...parent, loopbackPorts: ports });
+		assert.deepEqual(child.loopbackPorts, ports);
+		assert.ok(Object.isFrozen(child.loopbackPorts));
+	}
+	assert.deepEqual(narrowAgentExecutionPolicy({ ...parent, loopbackPorts: undefined }, parent), parent);
 });

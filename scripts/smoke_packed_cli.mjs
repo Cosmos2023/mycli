@@ -45,6 +45,53 @@ const INSTALLED_APPLICATION_PATH = [
 	"node_modules",
 	...APPLICATION_RELEASE_PACKAGE.name.split("/"),
 ];
+const NETWORK_PROXY_SMOKE = String.raw`
+import assert from "node:assert/strict";
+import { once } from "node:events";
+import { request as httpRequest } from "node:http";
+import { readFile, stat } from "node:fs/promises";
+import { createConnection } from "node:net";
+import { connect } from "node:tls";
+import { startNetworkProxy } from "${APPLICATION_PACKAGE_MODULE_PATH}/dist/node_modules/@mycli/tools/dist/index.js";
+
+let approvals = 0;
+const blocked = [];
+const proxy = await startNetworkProxy({ domains: ["api.example.com"],
+	policy: { mode: "limited", enableSocks5: true, allowUpstreamProxy: false, approvalDomains: ["api.example.com"] },
+	requestApproval: async (details) => { approvals++; assert.equal(details.host, "api.example.com"); return "reject"; },
+	onBlocked: (details) => blocked.push(details.reason),
+	lookup: async () => [{ address: "93.184.216.34", family: 4 }],
+	connect: () => { throw new Error("Rejected method must not contact origin"); } });
+const bundle = proxy.env.NODE_EXTRA_CA_CERTS;
+const client = createConnection({ host: "127.0.0.1", port: proxy.port });
+let secure;
+const timer = setTimeout(() => { client.destroy(); secure?.destroy(); }, 5000);
+try {
+	await once(client, "connect");
+	client.write("CONNECT api.example.com:443 HTTP/1.1\r\nHost: api.example.com:443\r\n\r\n");
+	let headers = "";
+	while (!headers.includes("\r\n\r\n")) headers += (await once(client, "data"))[0];
+	assert.match(headers, /^HTTP\/1.1 200/u);
+	secure = connect({ socket: client, servername: "api.example.com", ca: await readFile(bundle) });
+	await once(secure, "secureConnect");
+	secure.write("POST / HTTP/1.1\r\nHost: api.example.com\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+	let response = "";
+	for await (const chunk of secure) response += chunk;
+	assert.match(response, /^HTTP\/1.1 403/u);
+	assert.equal(approvals, 0);
+	const status = await new Promise((resolve, reject) => {
+		const request = httpRequest({ hostname: "127.0.0.1", port: proxy.port, path: "http://api.example.com/", headers: { host: "api.example.com" }, signal: AbortSignal.timeout(5000) }, (response) => {
+			response.resume(); response.on("end", () => resolve(response.statusCode));
+		});
+		request.on("error", reject); request.end();
+	});
+	assert.equal(status, 403); assert.equal(approvals, 1);
+	assert.deepEqual(blocked, ["method_denied", "approval_denied"]);
+	assert.doesNotMatch(await readFile(bundle, "utf8"), /PRIVATE KEY/u);
+} finally { clearTimeout(timer); secure?.destroy(); client.destroy(); await proxy.close(); }
+await assert.rejects(stat(bundle), { code: "ENOENT" });
+console.log("network-proxy-ok");
+`;
 const HEADLESS_CLI_SMOKE = String.raw`
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -846,6 +893,10 @@ try {
 		throw new Error("packed_cli_smoke_failed: installed native PTY smoke is incomplete");
 	}
 	const providerProtocolSmoke = join(installDir, "provider-protocol-smoke.mjs");
+	const networkProxySmoke = join(installDir, "network-proxy-smoke.mjs");
+	await writeFile(networkProxySmoke, NETWORK_PROXY_SMOKE, "utf8");
+	const proxyOutput = await runStage("network_proxy", process.execPath, [networkProxySmoke], installDir, true);
+	if (!proxyOutput.includes("network-proxy-ok")) throw new Error("packed_cli_smoke_failed: installed network proxy is incomplete");
 	const piAiLoadHook = join(installDir, "pi-ai-load-hook.mjs");
 	const piAiLoadRegister = join(installDir, "pi-ai-load-register.mjs");
 	const piAiLoadLog = join(installDir, "pi-ai-loaded-modules.txt");
@@ -1011,7 +1062,7 @@ try {
 		packed_applications: 1,
 		packed_platforms: PLATFORM_PACKAGES.length,
 		platform_scope: APP_ONLY ? "none" : PACK_ALL_PLATFORMS ? "all" : "current",
-		installed_journeys: 10,
+		installed_journeys: 11,
 		curated_provider_routes: 6,
 		custom_provider_models: 1,
 		pi_ai_version: PINNED_PI_AI_VERSION,

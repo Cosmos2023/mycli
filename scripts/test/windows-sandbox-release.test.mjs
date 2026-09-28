@@ -163,7 +163,8 @@ test("the release gate requires all seven parity tests only on a ready PSEC back
 test("the local Windows release runner refuses missing destructive-test opt-ins before discovery", () => {
 	const result = spawnSync(process.execPath, ["scripts/run-windows-sandbox-tests.mjs"], {
 		cwd: new URL("../../", import.meta.url), encoding: "utf8",
-		env: { ...process.env, MYCLI_WINDOWS_SANDBOX_SETUP_TESTS: "", MYCLI_WINDOWS_SANDBOX_MAINTENANCE_TESTS: "" },
+		env: { ...process.env, MYCLI_WINDOWS_SANDBOX_SETUP_TESTS: "", MYCLI_WINDOWS_SANDBOX_MAINTENANCE_TESTS: "",
+			MYCLI_WINDOWS_SANDBOX_EVIDENCE: "" },
 	});
 	assert.equal(result.status, 1);
 	assert.match(result.stderr, /requires_windows_and_both_maintenance_opt_ins/u);

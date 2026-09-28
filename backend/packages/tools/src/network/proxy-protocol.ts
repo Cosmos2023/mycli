@@ -1,5 +1,5 @@
 import type { IncomingHttpHeaders, IncomingMessage, OutgoingHttpHeaders } from "node:http";
-import { networkDomainAllowed } from "../policy/execution-policy.ts";
+import type { NetworkAccessDetails } from "@mycli/contracts";
 import { normalizePublicUrl } from "./public-target.ts";
 
 const HOP_HEADERS = new Set([
@@ -8,7 +8,7 @@ const HOP_HEADERS = new Set([
 ]);
 
 export class NetworkProxyError extends Error {
-	constructor(readonly status: number, message: string) {
+	constructor(readonly status: number, message: string, readonly reason: NetworkAccessDetails["reason"] = status >= 500 ? "connection_failed" : "invalid_request") {
 		super(message);
 		this.name = "NetworkProxyError";
 	}
@@ -16,8 +16,8 @@ export class NetworkProxyError extends Error {
 
 export function proxyRequestTarget(
 	request: IncomingMessage,
-	domains: readonly string[],
 	tunnel: boolean,
+	origin?: URL,
 ): URL {
 	const raw = request.url ?? "";
 	if (!raw || raw.length > 4_096 || /[\s\\#]/u.test(raw)) throw invalidRequest();
@@ -25,9 +25,10 @@ export function proxyRequestTarget(
 		throw invalidRequest();
 	}
 	if (tunnel && (!raw.endsWith(":443") || /[/?@]/u.test(raw))) throw invalidRequest();
-	const url = normalizePublicUrl(tunnel ? `https://${raw}` : raw);
-	if (url.protocol !== (tunnel ? "https:" : "http:") || url.port) {
-		throw new NetworkProxyError(403, "Only HTTP port 80 and CONNECT port 443 are supported.");
+	if (origin && (!raw.startsWith("/") || raw.startsWith("//"))) throw invalidRequest();
+	const url = normalizePublicUrl(origin ? new URL(raw, origin).href : tunnel ? `https://${raw}` : raw);
+	if (url.protocol !== (tunnel || origin ? "https:" : "http:") || url.port) {
+		throw new NetworkProxyError(403, "Only HTTP port 80 and CONNECT port 443 are supported.", "port_denied");
 	}
 	const hostHeaders = request.rawHeaders.filter((_, index) => (
 		index % 2 === 0 && request.rawHeaders[index]?.toLowerCase() === "host"
@@ -41,9 +42,7 @@ export function proxyRequestTarget(
 	}
 	if (host.host !== url.host || host.username || host.password
 		|| host.pathname !== "/" || host.search || host.hash) throw invalidRequest();
-	if (!networkDomainAllowed(url.hostname, domains)) {
-		throw new NetworkProxyError(403, "The target domain is not allowed by the execution policy.");
-	}
+	if (origin && url.origin !== origin.origin) throw invalidRequest();
 	return url;
 }
 

@@ -26,6 +26,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@peculiar/x509": "2.1.0",
+    "reflect-metadata": "0.2.2",
     "@mycli/contracts": "0.1.1",
     "@mycli/core": "0.1.1",
     "adm-zip": "^0.6.0",

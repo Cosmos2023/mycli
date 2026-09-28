@@ -79,6 +79,7 @@ export class BackendService {
 			throw new RangeError("Backend service maxClients must be between 1 and 64.");
 		}
 		this.#backend = backend;
+		backend.setNetworkApprovalAvailability?.(false);
 		this.#maxClients = maxClients;
 		this.#upstream = new GatewayClient({
 			...backend.transport,
@@ -112,7 +113,10 @@ export class BackendService {
 			}),
 		};
 		this.#clients.set(record.id, record);
-		if (role === "controller") this.#controller = record;
+		if (role === "controller") {
+			this.#controller = record;
+			this.#backend.setNetworkApprovalAvailability?.(true);
+		}
 		if (this.#ready) record.rpc.writeNotification(this.#ready);
 		return Object.freeze({
 			id: record.id, role, transport: record.rpc.transport, completion,
@@ -198,6 +202,7 @@ export class BackendService {
 		if (record.closePromise) return record.closePromise;
 		record.detached = true;
 		this.#clients.delete(record.id);
+		if (this.#controller === record) this.#backend.setNetworkApprovalAvailability?.(false);
 		this.#releaseController(record);
 		record.closePromise = Promise.resolve().then(async () => {
 			try {

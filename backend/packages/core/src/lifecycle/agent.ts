@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
-import type { NetworkEgressPolicy } from "../policy/network-egress-policy.ts";
+import { freezeNetworkProxyPolicy, networkProxyPolicyIsSubset, validateNetworkProxyPolicy, type NetworkProxyPolicy } from "../policy/network-proxy-policy.ts";
+import { freezeLoopbackPorts, loopbackAccessIsSubset, validateLoopbackPortPolicy } from "../policy/loopback-policy.ts";
+import { freezeNetworkEgress, networkEgressIsSubset, type NetworkEgressPolicy } from "../policy/network-egress-policy.ts";
 import type {
 	CanonicalConversationItem,
 	ProtocolId,
@@ -100,10 +102,12 @@ export interface AgentExecutionPolicySnapshot {
 	readonly filesystem: "read_only" | "workspace_write" | "unrestricted";
 	readonly network: "disabled" | "enabled";
 	readonly networkDomains?: readonly string[];
+	readonly networkProxy?: NetworkProxyPolicy;
 	readonly networkEgress?: NetworkEgressPolicy;
 	readonly readableRoots?: readonly string[];
 	readonly readOnlyRoots?: readonly string[];
 	readonly allowLocalBinding?: boolean;
+	readonly loopbackPorts?: readonly number[];
 	readonly writableTemp?: boolean;
 	readonly deniedReadRoots?: readonly string[];
 	readonly deniedReadGlobs?: readonly string[];
@@ -441,13 +445,16 @@ export function narrowAgentExecutionPolicy(
 	requested?: AgentExecutionPolicySnapshot,
 ): AgentExecutionPolicySnapshot {
 	const candidate = requested ?? parent;
+	const networkEgress = candidate.networkEgress === undefined ? undefined : freezeNetworkEgress(candidate.networkEgress);
 	const broader = candidate.trusted && !parent.trusted
 		|| permissionRank(candidate.permission) > permissionRank(parent.permission)
 		|| sandboxRank(candidate.sandboxMode) > sandboxRank(parent.sandboxMode)
 		|| filesystemRank(candidate.filesystem) > filesystemRank(parent.filesystem)
 		|| networkRank(candidate.network) > networkRank(parent.network)
 		|| networkDomainsBroadenAuthority(parent, candidate)
-		|| candidate.allowLocalBinding === true && parent.allowLocalBinding !== true
+		|| !networkProxyPolicyIsSubset(candidate.networkProxy, parent.networkProxy)
+		|| candidate.network === "enabled" && !networkEgressIsSubset(networkEgress, parent.networkEgress)
+		|| !loopbackAccessIsSubset(candidate, parent)
 		|| (candidate.writableTemp ?? candidate.filesystem !== "read_only") && !(parent.writableTemp ?? parent.filesystem !== "read_only")
 		|| (parent.readOnlyRoots ?? []).some((root) => !(candidate.readOnlyRoots ?? []).includes(root))
 		|| (parent.deniedReadRoots ?? []).some((root) => !(candidate.deniedReadRoots ?? []).includes(root))
@@ -460,8 +467,13 @@ export function narrowAgentExecutionPolicy(
 		|| (parent.filesystem !== "unrestricted"
 			&& candidate.writableRoots.some((root) => !parent.writableRoots.includes(root)));
 	if (broader) throw new AgentAuthorityError();
+	validateLoopbackPortPolicy(candidate);
+	validateNetworkProxyPolicy(candidate);
 	return Object.freeze({
 		...candidate,
+		...(candidate.networkProxy === undefined ? {} : { networkProxy: freezeNetworkProxyPolicy(candidate.networkProxy) }),
+		...(candidate.loopbackPorts === undefined ? {} : { loopbackPorts: freezeLoopbackPorts(candidate.loopbackPorts) }),
+		...(networkEgress === undefined ? {} : { networkEgress }),
 		...(candidate.readOnlyRoots === undefined ? {} : { readOnlyRoots: Object.freeze([...candidate.readOnlyRoots]) }),
 		...(candidate.deniedReadRoots === undefined ? {} : { deniedReadRoots: Object.freeze([...candidate.deniedReadRoots]) }),
 		...(candidate.deniedReadGlobs === undefined ? {} : { deniedReadGlobs: Object.freeze([...candidate.deniedReadGlobs]) }),

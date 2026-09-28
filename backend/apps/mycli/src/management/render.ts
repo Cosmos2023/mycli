@@ -1,3 +1,4 @@
+import { sandboxCapabilityLines } from "@mycli/contracts";
 import type { ManagementCommand, ManagementResponse } from "./types.ts";
 import type {
 	ConfigManagementResponse,
@@ -145,6 +146,7 @@ function renderSandbox(response: SandboxManagementResponse): string {
 		lines.push(`sandbox_ready=${response.readiness.sandboxReady}`);
 	}
 	if (response.remediation) lines.push(`remediation=${response.remediation}`);
+	if (response.capabilities) lines.push(...sandboxCapabilityLines(response.capabilities));
 	return `${lines.join("\n")}\n`;
 }
 

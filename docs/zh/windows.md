@@ -77,6 +77,10 @@ mycli sandbox uninstall --confirm
 
 Read Only 禁止工作区写入并默认离线；Workspace 只允许写入配置的可写根目录，默认允许联网。PSEC 为每个命令建立独立网络策略；旧后端通过三个专用账户及 WFP 实现联网、离线和代理隔离。支持的 HTTP/HTTPS 流量见 [网络策略](network-policy.md)。
 
+`sandbox status` 和 `doctor --verbose` 现在还会说明后端能力：自定义读取范围、只读子目录、禁读规则、结构化网络规则、独立并发策略和本机访问沙箱内服务。缺失或不兼容的 helper 显示 `unknown`。旧后端支持禁读规则，但不支持上述其他高级策略；PSEC 暂不支持本机访问沙箱内服务，旧后端的该项能力标为未知。
+
+TUI 的 `/permissions` 分别显示当前实际文件/网络限制与后端能力，包括配置的根目录和规则数量、域名白名单或结构化网络策略；不会显示路径和域名值。零个允许域名不会被写成“无限制联网”。小窗口可按 Ctrl+A 查看全部详情。`ready` 只表示就绪，不代表隔离测试通过，也不代表当前命令的所有权限组合都受支持。
+
 `.git`、`.agents` 和 `.codex` 路径禁止写入；这些元数据路径若是 junction 或符号链接，会拒绝执行。普通 junction 不会授予工作区外的写权限。旧后端仅保护已有元数据，PSEC 还预留尚未存在的元数据名称。PSEC 支持自定义进程可读目录及“不限文件系统但限制网络”的组合，旧账户后端仍会拒绝这些请求。网络无限制且没有显式文件限制的 Full Access 在宿主上运行。
 
 <a id="verification"></a>
@@ -101,7 +105,23 @@ writable_tmp = true
 
 可读目录在平台运行目录之外增加读取权限；只读目录即使位于可写根目录内也禁止修改，文件工具审批和子任务都不能删除这项限制。旧账户后端会拒绝这些 PSEC 选项。
 
-显式启用 `allow_local_binding` 后，代理模式允许访问所有 IPv4/IPv6 本机回环端口，包括域名代理之外的本地服务。默认仍只放行本命令的代理端口，离线策略仍优先。已验证端口绑定及沙箱向宿主的连接；宿主主动连入沙箱服务在本机失败，尚未通过验收，详见[功能对齐记录](../parity/windows-sandbox-feature-parity.md)。
+未配置 `loopback_ports` 时，显式启用 `allow_local_binding` 后，代理模式允许访问所有 IPv4/IPv6 本机回环端口，包括域名代理之外的本地服务。默认仍只放行本命令的代理端口，离线策略仍优先。已验证端口绑定及沙箱向宿主的连接；宿主主动连入沙箱服务在本机失败，尚未通过验收，详见[功能对齐记录](../parity/windows-sandbox-feature-parity.md)。
+
+源码新增了按端口授权的方式，将下面字段合并到现有配置表中：
+
+```toml
+[execution_policy]
+allowed_network_domains = ["api.github.com"]
+loopback_ports = [5432, 6379]
+```
+
+这表示允许直接访问 `127.0.0.1` 和 `::1` 上的 5432、6379 TCP 端口。最多配置 64 项，值为 1–65535 的整数，重复项会合并。本命令自己的 IPv4 TCP 代理端口仍独立放行。
+
+显式列表覆盖 `allow_local_binding`，即使该开关为 `true`；空列表 `[]` 不额外开放本地服务。不会连带放行 UDP、其他回环地址或宿主主动连入沙箱的连接。离线配置、空域名列表或没有创建代理的进程仍完全离线。只应授权可信的本地服务，因为服务自身可能转发网络请求或提供文件访问。
+
+`loopback_ports` 必须与 `allowed_network_domains` 一起使用，不能与 `network_egress` 混用。子 agent、恢复的轮次和 Shell 审批只能保持或缩小已冻结的端口范围。权限详情会显示端口列表，并在离线时标注未生效。
+
+这次新增功能已补跨平台回归测试，但**尚未在 Windows 编译或实测隔离效果**；现有打包 helper 未替换。旧 helper、旧账户后端和其他平台会拒绝该选项，不会忽略限制。需在 Windows 编译并通过原生、严格沙箱和安装包验收后，才能采用新版 helper。
 
 Workspace/Full 请求默认提供独立的 `TMPDIR`，Read Only 默认关闭。`writable_tmp=false` 只关闭这份额外目录，Windows PSEC 自己仍会提供私有 `TEMP/TMP`，不会开放宿主临时目录。最后一个活动命令退出后清理记录的目录；helper 异常退出后，下次运行会恢复清理。
 
@@ -109,7 +129,7 @@ Workspace/Full 请求默认提供独立的 `TMPDIR`，Read Only 默认关闭。`
 
 原生 helper 支持显式本地 junction／符号链接根目录，在命令运行期间锁定收到的链接链和目标路径，并按文件句柄取得真实路径，让 8.3 短文件名与真实目录使用相同的并发策略标识。最多解析 32 次链接跳转、持有 16,384 个句柄；循环或不支持的重解析类型会拒绝执行。Node 适配层原本就会先规范化策略根目录；保护树内部的重解析点仍会拒绝。命令完成后先释放句柄，再清理记录的占位目录。
 
-并发支持相同策略或写入范围互不干扰的独立策略。读取、只读和禁读范围一致，且写入根目录都在共同的递归读取范围内时，无可写根目录的命令也可与写入命令同时运行；只读一方仍不能写文件或创建硬链接。重叠且不同的写策略、混合整盘策略仍会拒绝，以防硬链接竞态。
+PSEC 为每个命令建立独立的内核策略，允许读取范围、禁读规则或重叠写入范围不同的命令并发运行，例如工作区 Hook 与仅写自己目录的插件。只读命令仍不能写文件或创建硬链接。宿主预先创建的硬链接仍属于已记录的快照边界；独立策略不等于消除了所有硬链接风险。
 
 PSEC 在 NULL DACL 路径上仍限制文件访问，离线命令无法发送网络流量，域名模式默认只放行分配给该命令的 IPv4 loopback TCP 代理端口。UDP 验证检查实际接收量及应答，不能把发送调用成功当作数据已送达。
 
@@ -144,7 +164,7 @@ if ($LASTEXITCODE -ne 0) { throw "Windows isolation tests failed" }
 
 默认不执行重置和重新初始化测试。只有设置 `MYCLI_WINDOWS_SANDBOX_SETUP_TESTS=1` 才会启用；这类测试会轮换沙箱账号凭据，只应在可丢弃的测试环境中运行。
 
-CI 在 Windows 上覆盖 Node 22.19 和 Node 24，并在 Windows Server 2022、2025 上编译和测试沙箱协议、受限 token、文件和网络策略。测试经过真实 Node Shell、原生 helper 和 ConPTY，覆盖中文/短路径、并发联网与离线、域名代理隔离、进程树清理、重置后重新初始化。发布用的 helper 也必须通过同一套验证。发布兼容性使用稳定的 `windows-2022` 镜像，安装打包候选版本并上传脱敏的结构性证据文件，不记录本地路径、命令、凭据、provider 内容或原生辅助程序 stderr。
+常规 CI 在 Windows 上覆盖 Node 22.19 和 Node 24；严格沙箱验收使用 Node 24，在 Windows Server 2022、2025 上编译和测试沙箱协议、受限 token、文件和网络策略。测试经过真实 Node Shell、原生 helper 和 ConPTY，覆盖中文/短路径、并发联网与离线、域名代理隔离、进程树清理、重置后重新初始化。发布用的 helper 也必须通过同一套验证。发布兼容性使用稳定的 `windows-2022` 镜像，安装打包候选版本并上传脱敏的结构性证据文件，不记录本地路径、命令、凭据、provider 内容或原生辅助程序 stderr。
 
 升级或降级包时，先关闭所有 mycli 窗口，备份 `%USERPROFILE%\.mycli`，再按 [upgrading.md](upgrading.md) 操作。沙箱机器状态不属于 npm 或配置回退范围；更换版本后请运行 `mycli sandbox status`。
 
@@ -172,7 +192,7 @@ denied_read_globs = ["**/.env", "**/.env.*", "**/secrets/**"]
 旧后端在启动前还会有界检查常见目录的 Everyone 写权限，在允许写入范围外添加专用 capability 的写入拒绝。
 检查会跳过重解析点和无法读取的 ACL，不能视为全盘审计；发现风险后无法应用拒绝规则时阻止启动。
 
-ACL 修改在应用前记录到受保护的状态文件中，并通过打开的文件句柄防止路径被替换。
+旧后端的 ACL 修改在应用前记录到受保护的状态文件中，并通过打开的文件句柄防止路径被替换。
 禁读快照相同的命令可以并发；仍有沙箱进程运行时不能更换禁读快照，应先停止相关 Shell/MCP。
 没有活动 helper 后，下次启动会清理旧规则。清理仅涉及 mycli 专用 SID 的记录及已记录的 WFP 权限位，
 保留其他主体和权限；引入记录机制之前的旧 helper 修改无法完整追溯。
@@ -189,5 +209,7 @@ ACL 修改在应用前记录到受保护的状态文件中，并通过打开的�
 可在 Windows 开发机上按原生 helper 文档运行，无需触发 GitHub CI；编译、原生测试和完整集成测试全部通过后，才能采用该 helper 发布。
 
 `test:windows-sandbox` 强制要求原有 13 项全部通过；使用 PSEC 时还必须通过新增 7 项测试。跳过、取消或 todo 均视为失败。PowerShell 5.1 的 `$ErrorActionPreference` 不能自动捕获原生命令的非零退出码，必须逐步检查 `$LASTEXITCODE`，失败即停止。NULL DACL 表示允许所有人访问，与拒绝访问的空 ACL 不同；不能通过屏蔽审计或修改第三方目录权限绕过失败。
+
+运行前后都会校验 helper 哈希与清单，最终后端和 helper 哈希也必须与开始时一致。设置 `$env:MYCLI_WINDOWS_SANDBOX_EVIDENCE = 'artifacts/windows-sandbox-acceptance.json'` 后，运行 `npm run test:windows-sandbox` 会保存结果，包括系统/Node 版本、架构、后端、哈希、每套测试的计数及失败阶段。未满足平台或维护开关要求时记录 `not_run`；失败不算通过。报告固定为 `fresh_setup=false`，只能证明已初始化机器上的源码验收，不能代替干净安装测试。CI 即使验收失败也保留报告 14 天；若前面的构建或 setup 失败、runner 没有启动，则没有该报告。这次报告功能的加入不代表新增了 Windows 实机通过记录。
 
 原生和平台测试通过后，`npm run smoke:package -- --require-windows-ready` 会检查已安装候选包的 helper 和 `ready` 状态。干净 Windows 环境还需添加 `--setup-windows-sandbox`：先确认没有受管状态，再执行确认安装，最后独立检查就绪状态。更换 HOME 或 npm 安装目录不能隔离机器账户、ACL 和网络规则。发布流程要求这一独立 Windows 安装门槛通过，并发布实际测试的同一个 tarball，操作见[发布说明](releasing.md)。

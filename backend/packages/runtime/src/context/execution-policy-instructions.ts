@@ -16,6 +16,14 @@ export function renderExecutionPolicyContext(
 		`sandbox_mode: ${policy.mode}`,
 		`filesystem: ${policy.filesystem}`,
 		`network: ${policy.network}`,
+		...(policy.networkProxy === undefined ? [] : [
+			`network_proxy_mode: ${policy.networkProxy.mode}`,
+			...(policy.networkProxy.approvalDomains?.length ? [
+				`network_proxy_approval_domains: ${policyList(policy.networkProxy.approvalDomains)}`,
+				"The managed process proxy asks for one-request approval for these domains within the allowed domain ceiling. Wait for that decision; do not replay the command. Noninteractive access is denied.",
+			] : []),
+			...(policy.networkProxy.mode === "limited" ? ["Managed HTTP(S) proxy access permits GET, HEAD and OPTIONS only. Other methods and opaque non-HTTPS tunnels are blocked."] : []),
+		]),
 		`network_domains: ${policy.network === "disabled" ? "none"
 			: policy.networkDomains ? policyList(policy.networkDomains) : "all"}`,
 		`readable_roots: ${policyList(policy.readableRoots ?? [])}`,
@@ -25,6 +33,10 @@ export function renderExecutionPolicyContext(
 			"Readonly roots remain readable but cannot be modified, including through approvals or Full Access.",
 		]),
 		...(policy.allowLocalBinding === undefined ? [] : [`allow_local_binding: ${policy.allowLocalBinding}`]),
+		...(policy.loopbackPorts === undefined ? [] : [
+			`loopback_ports: ${JSON.stringify(policy.loopbackPorts)}`,
+			"In Windows proxy mode, only these extra TCP ports on 127.0.0.1 and ::1 are allowed. This overrides allow_local_binding; offline still denies all networking. Incoming host connections are not granted.",
+		]),
 		...(policy.writableTemp === undefined ? [] : [`writable_tmp: ${policy.writableTemp}`]),
 		...((policy.deniedReadRoots?.length ?? 0) > 0 || (policy.deniedReadGlobs?.length ?? 0) > 0 ? [
 			`denied_read_roots: ${policyList(policy.deniedReadRoots ?? [])}`,

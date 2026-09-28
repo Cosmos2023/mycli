@@ -9,6 +9,7 @@ import {
 	hasUnrestrictedNetwork,
 	networkDomainAllowed,
 	normalizeNetworkDomains,
+	requiresProcessSandbox,
 } from "../../src/index.ts";
 
 test("execution policy maps read-only to an immutable restricted profile", async (t) => {
@@ -52,6 +53,17 @@ test("execution policy maps full access to explicit host access", async (t) => {
 		network: "enabled",
 		writableRoots: [canonicalWorkspace],
 	});
+});
+
+test("Full Access still requires isolation for every explicit file or network restriction", () => {
+	const full = executionPolicy("full-access", process.cwd());
+	assert.equal(requiresProcessSandbox(full), false);
+	for (const restriction of [
+		{ network: "disabled" as const }, { networkDomains: [] }, { networkEgress: { default: "deny" as const } },
+		{ readableRoots: [] }, { readOnlyRoots: ["/readonly"] },
+		{ deniedReadRoots: ["/private"] }, { deniedReadGlobs: ["*.key"] },
+	]) assert.equal(requiresProcessSandbox({ ...full, ...restriction }), true);
+	assert.equal(requiresProcessSandbox({ ...full, readOnlyRoots: [], deniedReadRoots: [], deniedReadGlobs: [] }), false);
 });
 
 test("network domain policy normalizes exact and wildcard hosts", () => {

@@ -12,7 +12,7 @@ test("renders canonical path data without changing policy or breaking its instru
 	const policy: ExecutionPolicy = Object.freeze({
 		mode: "workspace-write", filesystem: "workspace_write", network: "enabled",
 		readableRoots: paths, writableRoots: Object.freeze(["/work/z", "/work/z"]),
-		readOnlyRoots: paths, allowLocalBinding: false, writableTemp: false,
+		readOnlyRoots: paths, allowLocalBinding: false, loopbackPorts: [5432], writableTemp: false,
 		networkDomains: Object.freeze(["docs.example.com", "*.example.org"]),
 	});
 	const text = renderExecutionPolicyContext(policy, undefined);
@@ -21,6 +21,8 @@ test("renders canonical path data without changing policy or breaking its instru
 	assert.deepEqual(listField(text, "writable_roots"), ["/work/z"]);
 	assert.deepEqual(listField(text, "readonly_roots"), [...paths].sort());
 	assert.match(text, /allow_local_binding: false/u);
+	assert.deepEqual(listField(text, "loopback_ports"), [5432]);
+	assert.match(text, /overrides allow_local_binding; offline still denies all networking/u);
 	assert.match(text, /writable_tmp: false/u);
 	assert.deepEqual(listField(text, "network_domains"), ["*.example.org", "docs.example.com"]);
 	assert.equal(text.match(/<\/execution_policy>/gu)?.length, 1);

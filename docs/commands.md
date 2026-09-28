@@ -218,6 +218,15 @@ On macOS and Linux,
 mycli reports missing system dependencies and manual package-manager guidance instead of installing
 them. Human and JSON output are projections of the same typed response.
 
+Windows status adds `capabilities`: known backend support for custom read roots/read-only
+subtrees, denied reads, structured egress, independent concurrent policies, and host access to
+sandbox local servers. Missing or incompatible helpers report `unknown`. These facts describe
+backend support, not a successful isolation test or approval of a particular command.
+`doctor --verbose` shows the same descriptions. In `/permissions`, effective root/rule counts
+and network scope describe the current session separately from backend support; Ctrl+A opens
+all details on a small terminal. An empty domain allowlist is shown as zero allowed domains,
+never as unrestricted networking. Paths and domain values are omitted.
+
 ### Configuration Management
 
 Configuration management is provider-free and works without a TTY. `config validate` treats

@@ -1,11 +1,12 @@
 import { ProcessSandboxError } from "./process-sandbox-error.ts";
+import { validateLoopbackPortPolicy, validateNetworkProxyPolicy, networkProxyPolicyIsSubset, type NetworkProxyPolicy } from "@mycli/core";
 export { ProcessSandboxError } from "./process-sandbox-error.ts";
-import { hasDeniedReads } from "../policy/denied-read-policy.ts";
+import { deniedReadPath, hasDeniedReads } from "../policy/denied-read-policy.ts";
 import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import {
 	hasUnrestrictedFilesystem,
-	hasUnrestrictedNetwork,
+	requiresProcessSandbox,
 	type SandboxProfile,
 } from "../policy/execution-policy.ts";
 import { isOutside } from "../path-containment.ts";
@@ -53,6 +54,8 @@ export interface ProcessSandboxProbes {
 
 export interface ProcessNetworkProxy {
 	readonly port: number;
+	readonly policy?: NetworkProxyPolicy;
+	readonly readableRoots?: readonly string[];
 }
 
 export function prepareSandboxedProcess(
@@ -62,9 +65,11 @@ export function prepareSandboxedProcess(
 	networkProxy?: ProcessNetworkProxy,
 ): SandboxedProcessLaunch {
 	validateArgv(argv);
+	validateLoopbackPortPolicy(profile);
+	validateNetworkProxyPolicy(profile);
 	const platform = probes.platform ?? process.platform;
 	if (platform !== "win32" && ((profile.readOnlyRoots?.length ?? 0) > 0
-		|| profile.allowLocalBinding !== undefined || profile.writableTemp !== undefined)) {
+		|| profile.allowLocalBinding !== undefined || profile.loopbackPorts !== undefined || profile.writableTemp !== undefined)) {
 		throw new ProcessSandboxError("sandbox_unavailable", "This platform cannot enforce the requested Windows policy features.");
 	}
 	if (networkProxy && ((platform !== "darwin" && platform !== "win32") || profile.network !== "enabled"
@@ -72,14 +77,21 @@ export function prepareSandboxedProcess(
 		|| !Number.isSafeInteger(networkProxy.port) || networkProxy.port < 1 || networkProxy.port > 65_535)) {
 		throw new ProcessSandboxError("network_proxy_unavailable", "The process network proxy cannot enforce this policy.");
 	}
+	if (networkProxy && !networkProxyPolicyIsSubset(networkProxy.policy, profile.networkProxy)) {
+		throw new ProcessSandboxError("network_proxy_unavailable", "The process network proxy weakens the requested policy.");
+	}
+	if (networkProxy?.readableRoots?.some((root) => deniedReadPath(profile.workspaceRoot, root, profile))) {
+		throw new ProcessSandboxError("network_proxy_unavailable", "The proxy trust bundle conflicts with denied-read policy.");
+	}
 	if (hasDeniedReads(profile) && platform !== "win32") {
 		throw new ProcessSandboxError("sandbox_unavailable", "Denied-read rules require the Windows restricted filesystem sandbox.");
 	}
-	if (profile.mode === "danger-full-access" && hasUnrestrictedNetwork(profile)
-		&& !hasDeniedReads(profile) && !profile.readOnlyRoots?.length && profile.readableRoots === undefined) {
+	if (!requiresProcessSandbox(profile)) {
 		return hostLaunch(argv);
 	}
-	const resolvedProfile = resolveProfile(profile);
+	const resolvedProfile = resolveProfile(networkProxy?.readableRoots?.length ? {
+		...profile, readableRoots: [...(profile.readableRoots ?? []), ...networkProxy.readableRoots],
+	} : profile);
 	const isExecutable = probes.isExecutable ?? sandboxExecutableExists;
 	const pathExists = probes.pathExists ?? existsSync;
 	const isSymbolicLink = probes.isSymbolicLink ?? symbolicLinkExists;

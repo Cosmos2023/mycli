@@ -96,7 +96,15 @@ clears known state files. It does not recursively delete the state directory or 
 Only empty directories created to reserve denied paths are removed. Failures keep recovery records
 for retry; unknown or unrelated accounts are never reset or deleted solely by name.
 
-`status` and `mycli doctor --verbose` show bounded typed codes. Uninstall additionally verifies that
+`status` and `mycli doctor --verbose` show bounded typed codes and backend capability descriptions.
+PSEC supports custom read roots/read-only subtrees, denied reads, structured network allowlists,
+and independent overlapping commands. The legacy backend supports denied reads but lacks the
+other listed advanced policies. PSEC host-to-sandbox local service access is unsupported; the
+legacy backend reports that capability as unknown. An unrecognized/incompatible helper reports
+unknown support. Readiness, backend support, and current session permission remain separate:
+`/permissions` shows effective root/rule counts and network scope without exposing paths or
+domains. Use Ctrl+A to inspect all details in a small terminal.
+Uninstall additionally verifies that
 managed account/state markers are absent; an unready sandbox alone is not proof of successful
 uninstall. Native helper output, local paths, and stacks are not printed by the management CLI.
 
@@ -146,7 +154,7 @@ preflight audit checks common directories for Everyone write grants outside the 
 adds capability-specific write denies. It skips reparse points and inaccessible ACLs, and is not a
 whole-disk scan. Failure to apply a discovered deny blocks the launch.
 
-Filesystem ACL mutations are journaled before application under the protected sandbox state
+On the legacy backend, filesystem ACL mutations are journaled before application under the protected sandbox state
 folder. Path components are pinned against rename/reparse replacement during ACL changes.
 Concurrent commands with the same denied-read snapshot are allowed. Changing that snapshot while
 another sandbox process is active fails closed; stop the affected Shell/MCP processes first.
@@ -172,13 +180,37 @@ Readable roots extend process reads alongside platform/runtime roots. Readonly r
 writes even inside writable roots and cannot be removed by file-tool approvals or child agents.
 The legacy Windows backend rejects these PSEC options. Other platforms reject unsupported options.
 
-`allow_local_binding=true` explicitly permits access to all IPv4/IPv6 host loopback ports in proxy
+Without `loopback_ports`, `allow_local_binding=true` explicitly permits access to all IPv4/IPv6 host loopback ports in proxy
 mode, including local services outside the domain proxy. The default remains the single owned
 proxy TCP port. Offline mode stays offline. Local binding and outbound connections are verified;
 host-to-sandbox service connections are blocked by the Windows Firewall's built-in
 `AppContainerLoopback` filter. mycli matches Codex's design and does not request the
 administrator-only per-identity loopback exemption, so inbound service access stays
 unsupported. See the [feature comparison and evidence](parity/windows-sandbox-feature-parity.md).
+
+The source now supports a narrower outbound TCP exception for proxy mode:
+
+```toml
+[execution_policy]
+allowed_network_domains = ["api.github.com"]
+loopback_ports = [5432, 6379]
+```
+
+Merge these fields into the existing table. `loopback_ports` accepts at most 64 integers from 1 to
+65535; duplicates are removed. It permits direct TCP connections only to `127.0.0.1` and `::1` on
+those ports. The command's own IPv4 proxy TCP port stays independently allowed. An explicit list
+overrides `allow_local_binding`, including when that boolean is true; `[]` grants no extra local
+ports. UDP, other loopback addresses and incoming host-to-sandbox connections are not granted.
+Offline policy, an empty domain list, or a launch without a managed proxy keeps networking disabled.
+Only grant trusted local services: an allowed service can itself relay traffic or expose files.
+
+The field requires `allowed_network_domains` and cannot coexist with `network_egress`. Child agents,
+restored turns and Shell approvals retain or narrow the frozen port ceiling. Permission details
+show the configured TCP ports and indicate when they are inactive because the command is offline.
+The legacy backend, other platforms and older helpers reject the option rather than ignoring it.
+This addition has portable regression coverage but has **not** been compiled or enforcement-tested
+on Windows in the current iteration. The packaged helper is unchanged; rebuild and pass the native,
+strict Windows and installed-package gates before promoting a helper with this field.
 
 Workspace/full requests default to a private journaled `TMPDIR`; read-only requests default off.
 `writable_tmp=false` disables that additional directory, but Windows PSEC still supplies its own
@@ -301,6 +333,21 @@ Enable these only on a disposable machine: they stop sandbox processes and modif
 Release acceptance must enable both opt-ins; see the helper README for the local PowerShell commands.
 The strict runner requires the original 13 passes with zero skipped, cancelled or todo tests.
 When the helper selects PSEC, it additionally requires all seven PSEC parity tests without skips.
+The helper hash must match its manifest before and after the suites, and the final hash and
+backend must match the initial ones. Set `MYCLI_WINDOWS_SANDBOX_EVIDENCE` to an output JSON path
+to retain a bounded report, including failures or preflight refusals:
+
+```powershell
+$env:MYCLI_WINDOWS_SANDBOX_EVIDENCE = 'artifacts/windows-sandbox-acceptance.json'
+npm run test:windows-sandbox
+if ($LASTEXITCODE -ne 0) { throw 'Windows sandbox acceptance failed' }
+```
+
+This report records OS/Node version, architecture, backend, helper hashes, each selected suite's
+counters/status and failure stage/code. `fresh_setup=false` always: this is source acceptance
+on an initialized host, not clean-install evidence. CI retains the report for 14 days even when
+the gate fails. If an earlier build/setup step fails before the runner starts, no acceptance
+report exists. No new real-Windows result is implied by adding this reporting workflow.
 Stop at any failed step. A host NULL DACL is not an empty ACL: it permits access to everyone, and
 the sandbox refuses to replace it. Do not bypass this failure to obtain passing results.
 
@@ -312,7 +359,7 @@ changing HOME or the npm installation directory does not create a clean Windows 
 The release workflow requires this fresh Windows package gate before publication and publishes
 the exact tested tarball. See [releasing.md](releasing.md).
 
-CI covers Node 22.19 and Node 24 on Windows and separately compiles/tests the sandbox protocol,
+General CI covers Node 22.19 and Node 24 on Windows. The strict sandbox job runs Node 24 and separately compiles/tests the sandbox protocol,
 restricted-token primitives, filesystem policy, and network policy on Windows Server 2022 and 2025.
 The Windows gate exercises the actual Node Shell adapter, helper, ConPTY, Unicode/short paths,
 online/offline concurrency, domain proxy isolation, process-tree cleanup, and reset/reinitialization.

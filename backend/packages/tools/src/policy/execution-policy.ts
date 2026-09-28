@@ -11,7 +11,8 @@ export type {
 	NetworkPortRule,
 	NetworkRuleProtocol,
 } from "@mycli/core";
-import type { NetworkEgressPolicy } from "@mycli/core";
+import type { NetworkEgressPolicy, NetworkProxyPolicy } from "@mycli/core";
+import { hasDeniedReads } from "./denied-read-policy.ts";
 
 export type PermissionProfile = "read-only" | "workspace" | "full-access";
 export type SandboxMode = "read-only" | "workspace-write" | "danger-full-access";
@@ -25,10 +26,12 @@ export interface ExecutionPolicy {
 	readonly filesystem: FilesystemPolicy;
 	readonly network: NetworkPolicy;
 	readonly networkDomains?: readonly string[];
+	readonly networkProxy?: NetworkProxyPolicy;
 	readonly networkEgress?: NetworkEgressPolicy;
 	readonly readableRoots?: readonly string[];
 	readonly readOnlyRoots?: readonly string[];
 	readonly allowLocalBinding?: boolean;
+	readonly loopbackPorts?: readonly number[];
 	readonly writableTemp?: boolean;
 	readonly writableRoots: readonly string[];
 }
@@ -64,7 +67,13 @@ export function hasUnrestrictedNetwork(
 	policy: ExecutionPolicy | undefined,
 ): boolean {
 	return policy?.network === "enabled" && policy.networkDomains === undefined
-		&& policy.networkEgress === undefined;
+		&& policy.networkEgress === undefined && policy.loopbackPorts === undefined && policy.networkProxy === undefined;
+}
+
+/** Shared by process launch and readiness projection; this does not validate platform support. */
+export function requiresProcessSandbox(policy: ExecutionPolicy): boolean {
+	return policy.mode !== "danger-full-access" || !hasUnrestrictedNetwork(policy)
+		|| hasDeniedReads(policy) || Boolean(policy.readOnlyRoots?.length) || policy.readableRoots !== undefined;
 }
 
 function immutablePolicy(

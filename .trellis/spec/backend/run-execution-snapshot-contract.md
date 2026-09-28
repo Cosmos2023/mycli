@@ -44,15 +44,33 @@
 
 ### 3. Contracts
 
+- Optional `profile.networkProxy` is frozen proxy authority, containing mode, transport booleans
+  and optional `approvalDomains` restrictions. Parse and validate it on every restore; preserve it through grants, approved overrides
+  and child snapshots. Restoration intersects mode/transports and domain bounds with managed
+  limits. A legacy snapshot without the field cannot gain SOCKS5/upstream access from a newer
+  config. Never persist upstream URLs, credentials, CA private keys or ephemeral bundle paths here.
+
 - A new run snapshot contains its `turnId`, frozen collaboration mode, optional effective execution
   policy, and one tool catalog. The catalog contains its source version, direct definitions,
   deferred definitions, optional rendered skill catalog, and a deterministic SHA-256 fingerprint.
 - Snapshot construction validates and copies all nested values. Callers cannot mutate policy roots,
   tool arrays, definitions, schemas, or skill text after the snapshot is created.
 - Execution policy copies and durable child spawn configs retain readable, writable, readonly and
-  denied roots, denied globs, `allowLocalBinding` and `writableTemp`. Validate arrays/booleans on
+  denied roots, denied globs, `allowLocalBinding`, `loopbackPorts` and `writableTemp`. Validate arrays/booleans on
   restoration and freeze them; never drop restrictions during SQLite round trips. Child narrowing
   rejects removed readonly/denied masks and broader loopback or managed temporary authority.
+- Explicit loopback TCP lists override the legacy boolean; preserve empty lists. Fresh profiles
+  inherit configured ports, but restoration/approval uses the effective loopback intersection.
+  A broader or removed current constraint cannot widen frozen ports; copy their domain context
+  through Full Access overrides. See the bounded loopback scenario in `shell-execution-policy-contract.md`.
+- Preserve and deep-freeze `networkEgress` through app child-policy mapping, inherited constraints,
+  and runtime restoration even when current managed settings omit it. `networkEgressIsSubset`
+  proves only whole allow-rule removal and deny-rule addition; unproven CIDR/range edits fail closed.
+  Broader managed settings cannot broaden a restored run. Incomparable old/new egress rules reject
+  restoration rather than silently replacing the frozen restriction. Test the complete parent-run
+  to child-run to Windows launch-request path in `agent-execution-policy.test.ts`.
+  `sandboxOverrideProfile()` also carries the active run's frozen egress ceiling; approving
+  filesystem escalation cannot silently grant unrestricted networking after settings change.
 - Durable child environment snapshots retain only their explicit non-secret allowlist.
   Windows additionally needs LOCALAPPDATA, SYSTEMROOT, WINDIR, COMSPEC and PATHEXT
   for PSEC and shell startup. Match input names case-insensitively on Windows and

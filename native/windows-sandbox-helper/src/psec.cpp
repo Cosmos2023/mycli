@@ -1,8 +1,10 @@
 #include "psec.hpp"
 
+#include <algorithm>
 #include <bit>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 #include <ProcessSecurityEnvironment_generated.h>
 
@@ -118,6 +120,11 @@ flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<schema::EndpointRule
 }  // namespace
 
 std::vector<std::uint8_t> BuildPsecSpecification(const PsecPolicy& policy) {
+    if (policy.loopback_ports.has_value() && (policy.loopback_ports->size() > kMaxLoopbackPorts ||
+        std::find(policy.loopback_ports->begin(), policy.loopback_ports->end(), 0) != policy.loopback_ports->end() ||
+        policy.network_egress.has_value() || (policy.network_enabled && policy.proxy_port == 0))) {
+        throw std::runtime_error("invalid PSEC loopback port policy");
+    }
     flatbuffers::FlatBufferBuilder builder;
     const auto reads = Paths(builder, policy.read_roots);
     const auto writes = Paths(builder, policy.write_roots);
@@ -137,6 +144,20 @@ std::vector<std::uint8_t> BuildPsecSpecification(const PsecPolicy& policy) {
             ? schema::FilterAction::allow : schema::FilterAction::deny;
         allows = EgressRules(builder, policy.network_egress->allow);
         denied_rules = EgressRules(builder, policy.network_egress->deny);
+    } else if (proxied && policy.loopback_ports.has_value()) {
+        // The owned IPv4 proxy is independent of additional host-service permissions.
+        std::vector<NetworkEgressRule> rules{
+            NetworkEgressRule{{NetworkDestination{L"127.0.0.1/32", {}}},
+                {NetworkPortRule{NetworkRuleProtocol::kTcp, policy.proxy_port, policy.proxy_port}}},
+        };
+        if (!policy.loopback_ports->empty()) {
+            NetworkEgressRule services{{NetworkDestination{L"127.0.0.1/32", {}}, NetworkDestination{L"::1/128", {}}}, {}};
+            for (const auto port : *policy.loopback_ports) {
+                services.ports.push_back(NetworkPortRule{NetworkRuleProtocol::kTcp, port, port});
+            }
+            rules.push_back(std::move(services));
+        }
+        allows = EgressRules(builder, rules);
     } else if (proxied) {
         const auto address = builder.CreateString(policy.allow_local_binding ? "127.0.0.0" : "127.0.0.1");
         const auto subnet = schema::CreateIpSubnet(builder, address, policy.allow_local_binding ? 8 : 32);

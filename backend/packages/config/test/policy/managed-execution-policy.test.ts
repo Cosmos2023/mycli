@@ -11,6 +11,30 @@ test("managed execution policy is absent when no managed file exists", async (t)
 	assert.equal(await loadManagedExecutionPolicy({ homeDir }), undefined);
 });
 
+test("managed proxy options require domains and reject limited-mode bypasses", async (t) => {
+	const homeDir = await temporaryHome(t);
+	const path = join(homeDir, ".mycli", "managed_config.toml");
+	const base = ["[execution_policy]", 'allowed_network_domains = ["example.com"]'];
+	await writeToml(path, [...base, "[execution_policy.network_proxy]", 'mode = "limited"', "allow_upstream_proxy = true"]);
+	const policy = await loadManagedExecutionPolicy({ homeDir });
+	assert.deepEqual(policy?.networkProxy, { mode: "limited", enableSocks5: true, allowUpstreamProxy: true });
+	assert.ok(Object.isFrozen(policy?.networkProxy));
+	await writeToml(path, [...base, "[execution_policy.network_proxy]", 'approval_domains = ["*.Example.com"]']);
+	assert.deepEqual((await loadManagedExecutionPolicy({ homeDir }))?.networkProxy?.approvalDomains, ["*.example.com"]);
+	for (const lines of [
+		["[execution_policy.network_proxy]", 'mode = "limited"'],
+		[...base, "allow_local_binding = true", "[execution_policy.network_proxy]", 'mode = "limited"'],
+		[...base, "loopback_ports = [8080]", "[execution_policy.network_proxy]", 'mode = "limited"'],
+		[...base, "[execution_policy.network_proxy]", 'mode = "read-only"'],
+		[...base, "[execution_policy.network_proxy]", 'enable_socks5 = "true"'],
+		[...base, "[execution_policy.network_proxy]", 'approval_domains = "example.com"'],
+		[...base, "[execution_policy.network_proxy]", 'url = "http://private"'],
+	]) {
+		await writeToml(path, lines);
+		await assert.rejects(loadManagedExecutionPolicy({ homeDir }), /network_proxy/u);
+	}
+});
+
 test("managed execution policy loads an independent bounded constraint layer", async (t) => {
 	const homeDir = await temporaryHome(t);
 	const path = join(homeDir, ".mycli", "managed_config.toml");
@@ -139,6 +163,31 @@ async function temporaryHome(t: test.TestContext): Promise<string> {
 	t.after(() => rm(homeDir, { recursive: true, force: true }));
 	return homeDir;
 }
+
+test("managed loopback lists retain empty bounds and reject invalid ports or network modes", async (t) => {
+	const homeDir = await temporaryHome(t);
+	const path = join(homeDir, ".mycli", "managed_config.toml");
+	const base = ["[execution_policy]", 'allowed_network_domains = ["example.com"]', "allow_local_binding = true"];
+	for (const ports of [[], [5432, 443, 5432]]) {
+		await writeToml(path, [...base, `loopback_ports = ${JSON.stringify(ports)}`]);
+		const policy = await loadManagedExecutionPolicy({ homeDir });
+		assert.deepEqual(policy?.loopbackPorts, ports.length ? [443, 5432] : []);
+		assert.ok(Object.isFrozen(policy?.loopbackPorts));
+	}
+	for (const ports of ['"443"', '["443"]', "[0]", "[-1]", "[65536]", "[1.5]", "[nan]", JSON.stringify(Array(65).fill(443))]) {
+		await writeToml(path, [...base, `loopback_ports = ${ports}`]);
+		await assert.rejects(loadManagedExecutionPolicy({ homeDir }), /loopback_ports/u);
+	}
+	for (const lines of [
+		["[execution_policy]", "loopback_ports = [5432]"],
+		[...base, "loopback_ports = []", '[execution_policy.network_egress]', 'default = "deny"'],
+	]) {
+		await writeToml(path, lines);
+		await assert.rejects(loadManagedExecutionPolicy({ homeDir }), /loopback_ports/u);
+	}
+	await writeToml(path, [...base, 'network = "disabled"', "loopback_ports = [5432]"]);
+	assert.equal((await loadManagedExecutionPolicy({ homeDir }))?.network, "disabled");
+});
 
 async function writeToml(path: string, lines: readonly string[]): Promise<void> {
 	await mkdir(dirname(path), { recursive: true });

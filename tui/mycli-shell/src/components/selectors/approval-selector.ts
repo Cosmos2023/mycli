@@ -124,6 +124,8 @@ export class ApprovalSelectorComponent extends Container {
 		// Shell reason is a policy summary; justification is the model's approval question.
 		const reason = (isCommand ? this.approval.justification : undefined) ?? this.approval.reason;
 		if (reason) details.push(this.detailLine("Reason", reason));
+		if (this.approval.networkRequest) details.push(this.detailLine("Scope / 范围", this.approval.networkRequest.method === "CONNECT" || this.approval.networkRequest.protocol === "tcp"
+			? "This connection only / 仅此次连接" : "This request only / 仅此次请求"));
 		details.push(...this.permissionRequestLines().map((line) => theme.fg("muted", line)));
 		if (this.approval.risk || this.approval.riskReason) {
 			details.push(this.detailLine("Risk", this.riskText(), this.approval.risk === "high" ? "error" : "warning"));
@@ -161,7 +163,7 @@ export class ApprovalSelectorComponent extends Container {
 			this.approval.workerName ? `@${this.approval.workerName}` : undefined,
 		].filter((part): part is string => Boolean(part));
 		const suffix = parts.length ? theme.fg("muted", ` ${uiGlyphs().separator} ${parts.join(` ${uiGlyphs().separator} `)}`) : "";
-		return `${theme.fg("warning", theme.bold("Permission required"))}${suffix}`;
+		return `${theme.fg("warning", theme.bold(this.approval.networkRequest ? "Network permission / 网络授权" : "Permission required"))}${suffix}`;
 	}
 
 	private commandPreview(): string {

@@ -1,10 +1,31 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { collectProcessChecks } from "../src/management/doctor/check-process.ts";
+import { runDoctorCollectors } from "../src/management/doctor/runner.ts";
 import { renderManagementResponse } from "../src/management/render.ts";
 import {
 	inspectSandboxStatus,
 	SandboxManagementService,
 } from "../src/management/sandbox.ts";
+
+test("Windows status and doctor explain backend limits without claiming current policy acceptance", async () => {
+	const probes = {
+		platform: "win32" as const, workspaceRoot: "C:\\private-workspace", isExecutable: () => true,
+		windowsHandshake: async () => ({ name: "mycli-windows-sandbox", protocolVersion: 2,
+			setupComplete: true, sandboxReady: true, backend: "psec" as const }),
+	};
+	const response = await inspectSandboxStatus(probes);
+	assert.equal(response.capabilities?.filesystem_rules, "supported");
+	const text = renderManagementResponse({ kind: "sandbox", action: "status", json: false }, response);
+	assert.match(text, /Host access to sandbox local servers: unsupported/u);
+	assert.match(text, /readiness does not verify isolation/u);
+	const report = await runDoctorCollectors([{ name: "process", collect: (signal) => collectProcessChecks(probes, signal) }]);
+	const sandbox = report.checks.find((row) => row.name === "process_sandbox");
+	assert.equal(sandbox?.status, "ok");
+	assert.ok(sandbox?.details?.some((line) => line.includes("local servers: unsupported")));
+	assert.ok(sandbox?.details?.some((line) => line.includes("does not verify isolation")));
+	assert.doesNotMatch(JSON.stringify(report), /private-workspace/u);
+});
 
 test("sandbox status renders one canonical readiness response in human and JSON modes", async () => {
 	const response = await inspectSandboxStatus({

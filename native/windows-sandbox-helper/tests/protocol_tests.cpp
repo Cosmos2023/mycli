@@ -62,6 +62,37 @@ int RunTests() {
         std::cerr << "valid proxy request was rejected\n";
         return 1;
     }
+    for (const auto& base : {proxy, std::wstring{kValidRequest}}) {
+        auto bounded = base;
+        bounded.insert(bounded.rfind(L'}'), LR"(, "loopback_ports": [5432, 443, 5432], "allow_local_binding": true)");
+        const auto parsed_ports = mycli::sandbox::ParseAndValidateRequest(bounded);
+        if (!parsed_ports.has_psec_options || !parsed_ports.loopback_ports.has_value() ||
+            *parsed_ports.loopback_ports != std::vector<unsigned short>{443, 5432}) {
+            std::cerr << "loopback port bounds were lost\n";
+            return 1;
+        }
+        auto empty = base;
+        empty.insert(empty.rfind(L'}'), LR"(, "loopback_ports": [])");
+        const auto parsed_empty = mycli::sandbox::ParseAndValidateRequest(empty);
+        if (!parsed_empty.loopback_ports.has_value() || !parsed_empty.loopback_ports->empty() || request.loopback_ports.has_value()) {
+            std::cerr << "empty loopback ceiling differs from absent legacy option\n";
+            return 1;
+        }
+        for (const auto* ports : {L"null", L"true", L"443", L"[0]", L"[-1]", L"[65536]", L"[1.5]", L"[\"443\"]"}) {
+            auto invalid = base;
+            invalid.insert(invalid.rfind(L'}'), std::wstring{L", \"loopback_ports\": "} + ports);
+            if (!Rejects(invalid)) { std::cerr << "invalid loopback ports accepted\n"; return 1; }
+        }
+        std::wstring oversized = L"[443";
+        for (int i = 1; i < 65; ++i) oversized += L",443";
+        oversized += L"]";
+        auto invalid = base;
+        invalid.insert(invalid.rfind(L'}'), L", \"loopback_ports\": " + oversized);
+        if (!Rejects(invalid)) { std::cerr << "oversized loopback list accepted\n"; return 1; }
+    }
+    auto unrestricted_ports = network_enabled;
+    unrestricted_ports.insert(unrestricted_ports.rfind(L'}'), LR"(, "loopback_ports": [])");
+    if (!Rejects(unrestricted_ports)) { std::cerr << "loopback restriction ignored without proxy\n"; return 1; }
     for (const auto* port : {L"0", L"-1", L"65536", L"1.5", L"\"40000\""}) {
         auto invalid_proxy = network_enabled;
         invalid_proxy.insert(invalid_proxy.rfind(L'}'),
@@ -77,6 +108,9 @@ int RunTests() {
         {"to": [{"cidr": "127.0.0.0/8", "except": ["127.0.0.2/32"]}],
          "ports": [{"protocol": "tcp", "port": 443, "end_port": 444}]}]})");
     const auto egress_request = mycli::sandbox::ParseAndValidateRequest(egress);
+    auto mixed_ports = egress;
+    mixed_ports.insert(mixed_ports.rfind(L'}'), LR"(, "loopback_ports": [])");
+    if (!Rejects(mixed_ports)) { std::cerr << "mixed egress and loopback ports accepted\n"; return 1; }
     if (!egress_request.network_egress.has_value() || !egress_request.has_psec_options
         || egress_request.network_egress->allow_default
         || egress_request.network_egress->allow.size() != 1

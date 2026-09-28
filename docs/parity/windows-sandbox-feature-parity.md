@@ -15,6 +15,7 @@ C++ helper, not a port of the entire Codex Windows implementation or its test su
 | Full filesystem with constrained network | Accessible volume snapshot; preserves explicit denies, readonly masks and workspace metadata |
 | Large request transport | Base64 environment chunks, 1,000,000-byte UTF-8 limit, strict native validation, removal before workload launch |
 | Local loopback option | Opt-in all-port IPv4/IPv6 loopback egress and local binding; strict per-command proxy port remains default |
+| Per-port loopback option (2026-09-28 source addition) | `loopback_ports` bounds additional proxy-mode TCP access to `127.0.0.1` / `::1`; overrides the all-port option, preserves child/recovery limits, and leaves offline mode closed. Portable tests only: native build/enforcement pending, packaged helper unchanged |
 | Concurrent policies | PSEC keeps one kernel policy per command, so divergent peers run side by side (Codex parity); the legacy ACL backend still requires matching active policies |
 | Linked policy roots | Explicit local junction/symlink chains resolve to pinned canonical roots before lease admission; short-path aliases share the same identity |
 | Durable authority | Managed config, frozen run state, persisted child state, Shell/hooks/plugins/MCP and file mutations preserve restrictions |
@@ -25,6 +26,21 @@ Windows PSEC's own private temporary storage. This distinction was established b
 real filesystem writes and cleanup checks, not environment variable inspection alone.
 
 ## Remaining Differences And Failed Experiment
+
+Managed proxy source addition (2026-09-28): SOCKS5 CONNECT, optional host HTTP/HTTPS upstream
+proxies, and limited GET/HEAD/OPTIONS with HTTPS interception are implemented. Real socket and
+macOS sandbox checks cover them; Windows end-to-end acceptance remains pending and no helper
+binary was replaced. Limited mode requires PSEC public-CA read grants; legacy rejects those
+grants. SOCKS BIND/UDP, configurable MITM rewrite hooks and proxy-only DNS remain unsupported.
+See [network configuration and boundaries](../network-policy.md#socks5-upstream-proxies-and-limited-mode).
+
+Live network approval source addition (2026-09-28): managed `approval_domains` adds per-request
+Shell/Bash confirmation inside the existing hard domain ceiling. One shared TUI queue displays
+destination/scope and bilingual block reasons; cancellation never replays a command or persists a
+grant. Full tunnels and limited HTTP requests have explicitly different approval scopes. Real macOS
+Shell/yield/stop and portable protocol/gateway/UI tests cover the implementation. Windows real-host
+acceptance is still pending; stdio MCP rejects approval-required domains without a live responder.
+See [one-request approvals](../network-policy.md#one-request-approvals-and-block-reasons).
 
 ### PSEC Policy Translation Comparison (2026-09-18)
 
@@ -162,6 +178,12 @@ The strict runner now checks the actual ready backend. It requires the original
 13 tests, plus all seven added tests on PSEC, with no skips, failures, cancellations
 or todo cases. It also checks that the final handshake retains the selected backend.
 Installed package setup and readiness remain a separate mandatory release gate.
+
+The source runner also pins the helper SHA-256 before/after testing and can save bounded
+acceptance JSON with `MYCLI_WINDOWS_SANDBOX_EVIDENCE`. It records selected suites, counters,
+backend, OS/Node version, and failure stage, always with `fresh_setup=false`. CI retains this
+report on gate failures. This reporting addition does not establish a new Windows host result;
+the dated results below remain historical evidence for their stated machine and revision.
 
 Local results on 2026-09-18, main baseline
 `b17383011ed91061567388b16374a531b3d5a1db` with the working changes:

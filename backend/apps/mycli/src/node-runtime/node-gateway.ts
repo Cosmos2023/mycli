@@ -135,6 +135,7 @@ class InProcessNodeGateway implements NodeGateway {
 	#unsubscribeExtensions: (() => void) | null = null;
 	#unsubscribeAgentInteractiveRequests: (() => void) | null = null;
 	#unsubscribeMcpElicitations: (() => void) | null = null;
+	#unsubscribeNetworkApprovals: (() => void) | null = null;
 	readonly #closeAfterResponses = new WeakSet<JsonObject>();
 
 	constructor(options: CreateNodeGatewayOptions) {
@@ -169,6 +170,7 @@ class InProcessNodeGateway implements NodeGateway {
 				return this.#settingsController.activateSession(workspaceRoot, runtime);
 			},
 			onTransition: () => {
+				options.networkApprovals?.revoke();
 				this.#pluginController.cancelPending();
 				this.#capabilityController.cancelPending();
 			},
@@ -203,7 +205,8 @@ class InProcessNodeGateway implements NodeGateway {
 		this.#turnController = new NodeGatewayTurnController({
 			dependencies: { ...options, hasPendingGoalInteraction: () => this.#interactiveController.hasPending()
 				|| (options.agentInteractiveRequests?.pending().length ?? 0) > 0
-				|| (options.mcpElicitations?.pending().length ?? 0) > 0 },
+				|| (options.mcpElicitations?.pending().length ?? 0) > 0
+				|| options.networkApprovals?.hasPending() === true },
 			session: this.#sessionController,
 			settings: this.#settingsController,
 			isClosed: () => this.#closed,
@@ -241,6 +244,14 @@ class InProcessNodeGateway implements NodeGateway {
 			this.#emitRuntime(notification.method, params);
 			this.#turnController.requestNextQueuedTurn();
 		}) ?? null;
+		this.#unsubscribeNetworkApprovals = options.networkApprovals?.subscribe((notification) => {
+			if (this.#closed) return;
+			const params = { ...notification.params };
+			if (params.session_id !== this.#sessionController.sessionId()) params.child_session_id = params.session_id;
+			if (notification.method === "interactive.cancelled") this.#interactiveController.cancel(params);
+			else this.#emitRuntime(notification.method, params);
+			this.#turnController.requestNextQueuedTurn();
+		}) ?? null;
 		this.#emitDirect("runtime.ready", { session_id: this.#sessionController.sessionId() });
 		this.#turnController.requestNextQueuedTurn();
 	}
@@ -264,6 +275,9 @@ class InProcessNodeGateway implements NodeGateway {
 			this.#unsubscribeAgentInteractiveRequests?.();
 			this.#unsubscribeAgentInteractiveRequests = null;
 			this.#options.mcpElicitations?.close();
+			this.#options.networkApprovals?.close();
+			this.#unsubscribeNetworkApprovals?.();
+			this.#unsubscribeNetworkApprovals = null;
 			this.#unsubscribeMcpElicitations?.();
 			this.#unsubscribeMcpElicitations = null;
 			this.#interactiveController.clear();
@@ -418,7 +432,7 @@ class InProcessNodeGateway implements NodeGateway {
 				return this.#turnController.submit(request.params);
 			case "approval.respond":
 			case "decision.resolve":
-				return this.#turnController.respondApproval(request.params);
+				return this.#options.networkApprovals?.respond(request.params) ?? this.#turnController.respondApproval(request.params);
 			case "clarify.respond":
 				return this.#turnController.respondClarification(request.params);
 			case "mcp.elicitation.respond":
@@ -1551,7 +1565,7 @@ class InProcessNodeGateway implements NodeGateway {
 				...(summary.forkPoint === undefined ? {} : { fork_point: summary.forkPoint }),
 			} : {}),
 			context_window: this.#turnController.contextWindow(),
-			pending_decision: session?.pendingApproval !== undefined,
+			pending_decision: session?.pendingApproval !== undefined || this.#options.networkApprovals?.hasPending(this.#sessionController.sessionId()) === true,
 			pending_clarification: session?.pendingClarification !== undefined,
 			pending_mcp_elicitation: this.#options.mcpElicitations?.pending().some((request) => request.session_id === this.#sessionController.sessionId()) ?? false,
 			suspended_turn: session?.pendingApproval !== undefined

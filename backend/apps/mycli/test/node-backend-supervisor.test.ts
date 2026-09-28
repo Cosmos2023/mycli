@@ -150,6 +150,10 @@ test("hard interruption terminates a blocked Worker and publishes terminal state
 	});
 	const firstReady = await waitFor(() => messages.find((message) => message.method === "runtime.ready"));
 	assert.equal(objectValue(firstReady.params)?.config_profile, "work");
+	assert.ok(backend.setNetworkApprovalAvailability);
+	backend.setNetworkApprovalAvailability(false);
+	writeRequest(backend, "network-before", "probe_network", {});
+	assert.deepEqual((await waitFor(() => response(messages, "network-before"))).result, { networkApprovalAvailable: false });
 
 	writeRequest(backend, "submit", "turn.submit", {
 		message: "block",
@@ -178,6 +182,11 @@ test("hard interruption terminates a blocked Worker and publishes terminal state
 	for (const ready of messages.filter((message) => message.method === "runtime.ready")) {
 		assert.equal(objectValue(ready.params)?.config_profile, "work");
 	}
+	writeRequest(backend, "network-after", "probe_network", {});
+	assert.deepEqual((await waitFor(() => response(messages, "network-after"))).result, { networkApprovalAvailable: false });
+	backend.setNetworkApprovalAvailability(true);
+	writeRequest(backend, "network-attached", "probe_network", {});
+	assert.deepEqual((await waitFor(() => response(messages, "network-attached"))).result, { networkApprovalAvailable: true });
 });
 
 test("saturated coordinator accepts interruption, rejects recovery mutations, and resets generation credit", async (t) => {

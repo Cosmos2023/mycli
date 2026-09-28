@@ -32,6 +32,8 @@ function runtimeLifecyclePatch(
 	event: DecodedRuntimeEvent<string>,
 ): RuntimeLifecyclePatch | null {
 	const { method, params, ownership } = event;
+	if ((method === "approval.request" && params.network_request)
+		|| ((method === "approval.respond" || method === "interactive.cancelled") && state.pendingApproval?.network_request)) return null;
 	if (
 		runtimeEventTargetsChild(event)
 		&& (

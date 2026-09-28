@@ -607,10 +607,17 @@ test("Windows release artifacts require native, Shell, and maintenance verificat
 	const steps = job.steps;
 	const native = steps.findIndex((step) => step.run?.includes("ctest --test-dir"));
 	const integration = steps.findIndex((step) => step.run?.includes("test:windows-sandbox"));
-	const artifact = steps.findIndex((step) => step.uses?.startsWith("actions/upload-artifact@"));
+	const artifact = steps.findIndex((step) => step.name === "Upload verified helper");
 	assert.ok(native >= 0 && integration > native && artifact > integration);
 	assert.equal(steps[integration].env.MYCLI_WINDOWS_SANDBOX_SETUP_TESTS, "1");
 	assert.equal(steps[integration].env.MYCLI_WINDOWS_SANDBOX_MAINTENANCE_TESTS, "1");
+	assert.equal(steps[integration].env.MYCLI_WINDOWS_SANDBOX_EVIDENCE, "artifacts/windows-sandbox-acceptance.json");
+	const evidence = steps.find((step) => step.name === "Retain acceptance evidence");
+	assert.equal(evidence.if, "always()");
+	assert.equal(evidence.with.path, steps[integration].env.MYCLI_WINDOWS_SANDBOX_EVIDENCE);
+	const compile = steps.find((step) => step.name === "Compile native helper and regression tests");
+	assert.match(compile.run, /Get-FileHash .*mycli-windows-sandbox.exe -Algorithm SHA256/u);
+	assert.match(compile.run, /Set-Content .*mycli-windows-sandbox.sha256.*utf8NoBOM/u);
 	for (const index of [native, integration, artifact]) {
 		assert.notEqual(steps[index]["continue-on-error"], true);
 		assert.equal(steps[index].if ?? "success()", "success()");

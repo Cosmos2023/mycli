@@ -33,6 +33,8 @@ jobs:
           cmake --build native/windows-sandbox-helper/build --config Release
           if ($LASTEXITCODE -ne 0) { throw "Windows sandbox build failed" }
           Copy-Item native/windows-sandbox-helper/build/Release/mycli-windows-sandbox.exe backend/packages/tools/native/windows/mycli-windows-sandbox.exe
+          $helperHash = (Get-FileHash backend/packages/tools/native/windows/mycli-windows-sandbox.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content backend/packages/tools/native/windows/mycli-windows-sandbox.sha256 -Value $helperHash -Encoding utf8NoBOM
       - name: Verify native protocol and restricted-token boundaries
         run: ctest --test-dir native/windows-sandbox-helper/build -C Release --output-on-failure
       - name: Verify PSEC boundaries when selected by the host
@@ -59,7 +61,16 @@ jobs:
         env:
           MYCLI_WINDOWS_SANDBOX_SETUP_TESTS: "1"
           MYCLI_WINDOWS_SANDBOX_MAINTENANCE_TESTS: "1"
+          MYCLI_WINDOWS_SANDBOX_EVIDENCE: artifacts/windows-sandbox-acceptance.json
         run: npm run test:windows-sandbox
+      - name: Retain acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name || 'windows-sandbox-helper' }}-acceptance
+          path: artifacts/windows-sandbox-acceptance.json
+          if-no-files-found: warn
+          retention-days: 14
       - name: Upload verified helper
         uses: actions/upload-artifact@v4
         with:

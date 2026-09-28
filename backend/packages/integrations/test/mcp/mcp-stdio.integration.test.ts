@@ -12,6 +12,18 @@ import { McpClient } from "../../src/mcp/index.ts";
 
 const fixturePath = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "mcp-stdio-server.mjs");
 
+test("MCP stdio retains limited proxy policy while starting its SDK generation", {
+	skip: process.platform !== "darwin", timeout: 10_000,
+}, async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-mcp-limited-"));
+	const client = new McpClient({ config: stdioConfig(join(root, "server.pid"), 3000), cwd: root,
+		sandboxProfile: { ...fullAccessSandbox(root), networkDomains: ["api.example.com"],
+			networkProxy: { mode: "limited", enableSocks5: true, allowUpstreamProxy: false } } });
+	t.after(async () => { await client.close(); await rm(root, { recursive: true, force: true }); });
+	assert.deepEqual((await client.listTools(new AbortController().signal)).map((tool) => tool.name), ["echo", "wait"]);
+	assert.equal((await client.callTool("echo", { text: "limited-proxy" }, new AbortController().signal)).content[0]?.text, "echo:limited-proxy");
+});
+
 test("MCP stdio forwards a large PSEC policy through the real SDK", {
 	skip: process.platform !== "win32", timeout: 20_000,
 }, async (t) => {

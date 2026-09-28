@@ -7,6 +7,10 @@ import {
 	assertAgentStatusTransition,
 	childAgentPath,
 	freezeNetworkEgress,
+	freezeLoopbackPorts,
+	freezeNetworkProxyPolicy,
+	validateNetworkProxyPolicy,
+	validateLoopbackPortPolicy,
 	isProviderRouteId,
 	parseAgentPath,
 	rootAgentPath,
@@ -791,6 +795,12 @@ function parseSpawnConfig(value: unknown): AgentSpawnConfigSnapshot {
 				...(executionPolicy.allowLocalBinding === undefined ? {} : {
 					allowLocalBinding: booleanValue(executionPolicy.allowLocalBinding, "allowLocalBinding"),
 				}),
+				...(executionPolicy.loopbackPorts === undefined ? {} : {
+					loopbackPorts: freezeLoopbackPorts(executionPolicy.loopbackPorts),
+				}),
+				...(executionPolicy.networkProxy === undefined ? {} : {
+					networkProxy: freezeNetworkProxyPolicy(executionPolicy.networkProxy),
+				}),
 				...(executionPolicy.writableTemp === undefined ? {} : {
 					writableTemp: booleanValue(executionPolicy.writableTemp, "writableTemp"),
 				}),
@@ -817,6 +827,8 @@ function parseSpawnConfig(value: unknown): AgentSpawnConfigSnapshot {
 		...(budget === undefined ? {} : { budget }),
 		forkTurns,
 	} satisfies AgentSpawnConfigSnapshot;
+	validateLoopbackPortPolicy(config.executionPolicy);
+	validateNetworkProxyPolicy(config.executionPolicy);
 	return deepFreeze(config);
 }
 

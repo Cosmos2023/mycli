@@ -80,6 +80,11 @@
   permits only its loopback TCP port. Windows uses a per-logon WFP exception for the same proxy;
   Linux returns `network_proxy_unavailable`. Empty or
   disabled policies and raw launches without a proxy remain offline.
+- Optional managed `networkProxy` authority is retained in grants, child policies, run/SQLite
+  snapshots, restoration and approved filesystem overrides. Limited mode requires a domain policy
+  without loopback exceptions or rich egress. Shell receives upstream settings from live host
+  composition separately from a child's persisted environment. A proxy lease cannot weaken the
+  profile; its public CA read grant supplements platform/workspace reads but never explicit denies.
 - The model's escalation request never discards policy without host authorization. Full filesystem
   access alone cannot remove network bounds; an approved fallback without an explicit runtime
   override preserves the current domain list and its network-enabled state.
@@ -282,6 +287,10 @@ const effectivePolicy = requested
   then that code page, so legacy console programs produce readable text instead of replacement
   characters. Model guidance must not reintroduce `chcp` or console-encoding changes inside
   commands.
+- The fatal UTF-8 probe retains at most three incomplete trailing bytes. On fallback (including
+  EOF), replay these bytes with the failing chunk through the console decoder exactly once.
+  Never reset/discard the probe's pending bytes before fallback. Tests split GBK and UTF-8 input
+  at every boundary, including BOMs and incomplete EOF sequences.
 - PowerShell classification accepts a leading `&` call operator before a quoted executable path as
   a plain invocation; every other unquoted `&`, `$`, or `@` expansion remains reviewable syntax.
 - Terminal writes preserve input exactly. Cooked Windows console fixtures use CRLF for Enter;
@@ -478,6 +487,76 @@ const effectivePolicy = requested
   TEMP/TMP. Never grant host TEMP. Cleanup after the last helper removes only recorded GUID trees,
   pins ancestors, does not follow reparses and bounds traversal; failures retain recovery state.
 
+### Scenario: Bounded TCP Loopback In PSEC Proxy Mode
+
+#### 1. Scope / Trigger
+
+- Trigger: changing per-port host-service access, managed network limits, frozen authority or PSEC rules.
+
+#### 2. Signatures
+
+- Managed/native: `loopback_ports?: number[]`; policy: `loopbackPorts?: readonly number[]`.
+- Core: `freezeLoopbackPorts(unknown)`, `loopbackAccessIsSubset(candidate, ceiling)`,
+  `intersectLoopbackAccess(current, ceiling)`, `validateLoopbackPortPolicy(policy)`.
+- Gateway: optional `effective.bounds.loopback_ports`, at most 64 unique integers in 1–65535.
+
+#### 3. Contracts
+
+- Require `networkDomains`/`allowed_network_domains` in TS/managed profiles; reject structured egress.
+  Native enabled requests require a proxy port. Offline requests may retain the list but grant nothing.
+- Validate at most 64 input entries before deduplication; freeze a sorted copy. Undefined preserves
+  legacy `allowLocalBinding`; an explicit list overrides it, even if true. Preserve `[]` as a ceiling.
+- PSEC keeps the owned proxy on `127.0.0.1/32` TCP independently. Additional service rules use only
+  `127.0.0.1/32` and `::1/128`, listed TCP ports and default deny. No UDP, all-127/8 or inbound grant.
+- Fresh root/integration profiles inherit configured ports. Restored runs intersect frozen authority
+  with present limits, treating the absent-list/true boolean as all ports and absent-list/false as
+  none. A child cannot remove a bounded list to uncover a true boolean. Grants and Full Access must
+  not restore ports removed by the child, stored run or a stricter override.
+- Revalidate/copy through config, coordinator, agent mapping, SQLite, run snapshots, Shell and
+  integration requests. Freeze Shell ports before asynchronous preparation. Keep domain context with
+  the port ceiling on filesystem escalation; offline still wins. `intersectNetworkDomains(left, right)`
+  retains the narrower exact/suffix patterns for port-bounded recovery and Shell overrides. Never
+  replace an override's empty domain list with the original nonempty list: that would create a proxy
+  and reactivate otherwise offline local ports.
+- Protocol v2 stays additive and strict. Set `has_psec_options` on field presence, including `[]`.
+  Legacy rejects before launch; older helpers reject the unknown field. Other platforms reject
+  before host bypass. Do not promote the binary without real Windows acceptance.
+
+#### 4. Validation & Error Matrix
+
+| Condition | Result |
+| --- | --- |
+| Non-array, sparse/invalid item, port outside 1–65535, more than 64 entries | Core/native rejection; managed `config_error` |
+| Missing domains or structured egress with list | Reject before process launch |
+| Native enabled request without proxy | Reject before process launch |
+| Non-Windows or legacy backend | `sandbox_unavailable` / `sandbox_policy_requires_psec` |
+| Older helper | Unknown-field rejection; no unrestricted retry |
+| Disabled network / empty domains / no created proxy | Offline; list remains inert |
+| Child removes or expands a port ceiling | `AgentAuthorityError` |
+
+#### 5. Good / Base / Bad Cases
+
+- Good: `[5432]` grants a trusted local database; the owned proxy remains reachable independently.
+- Base: absent list keeps existing boolean behavior.
+- Bad: interpreting `[]` as absent, granting UDP with TCP, or replacing narrower recovered ports.
+
+#### 6. Tests Required
+
+- Core/config: malformed lists, sparse arrays, normalization, empty and absent, all pairwise subset intersections.
+- Runtime/storage/app: fresh authority, SQLite round trip, recovery, child narrowing, grant/override
+  intersections, offline integrations and complete parent-to-child-to-native requests.
+- Native parser/spec: strict combinations, TCP protocol, exact subnets/ports, independent proxy,
+  offline and the legacy-rejection marker. Existing PSEC parity test additionally verifies TCP
+  IPv4/IPv6 selection and actual UDP nondelivery with a working receiver control.
+- Gateway/TUI: optional bounded list, legacy payloads, offline/empty display and narrow widths.
+- Windows native compilation and strict enforcement tests remain pending in the 2026-09-28 macOS
+  iteration; portable test success is not native enforcement evidence. Packaged helper remains unchanged.
+
+#### 7. Wrong vs Correct
+
+- Wrong: `restored.loopbackPorts = managed.loopbackPorts` can regrant a removed local service.
+- Correct: `intersectLoopbackAccess(restored, managed)` retains only common authority.
+
 ### Scenario: Structured PSEC Egress Rules
 
 #### 1. Scope / Trigger
@@ -491,6 +570,7 @@ const effectivePolicy = requested
   `allow`/`deny` arrays of `{ to = [{ cidr, except }], ports = [{ protocol, port, end_port }] }`.
 - Profile: `ExecutionPolicy.networkEgress?: NetworkEgressPolicy`
   (`freezeNetworkEgress` in `@mycli/core`).
+- Narrowing proof: `networkEgressIsSubset(candidate, ceiling): boolean` in `@mycli/core`.
 - Request: `network_egress: { default, allow?, deny? }` with snake_case `end_port`.
 
 #### 3. Contracts
@@ -503,6 +583,10 @@ const effectivePolicy = requested
   `end_port >= port`.
 - Structured rules cannot be combined with `allowed_network_domains` (managed proxy) or disabled
   networking; the tools launcher and the native parser both fail closed.
+- App integration-profile composition removes inapplicable egress exceptions when a hook, plugin
+  or MCP process has `network: "disabled"`. It must retain the network deny, writable/readable
+  bounds and filesystem mode. Enabled profiles retain egress rules. Raw contradictory launcher
+  inputs still reject. `integration-sandbox.test.ts` verifies the resulting Windows request.
 - Only the PSEC backend enforces the rules. The legacy restricted-token backend rejects any
   request carrying `network_egress` before launch (`sandbox_policy_requires_psec`).
 - The rules travel through managed config, coordinator constraints, the run snapshot and child

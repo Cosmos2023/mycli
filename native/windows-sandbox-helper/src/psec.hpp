@@ -22,6 +22,7 @@ struct PsecPolicy {
     bool network_enabled = false;
     unsigned short proxy_port = 0;
     bool allow_local_binding = false;
+    std::optional<std::vector<unsigned short>> loopback_ports;
     bool unrestricted_filesystem = false;
     std::wstring temporary_directory;
     std::optional<NetworkEgressPolicy> network_egress;

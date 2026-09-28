@@ -55,6 +55,7 @@ test("controller handoff waits for accepted mutations after disconnect and does 
 	await until(() => fixture.requests.length === 1);
 	await firstAttachment.close();
 	await disconnected;
+	assert.deepEqual(fixture.networkAvailability, [false, true, false]);
 	assert.equal(fixture.closeCount(), 0);
 	assert.deepEqual(fixture.service.snapshot().controller, {
 		id: firstAttachment.id, detached: true, pendingMutations: 1,
@@ -67,6 +68,22 @@ test("controller handoff waits for accepted mutations after disconnect and does 
 	assert.equal(fixture.requests.filter((request) => request.method === "session.new").length, 1);
 	await firstAttachment.close();
 	assert.equal(fixture.service.snapshot().controller?.id, replacement.attachment.id);
+	assert.deepEqual(fixture.networkAvailability, [false, true, false, true]);
+});
+
+test("only a live controller enables network approvals; observer churn cannot change availability", async (t) => {
+	const fixture = serviceFixture(t, () => ({}));
+	const observer = connect(t, fixture.service.attach());
+	assert.deepEqual(fixture.networkAvailability, [false]);
+	const controller = connect(t, fixture.service.attach({ role: "controller" }));
+	await observer.attachment.close();
+	const another = connect(t, fixture.service.attach());
+	assert.deepEqual(fixture.networkAvailability, [false, true]);
+	controller.attachment.transport.output.end();
+	await controller.attachment.completion;
+	assert.deepEqual(fixture.networkAvailability, [false, true, false]);
+	assert.equal(fixture.closeCount(), 0);
+	assert.deepEqual(await another.client.request("status.get", {}), {});
 });
 
 test("a disconnected observer's late response cannot reach a replacement client", async (t) => {
@@ -204,11 +221,13 @@ function serviceFixture(
 ): {
 	readonly service: BackendService;
 	readonly requests: NodeGatewayRpcRequest[];
+	readonly networkAvailability: boolean[];
 	readonly emit: (event: GatewayEvent) => void;
 	readonly closeCount: () => number;
 	readonly exit: (code: number) => void;
 } {
 	const requests: NodeGatewayRpcRequest[] = [];
+	const networkAvailability: boolean[] = [];
 	let resolveCompletion!: (code: number) => void;
 	let closeCount = 0;
 	let closePromise: Promise<void> | undefined;
@@ -227,9 +246,10 @@ function serviceFixture(
 	};
 	const service = new BackendService({
 		transport: rpc.transport, completion, close, kill: () => { rpc.dispose(); resolveCompletion(1); }, diagnostic: () => "",
+		setNetworkApprovalAvailability: (available) => { networkAvailability.push(available); },
 	}, { maxClients });
 	t.after(() => service.close());
-	return { service, requests, emit: (event) => rpc.writeNotification(event), closeCount: () => closeCount, exit: resolveCompletion };
+	return { service, requests, networkAvailability, emit: (event) => rpc.writeNotification(event), closeCount: () => closeCount, exit: resolveCompletion };
 }
 
 function connect(t: TestContext, attachment: BackendClientAttachment): {

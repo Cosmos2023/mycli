@@ -358,6 +358,78 @@ test("Shell freezes proxy authority before async preparation and transfers proce
 	await manager.starts[0]?.processResource?.close();
 });
 
+test("Shell retains limited policy through escalation and freezes it before async setup", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-shell-limited-"));
+	t.after(() => import("node:fs/promises").then(({ rm }) => rm(root, { recursive: true, force: true })));
+	for (const override of [false, true]) {
+		const manager = new StartManager(completedSnapshot());
+		const networkProxy = { mode: "limited" as const, enableSocks5: false, allowUpstreamProxy: false };
+		const tool = new ShellTool({ workspaceRoot: root, manager, platform: "darwin",
+			profile: resolveShellProfile({ platform: "darwin", shellPath: "/bin/sh" }), processSandboxProbes: { isExecutable: () => true },
+			networkProxyFactory: async (_domains, policy) => {
+				assert.deepEqual(policy, { mode: "limited", enableSocks5: false, allowUpstreamProxy: false });
+				assert.ok(Object.isFrozen(policy));
+				return { port: 40000, policy, env: {}, close: async () => undefined };
+			} });
+		const pending = tool.execute({ command: "true", sandbox_permissions: "require_escalated" }, { ...executionOptions(root),
+			executionPolicy: { ...executionPolicy("workspace", root), network: "enabled", networkDomains: ["api.example.com"], networkProxy },
+			sandboxOverrideApproved: true,
+			...(override ? { sandboxOverridePolicy: { ...executionPolicy("full-access", root), networkProxy: { mode: "full" as const, enableSocks5: true, allowUpstreamProxy: true } } } : {}),
+		});
+		networkProxy.enableSocks5 = true;
+		assert.equal((await pending).success, true);
+		assert.equal(manager.starts[0]?.executable, "/usr/bin/sandbox-exec");
+	}
+});
+
+test("Shell freezes local ports and intersects approval overrides before preparing Windows requests", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-shell-ports-"));
+	t.after(() => import("node:fs/promises").then(({ rm }) => rm(root, { recursive: true, force: true })));
+	for (const overridePorts of [undefined, [], [8080], [5432, 8080, 9000]]) {
+		const manager = new StartManager(completedSnapshot());
+		const tool = new ShellTool({ workspaceRoot: root, manager, platform: "win32",
+			profile: resolveShellProfile({ platform: "win32", shellPath: "C:\\Windows\\System32\\cmd.exe" }),
+			processSandboxProbes: { platform: "win32", isExecutable: () => true },
+			networkProxyFactory: async () => ({ port: 40000, env: {}, close: async () => {} }),
+		});
+		const ports = [5432, 8080];
+		const base = { ...executionPolicy("workspace", root), networkDomains: ["example.com"], allowLocalBinding: true, loopbackPorts: ports };
+		const pending = tool.execute({ command: "echo ok", sandbox_permissions: "require_escalated" }, {
+			...executionOptions(root), executionPolicy: base, sandboxOverrideApproved: true,
+			...(overridePorts === undefined ? {} : { sandboxOverridePolicy: { ...base, loopbackPorts: overridePorts } }),
+		});
+		ports.push(9000);
+		assert.equal((await pending).success, true);
+		const request = JSON.parse(manager.starts[0]!.args[1]!);
+		assert.deepEqual(request.loopback_ports, overridePorts === undefined ? [5432, 8080] : overridePorts.filter((port) => port !== 9000));
+		assert.equal(request.network_proxy_port, 40000);
+		await manager.starts[0]?.processResource?.close();
+	}
+});
+
+test("Shell port approvals retain both offline domain lists and disabled-network overrides", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-shell-ports-offline-"));
+	t.after(() => import("node:fs/promises").then(({ rm }) => rm(root, { recursive: true, force: true })));
+	for (const override of [{ networkDomains: [] }, { network: "disabled" as const }]) {
+		const manager = new StartManager(completedSnapshot());
+		const tool = new ShellTool({ workspaceRoot: root, manager, platform: "win32",
+			profile: resolveShellProfile({ platform: "win32", shellPath: "C:\\Windows\\System32\\cmd.exe" }),
+			processSandboxProbes: { platform: "win32", isExecutable: () => true },
+			networkProxyFactory: async () => { throw new Error("offline override cannot start a proxy"); },
+		});
+		const base = { ...executionPolicy("workspace", root), networkDomains: ["example.com"], loopbackPorts: [5432] };
+		const result = await tool.execute({ command: "echo ok", sandbox_permissions: "require_escalated" }, {
+			...executionOptions(root), executionPolicy: base, sandboxOverrideApproved: true,
+			sandboxOverridePolicy: { ...base, ...override },
+		});
+		assert.equal(result.success, true);
+		const request = JSON.parse(manager.starts[0]!.args[1]!);
+		assert.equal(request.network, "disabled");
+		assert.equal(request.network_proxy_port, undefined);
+		assert.deepEqual(request.loopback_ports, [5432]);
+	}
+});
+
 test("Shell rejects unsupported proxy platforms and never creates a proxy when networking is disabled", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-shell-proxy-"));
 	t.after(() => import("node:fs/promises").then(({ rm }) => rm(root, { recursive: true, force: true })));

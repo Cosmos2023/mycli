@@ -6,6 +6,7 @@ const configProfile = flagValue(options.args, "--profile");
 const recovery = options.recoverInterruptedTurns?.[0];
 let input = "";
 let sequence = 0;
+let networkApprovalAvailable = workerData.networkApprovalAvailable;
 
 function send(message) {
 	parentPort.postMessage({
@@ -56,6 +57,10 @@ parentPort.on("message", (message) => {
 		parentPort.close();
 		return;
 	}
+	if (message.type === "network_approval_availability" && message.generation === generation) {
+		networkApprovalAvailable = message.available;
+		return;
+	}
 	if (message.type !== "input") return;
 	parentPort.postMessage({ type: "input_ack", generation, sequence: message.sequence });
 	input += message.chunk;
@@ -70,6 +75,10 @@ parentPort.on("message", (message) => {
 
 function handleLine(line) {
 	const request = JSON.parse(line);
+	if (request.method === "probe_network") {
+		send({ jsonrpc: "2.0", id: request.id, result: { networkApprovalAvailable } });
+		return;
+	}
 	if (request.method === "probe") {
 		send({ jsonrpc: "2.0", id: request.id, result: { generation } });
 		return;

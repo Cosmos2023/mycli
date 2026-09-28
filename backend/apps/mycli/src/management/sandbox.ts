@@ -1,7 +1,9 @@
+import type { SandboxCapabilities } from "@mycli/contracts";
 import {
 	inspectSandboxReadiness,
 	planSandboxRecovery,
 	runSandboxRecovery,
+	windowsSandboxCapabilities,
 	type SandboxReadiness,
 	type SandboxReadinessProbes,
 	type SandboxRecoveryCode,
@@ -19,6 +21,7 @@ export interface SandboxManagementResponse extends ManagementResponse {
 	readonly action: SandboxManagementCommand["action"];
 	readonly message: string;
 	readonly readiness: SandboxReadiness;
+	readonly capabilities?: SandboxCapabilities;
 	readonly preview?: SandboxRecoveryPreview;
 	readonly result?: Readonly<{
 		readonly status: SandboxRecoveryStatus;
@@ -79,11 +82,13 @@ export function sandboxStatusResponse(
 ): SandboxStatusManagementResponse {
 	const ok = readiness.state === "ready" || readiness.state === "not_required";
 	const remediation = sandboxReadinessRemediation(readiness);
+	const capabilities = windowsSandboxCapabilities(readiness);
 	return Object.freeze({
 		ok,
 		action: "status",
 		message: "mycli sandbox status",
 		readiness,
+		...(capabilities ? { capabilities } : {}),
 		...(remediation ? { remediation } : {}),
 		...(ok ? {} : { issues: Object.freeze([readiness.code]) }),
 		exitCode: ok ? 0 : 1,
@@ -95,11 +100,13 @@ export function sandboxOperationResponse(
 ): SandboxManagementResponse {
 	const ok = recovery.status === "completed" || recovery.status === "not_needed";
 	const remediation = sandboxRecoveryRemediation(recovery);
+	const capabilities = windowsSandboxCapabilities(recovery.after);
 	return Object.freeze({
 		ok,
 		action: recovery.preview.action,
 		message: `mycli sandbox ${recovery.preview.action}`,
 		readiness: recovery.after,
+		...(capabilities ? { capabilities } : {}),
 		preview: recovery.preview,
 		result: Object.freeze({ status: recovery.status, code: recovery.code }),
 		...(remediation ? { remediation } : {}),

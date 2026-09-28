@@ -1,4 +1,5 @@
 import { resolveDeniedReadRoots } from "../policy/denied-read-policy.ts";
+import { freezeLoopbackPorts, validateLoopbackPortPolicy } from "@mycli/core";
 import {
 	hasUnrestrictedNetwork,
 	type NetworkEgressRule,
@@ -21,6 +22,7 @@ export interface WindowsSandboxRequest {
 	readonly readable_roots?: readonly string[];
 	readonly readonly_roots?: readonly string[];
 	readonly allow_local_binding?: boolean;
+	readonly loopback_ports?: readonly number[];
 	readonly writable_tmp?: boolean;
 	readonly denied_read_roots: readonly string[];
 	readonly denied_read_globs: readonly string[];
@@ -53,6 +55,7 @@ export function windowsRestrictedTokenLaunch(
 	profile: SandboxProfile,
 	networkProxy?: ProcessNetworkProxy,
 ): SandboxedProcessLaunch {
+	validateLoopbackPortPolicy(profile);
 	const networkEgress = windowsSandboxEgress(profile, networkProxy);
 	const networkEnabled = networkProxy !== undefined
 		|| (profile.network === "enabled"
@@ -66,6 +69,7 @@ export function windowsRestrictedTokenLaunch(
 		...(profile.readableRoots === undefined ? {} : { readable_roots: [...profile.readableRoots] }),
 		...(profile.readOnlyRoots === undefined ? {} : { readonly_roots: [...profile.readOnlyRoots] }),
 		...(profile.allowLocalBinding === undefined ? {} : { allow_local_binding: profile.allowLocalBinding }),
+		...(profile.loopbackPorts === undefined ? {} : { loopback_ports: freezeLoopbackPorts(profile.loopbackPorts) }),
 		...(profile.writableTemp === undefined ? {} : { writable_tmp: profile.writableTemp }),
 		denied_read_roots: resolveDeniedReadRoots(profile.workspaceRoot, profile),
 		denied_read_globs: [],

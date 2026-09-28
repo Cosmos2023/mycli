@@ -8,6 +8,24 @@ import type { MycliShellPendingApproval } from "../../../src/model.ts";
 import { theme, type ThemeColorMode, type ThemeName } from "../../../src/theme/theme.ts";
 import { visibleWidth } from "../../../src/tui-core/utils.ts";
 import { HeadlessTerminal } from "../../support/headless-terminal.ts";
+import { pendingApprovalFromRecord } from "../../../src/state/transcript-decisions.ts";
+
+test("network approvals show bilingual destination and one-request scope with narrow keyboard navigation", async () => {
+	const selected: string[] = [];
+	const approval = pendingApprovalFromRecord({ decision_id: "network:one", preview: "api.example.com:443 (HTTPS)", tool_name: "Network",
+		reason: "This domain requires approval / 此域名需要逐次授权", network_request: { host: "api.example.com", port: 443, protocol: "https", method: "GET", reason: "approval_required" },
+		options: [{ choice: "approve_once", label: "Allow once / 仅允许本次" }, { choice: "reject", label: "Reject / 拒绝" }] })!;
+	const selector = new ApprovalSelectorComponent({ approval, maxHeight: () => 24, onSelect: (choice) => { selected.push(choice); }, onCancel: () => {} });
+	for (const width of [32, 60, 80]) {
+		const lines = selector.render(width).map(stripAnsi);
+		assert.ok(lines.every((line) => visibleWidth(line) <= width));
+		assert.match(lines.join("\n"), /api.example.com/u);
+		assert.match(lines.join("").replaceAll(/\s/gu, ""), /网络授权/u);
+		assert.match(lines.join("\n"), /仅此次请求/u);
+	}
+	selector.handleInput("\u001b"); await Promise.resolve();
+	assert.deepEqual(selected, ["reject"]);
+});
 
 function shellSelector(): ApprovalSelectorComponent {
 	return new ApprovalSelectorComponent({

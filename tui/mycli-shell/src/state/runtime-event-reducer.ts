@@ -1,5 +1,8 @@
 import {
 	TURN_INTERRUPTED_NOTICE,
+	networkAccessDetailsFromUnknown,
+	networkAccessReasonText,
+	networkAccessTargetText,
 	projectTerminalInteraction,
 	requestFailureNoticeId,
 	sanitizeRuntimeErrorDetail,
@@ -159,7 +162,7 @@ function reduceRuntimeEventUnchecked(
 	}
 	if (method === "turn.started") {
 		if (!eventBelongsToActiveSession(state, params)) return state;
-		const preserveApproval = pendingRequestBelongsToDifferentTurn(state.pendingApproval, params);
+		const preserveApproval = Boolean(state.pendingApproval?.network_request) || pendingRequestBelongsToDifferentTurn(state.pendingApproval, params);
 		const preserveClarification = pendingRequestBelongsToDifferentTurn(
 			state.pendingClarification,
 			params,
@@ -537,7 +540,7 @@ function reduceRuntimeEventUnchecked(
 				: turnState === "interrupted"
 					? finalizeInterruptedTools(appendInterruptedNotice(finalizedSearches, params))
 					: finalizedSearches;
-		const preserveApproval = pendingRequestBelongsToDifferentTurn(state.pendingApproval, params);
+		const preserveApproval = Boolean(state.pendingApproval?.network_request) || pendingRequestBelongsToDifferentTurn(state.pendingApproval, params);
 		const preserveClarification = pendingRequestBelongsToDifferentTurn(
 			state.pendingClarification,
 			params,
@@ -725,8 +728,15 @@ function reduceRuntimeEventUnchecked(
 			), params),
 		};
 	}
+	if (method === "network.blocked") {
+		const details = networkAccessDetailsFromUnknown(params.details);
+		if (!details) return state;
+		const text = ["Network blocked / 网络访问被阻止", networkAccessTargetText(details), networkAccessReasonText(details.reason),
+			params.child_session_id ? `Agent / 代理: ${String(params.child_session_id)}` : ""].filter(Boolean).join(" · ");
+		return { ...state, transcript: [...state.transcript, { id: nextId("network"), type: "warning", text, folded: false, metadata: { ...params } }] };
+	}
 	if (method === "approval.request" || method === "approval.pending") {
-		const childRequest = runtimeEventTargetsChild(event);
+		const childRequest = runtimeEventTargetsChild(event) || Boolean(params.network_request);
 		const transcript = childRequest
 			? state.transcript
 			: sealActiveAssistantStream(state.transcript, state.activeAssistantItemId);
@@ -761,7 +771,7 @@ function reduceRuntimeEventUnchecked(
 			"decisionId",
 		)) return state;
 		const pending = state.pendingApproval;
-		const childResponse = runtimeEventTargetsChild(event);
+		const childResponse = runtimeEventTargetsChild(event) || Boolean(pending?.network_request);
 		return {
 			...state,
 			pendingApproval: null,
@@ -884,7 +894,7 @@ function reduceRuntimeEventUnchecked(
 			"requestId",
 		);
 		if (!approvalCancelled && !clarificationCancelled) return state;
-		const childCancellation = runtimeEventTargetsChild(event);
+		const childCancellation = runtimeEventTargetsChild(event) || Boolean(state.pendingApproval?.network_request);
 		return {
 			...state,
 			pendingApproval: approvalCancelled ? null : state.pendingApproval,

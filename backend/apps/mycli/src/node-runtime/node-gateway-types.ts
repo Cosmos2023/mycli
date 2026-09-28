@@ -326,6 +326,7 @@ export interface CreateNodeGatewayOptions {
 	};
 	readonly agentInteractiveRequests?: AgentInteractiveRequestGateway;
 	readonly mcpElicitations?: McpElicitationBroker;
+	readonly networkApprovals?: NetworkApprovalBroker;
 	readonly integrations?: NodeGatewayIntegrations;
 	readonly close: () => void | Promise<void>;
 	readonly createTurnId?: () => string;
@@ -344,3 +345,4 @@ export interface NodeGateway {
 	diagnostic(): string;
 }
 import type { McpElicitationBroker } from "./mcp-elicitation-broker.ts";
+import type { NetworkApprovalBroker } from "./network-approval-broker.ts";

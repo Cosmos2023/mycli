@@ -1,5 +1,7 @@
+import { sandboxCapabilityLines } from "@mycli/contracts";
 import {
 	inspectSandboxReadiness,
+	windowsSandboxCapabilities,
 	type SandboxReadinessProbes,
 } from "@mycli/tools";
 import {
@@ -23,11 +25,13 @@ export async function collectProcessChecks(
 	const readiness = await inspectSandboxReadiness(options, signal);
 	const sandboxReady = readiness.state === "ready" || readiness.state === "not_required";
 	const remediation = sandboxReadinessRemediation(readiness);
+	const capabilities = windowsSandboxCapabilities(readiness);
 	const sandbox = check(
 		"process_sandbox",
 		sandboxReady ? "ok" : "failed",
 		sandboxReadinessMessage(readiness),
 		remediation,
+		capabilities ? sandboxCapabilityLines(capabilities) : undefined,
 	);
 	return Object.freeze([
 		check(
@@ -44,6 +48,7 @@ function check(
 	status: DoctorCheck["status"],
 	message: string,
 	detail?: string,
+	details?: readonly string[],
 ): DoctorCheck {
-	return Object.freeze({ name, status, message, ...(detail ? { detail } : {}) });
+	return Object.freeze({ name, status, message, ...(detail ? { detail } : {}), ...(details ? { details } : {}) });
 }

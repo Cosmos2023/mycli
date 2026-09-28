@@ -1,4 +1,5 @@
 import { boundedUiText } from "../safe-ui-text.ts";
+import { networkAccessDetailsFromUnknown } from "@mycli/contracts";
 import type {
 	MycliShellClarificationResponse,
 	MycliShellPendingApproval,
@@ -27,6 +28,7 @@ export function pendingApprovalFromRecord(value: Record<string, unknown> | null)
 	const options = approvalOptionsFromPayload(value.options);
 	return {
 		decisionId,
+		networkRequest: networkAccessDetailsFromUnknown(value.network_request),
 		sessionId: stringValue(value.session_id) ?? stringValue(value.sessionId) ?? undefined,
 		generation: numberValue(value.generation) ?? undefined,
 		preview: stringValue(value.preview) ?? stringValue(value.action) ?? stringValue(value.tool_name) ?? "Approval required",

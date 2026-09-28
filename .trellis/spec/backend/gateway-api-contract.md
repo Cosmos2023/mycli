@@ -92,6 +92,12 @@ or backend/TUI dependency direction must follow this contract.
   Accepted operations continue without replay, even with no remaining clients.
   Keep a detached controller reserved until its accepted mutations settle; release
   ownership only if its record is still current. The host closes the service.
+- Live network approvals are process requests, not durable command continuations. Only an attached
+  controller makes their responder available. Controller detach cancels them immediately, including
+  while accepted mutations drain; observers and the permanent upstream subscription do not count.
+  The host-only backend availability hook crosses the Worker boundary with a generation fence and
+  retains its value on restart. Reattachment cannot revive canceled request identities. Ordinary
+  approvals, clarifications and running commands retain their existing reconnect behavior.
 - An accepted controller shutdown immediately closes admission, enqueues its reply
   before cleanup, and remains effective after disconnect. Observer shutdown is
   denied. Global close drains bounded output, closes the backend once, and awaits
@@ -166,6 +172,7 @@ or backend/TUI dependency direction must follow this contract.
 | Another controller is attached / its mutations are draining | controller_attached / controller_draining |
 | Client capacity exhausted / service closing | client_limit_exceeded / service_closed |
 | Attachment EOF or transport failure | Detach only that client; accepted work is not canceled or replayed |
+| Controller detach with live network approvals | Cancel network decisions and reject new gated requests until a controller attaches |
 | Reconnect while a decision is pending | Bootstrap re-emits the current visible decision with its original identity |
 | Malformed notification or response at client | Reject pending work before consumption |
 | Client abort | Reject pending requests and event waiters; remove owned listeners |
@@ -209,6 +216,8 @@ or backend/TUI dependency direction must follow this contract.
 - Drive a real pending approval and running command across controller replacements;
   assert one provider continuation, one execution, and one persisted tool result.
   Cover accepted shutdown with immediate disconnect and exactly-once cleanup.
+- Cover network cancellation with observers still attached, immediate reattachment, stale decision
+  rejection, new request rejection while detached, and responder availability across Worker restart.
 - Assert live/mirrored/history tool records validate and produce equal TUI semantics;
   private metadata remains absent from records. Cover legacy Write/Skill/shell
   normalization, sparse completion, restored shell sequencing, and polling merges.

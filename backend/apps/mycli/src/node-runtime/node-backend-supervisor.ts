@@ -97,6 +97,7 @@ class WorkerNodeBackendSupervisor implements NodeBackend {
 	#activeTurn: ActiveTurnIdentity | undefined;
 	#diagnostic = "";
 	#startupProfile: StartupProfileSnapshot | undefined;
+	#networkApprovalAvailable = true;
 
 	constructor(options: SupervisedNodeBackendOptions) {
 		this.#limits = gatewayLimits(options.limits);
@@ -193,6 +194,12 @@ class WorkerNodeBackendSupervisor implements NodeBackend {
 
 	startupProfile(): StartupProfileSnapshot | undefined {
 		return this.#startupProfile;
+	}
+
+	setNetworkApprovalAvailability(available: boolean): void {
+		if (this.#closed || this.#networkApprovalAvailable === available) return;
+		this.#networkApprovalAvailable = available;
+		this.#worker?.postMessage({ type: "network_approval_availability", generation: this.#generation, available });
 	}
 
 	#handleClientLine(line: string, bytes: number): void {
@@ -331,7 +338,7 @@ class WorkerNodeBackendSupervisor implements NodeBackend {
 		this.#publishedInterrupts = new Set<string>();
 		this.#startupProfile = undefined;
 		const worker = new Worker(this.#workerUrl, {
-			workerData: { generation, options, limits: this.#limits },
+			workerData: { generation, options, limits: this.#limits, networkApprovalAvailable: this.#networkApprovalAvailable },
 		});
 		this.#worker = worker;
 		let recoveryTimer: NodeJS.Timeout | undefined;

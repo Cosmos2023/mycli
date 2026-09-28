@@ -12,6 +12,8 @@ import type { ReasoningEffort } from "@mycli/core";
 import type { ExecutionPolicySnapshot } from "@mycli/runtime";
 import {
 	sandboxNotRequired,
+	requiresProcessSandbox,
+	windowsSandboxCapabilities,
 	type PermissionProfile,
 	type SandboxReadiness,
 } from "@mycli/tools";
@@ -641,9 +643,10 @@ function permissionPayload(
 ): JsonObject {
 	const profile = snapshot?.profile ?? nominalExecutionPolicy(active);
 	const resolution = snapshot?.resolution;
-	const sandboxReadiness = processSandboxRequired(profile)
+	const sandboxReadiness = requiresProcessSandbox(profile)
 		? readiness
 		: sandboxNotRequired(readiness?.platform);
+	const capabilities = sandboxReadiness ? windowsSandboxCapabilities(sandboxReadiness) : undefined;
 	return {
 		active,
 		command_allowance_count: commandAllowanceCount,
@@ -662,7 +665,18 @@ function permissionPayload(
 			network_domains: profile.networkDomains?.length ?? 0,
 			session_grant: resolution?.sessionGrant !== undefined,
 			turn_grant: resolution?.turnGrant !== undefined,
+			bounds: {
+				read_scope: profile.readableRoots === undefined ? "platform_default" : "allowlist",
+				network_scope: profile.network === "disabled" ? "disabled"
+					: profile.networkEgress !== undefined ? "structured_egress"
+						: profile.networkDomains !== undefined ? "domain_allowlist" : "unrestricted",
+				readonly_roots: profile.readOnlyRoots?.length ?? 0,
+				denied_read_rules: (profile.deniedReadRoots?.length ?? 0) + (profile.deniedReadGlobs?.length ?? 0),
+				allow_local_binding: profile.allowLocalBinding === true,
+				...(profile.loopbackPorts === undefined ? {} : { loopback_ports: [...profile.loopbackPorts] }),
+			},
 		},
+		...(capabilities ? { sandbox_capabilities: capabilities } : {}),
 		...(sandboxReadiness ? {
 			sandbox_readiness: {
 				state: sandboxReadiness.state,
@@ -731,12 +745,6 @@ function nominalExecutionPolicy(active: PermissionProfile): ExecutionPolicySnaps
 		network: "enabled",
 		writableRoots: [],
 	};
-}
-
-function processSandboxRequired(profile: ExecutionPolicySnapshot["profile"]): boolean {
-	return profile.mode !== "danger-full-access"
-		|| profile.network !== "enabled"
-		|| profile.networkDomains !== undefined;
 }
 
 function settingsSnapshot(value: JsonObject | undefined): SettingsSnapshot {

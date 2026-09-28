@@ -62,6 +62,7 @@ export {
 	freezeNetworkEgress,
 	hasUnrestrictedFilesystem,
 	hasUnrestrictedNetwork,
+	requiresProcessSandbox,
 	networkDomainAllowed,
 	normalizeNetworkDomains,
 } from "./policy/execution-policy.ts";
@@ -132,6 +133,7 @@ export {
 	sandboxExecutableExists,
 	sandboxNotRequired,
 } from "./sandbox/sandbox-readiness.ts";
+export { windowsSandboxCapabilities } from "./sandbox/sandbox-capabilities.ts";
 export type {
 	SandboxReadiness,
 	SandboxReadinessCode,
@@ -399,7 +401,7 @@ export {
 	LIST_MCP_RESOURCE_TEMPLATES_TOOL_DEFINITION,
 	READ_MCP_RESOURCE_TOOL_DEFINITION,
 } from "./registry/context-manifest.ts";
-export { startNetworkProxy, type NetworkProxyLease } from "./network/network-proxy.ts";
+export { startNetworkProxy, type NetworkProxyLease, type NetworkProxyInteraction, type NetworkProxyOwner } from "./network/network-proxy.ts";
 
 export { GoalTool, type GoalToolService } from "./interaction/goal-tool.ts";
 export { CREATE_GOAL_TOOL_DEFINITION, GET_GOAL_TOOL_DEFINITION, UPDATE_GOAL_TOOL_DEFINITION } from "./registry/goal-manifest.ts";

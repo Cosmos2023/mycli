@@ -69,6 +69,24 @@ test("run execution snapshots own deeply frozen policy and catalog values", () =
 	);
 });
 
+test("run snapshots retain limited network mode and reject contradictory restored policies", () => {
+	const networkProxy = { mode: "limited" as const, enableSocks5: true, allowUpstreamProxy: false, approvalDomains: ["api.example.com"] };
+	const input = { turnId: "proxy", collaborationMode: "default", toolCatalog: { catalogVersion: 0, directTools: [] },
+		policy: { toolsEnabled: true, profile: { mode: "workspace-write" as const, filesystem: "workspace_write" as const,
+			network: "enabled" as const, writableRoots: [resolve("/workspace")], networkDomains: ["api.example.com"], networkProxy } } };
+	const snapshot = createRunExecutionSnapshot(input);
+	networkProxy.enableSocks5 = false;
+	const restored = parseRunExecutionSnapshot(JSON.parse(JSON.stringify(snapshot)));
+	assert.equal(restored.policy?.profile.networkProxy?.enableSocks5, true);
+	assert.deepEqual(restored.policy?.profile.networkProxy?.approvalDomains, ["api.example.com"]);
+	assert.ok(Object.isFrozen(restored.policy?.profile.networkProxy?.approvalDomains));
+	assert.equal(restored.policy?.profile.networkProxy?.mode, "limited");
+	assert.ok(Object.isFrozen(restored.policy?.profile.networkProxy));
+	for (const fields of [{ allowLocalBinding: true }, { loopbackPorts: [8080] }, { networkDomains: undefined }, { networkProxy: { mode: "unknown" } }]) {
+		assert.throws(() => parseRunExecutionSnapshot({ ...snapshot, policy: { ...snapshot.policy, profile: { ...snapshot.policy!.profile, ...fields } } }));
+	}
+});
+
 test("run snapshots retain structured egress rules and reject malformed ones", () => {
 	const networkEgress = {
 		default: "deny" as const,
@@ -337,4 +355,25 @@ test("run snapshots preserve denied-read boundaries across durable serialization
 	assert.deepEqual(restored.policy?.profile.deniedReadRoots, [secret]);
 	assert.deepEqual(restored.policy?.profile.deniedReadGlobs, ["**/.env"]);
 	assert.equal(Object.isFrozen(restored.policy?.profile.deniedReadGlobs), true);
+});
+
+test("run snapshots retain explicit port ceilings and reject malformed durable values", () => {
+	for (const loopbackPorts of [[], [5432]]) {
+		const snapshot = createRunExecutionSnapshot({ turnId: "ports", collaborationMode: "default",
+			policy: { toolsEnabled: true, profile: { mode: "read-only", filesystem: "read_only", network: "disabled",
+				writableRoots: [], networkDomains: ["example.com"], allowLocalBinding: true, loopbackPorts } },
+			toolCatalog: { catalogVersion: 1, directTools: [] } });
+		loopbackPorts.push(8080);
+		const raw = JSON.parse(JSON.stringify(snapshot));
+		const restored = parseRunExecutionSnapshot(raw);
+		assert.deepEqual(restored.policy?.profile.loopbackPorts, snapshot.policy?.profile.loopbackPorts);
+		assert.ok(Object.isFrozen(restored.policy?.profile.loopbackPorts));
+		for (const invalid of [null, [0], ["5432"], Array(65).fill(443)]) {
+			raw.policy.profile.loopbackPorts = invalid;
+			assert.throws(() => parseRunExecutionSnapshot(raw), /loopback_ports/u);
+		}
+		raw.policy.profile.loopbackPorts = [];
+		delete raw.policy.profile.networkDomains;
+		assert.throws(() => parseRunExecutionSnapshot(raw), /allowed_network_domains/u);
+	}
 });

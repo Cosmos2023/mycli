@@ -2,6 +2,11 @@ import { readFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import {
 	freezeNetworkEgress,
+	freezeNetworkProxyPolicy,
+	validateNetworkProxyPolicy,
+	type NetworkProxyPolicy,
+	freezeLoopbackPorts,
+	validateLoopbackPortPolicy,
 	normalizeNetworkDomains,
 	type NetworkEgressPolicy,
 } from "@mycli/core";
@@ -12,22 +17,26 @@ const EXECUTION_POLICY_FIELDS = new Set([
 	"readable_roots",
 	"readonly_roots",
 	"allow_local_binding",
+	"loopback_ports",
 	"writable_tmp",
 	"denied_read_roots",
 	"denied_read_globs",
 	"writable_roots",
 	"allowed_network_domains",
 	"network_egress",
+	"network_proxy",
 ]);
 
 export interface ManagedExecutionPolicyConstraints {
 	readonly source: "managed";
 	readonly network?: "enabled" | "disabled";
 	readonly networkDomains?: readonly string[];
+	readonly networkProxy?: NetworkProxyPolicy;
 	readonly networkEgress?: NetworkEgressPolicy;
 	readonly readableRoots?: readonly string[];
 	readonly readOnlyRoots?: readonly string[];
 	readonly allowLocalBinding?: boolean;
+	readonly loopbackPorts?: readonly number[];
 	readonly writableTemp?: boolean;
 	readonly deniedReadRoots?: readonly string[];
 	readonly deniedReadGlobs?: readonly string[];
@@ -91,9 +100,19 @@ export async function loadManagedExecutionPolicy(
 		throw invalidManagedPolicy("allowed_network_domains");
 	}
 	const networkEgress = managedNetworkEgress(policy.network_egress);
+	const networkProxy = managedNetworkProxy(policy.network_proxy);
+	let loopbackPorts: readonly number[] | undefined;
+	try {
+		loopbackPorts = policy.loopback_ports === undefined ? undefined : freezeLoopbackPorts(policy.loopback_ports);
+		validateLoopbackPortPolicy({ loopbackPorts, networkDomains, networkEgress });
+	} catch {
+		throw invalidManagedPolicy("loopback_ports");
+	}
 	if (networkEgress !== undefined && (networkDomains !== undefined || network === "disabled")) {
 		throw invalidManagedPolicy("network_egress");
 	}
+	try { validateNetworkProxyPolicy({ networkProxy, networkDomains, networkEgress, allowLocalBinding, loopbackPorts }); }
+	catch { throw invalidManagedPolicy("network_proxy"); }
 	if (network === undefined
 		&& deniedReadRoots === undefined
 		&& deniedReadGlobs === undefined
@@ -101,6 +120,8 @@ export async function loadManagedExecutionPolicy(
 		&& readOnlyRoots === undefined && allowLocalBinding === undefined && writableTemp === undefined
 		&& writableRoots === undefined
 		&& networkDomains === undefined
+		&& networkProxy === undefined
+		&& loopbackPorts === undefined
 		&& networkEgress === undefined) {
 		return undefined;
 	}
@@ -112,11 +133,24 @@ export async function loadManagedExecutionPolicy(
 		...(readableRoots === undefined ? {} : { readableRoots }),
 		...(readOnlyRoots === undefined ? {} : { readOnlyRoots }),
 		...(allowLocalBinding === undefined ? {} : { allowLocalBinding }),
+		...(loopbackPorts === undefined ? {} : { loopbackPorts }),
 		...(writableTemp === undefined ? {} : { writableTemp }),
 		...(writableRoots === undefined ? {} : { writableRoots }),
 		...(networkDomains === undefined ? {} : { networkDomains }),
+		...(networkProxy === undefined ? {} : { networkProxy }),
 		...(networkEgress === undefined ? {} : { networkEgress }),
 	});
+}
+
+function managedNetworkProxy(value: unknown): NetworkProxyPolicy | undefined {
+	if (value === undefined) return undefined;
+	if (!isRecord(value) || Object.keys(value).some((key) => !["mode", "enable_socks5", "allow_upstream_proxy", "approval_domains"].includes(key))) {
+		throw invalidManagedPolicy("network_proxy");
+	}
+	try {
+		return freezeNetworkProxyPolicy({ mode: value.mode, enableSocks5: value.enable_socks5, allowUpstreamProxy: value.allow_upstream_proxy,
+			approvalDomains: value.approval_domains });
+	} catch { throw invalidManagedPolicy("network_proxy"); }
 }
 
 function managedNetworkEgress(value: unknown): NetworkEgressPolicy | undefined {
