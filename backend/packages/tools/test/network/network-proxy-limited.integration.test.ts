@@ -134,6 +134,16 @@ test("each limited lease owns a public-only trust bundle removed on close", asyn
 	await assert.rejects(stat(path), { code: "ENOENT" });
 	await stat(second.env.NODE_EXTRA_CA_CERTS!);
 	const socket = await secureClient(t, second);
-	const closed = once(socket, "close"); socket.resume();
+	// A lease closed while its tunnel is live sends a FIN on POSIX and resets a
+	// connection that still has unread bytes on Windows, so only a reset is an
+	// acceptable ending. The socket still has to close either way.
+	const closed = new Promise<void>((resolve, reject) => {
+		socket.once("error", (error: NodeJS.ErrnoException) => {
+			if (error.code !== "ECONNRESET") reject(error);
+		});
+		socket.once("close", () => resolve());
+		socket.resume();
+	});
 	await second.close(); await closed;
+	assert.equal(socket.destroyed, true);
 });
