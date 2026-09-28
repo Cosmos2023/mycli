@@ -65,7 +65,12 @@ async function fixture(t, mode = "success") {
 	t.after(() => rm(root, { recursive: true, force: true }));
 	const npmCli = path.join(root, "npm-cli.js");
 	await writeFile(npmCli, NPM_FIXTURE);
-	const prefix = path.join(root, "prefix with spaces & $literal; 'quote'");
+	// A semicolon is an ordinary character on POSIX but the PATH separator on
+	// Windows, where no single PATH entry can contain one. Keep the rest of the
+	// hostile characters on both hosts.
+	const prefix = path.join(root, process.platform === "win32"
+		? "prefix with spaces & $literal 'quote' (draft)"
+		: "prefix with spaces & $literal; 'quote'");
 	const cache = path.join(root, "cache");
 	const plan = createInstallPlan(parseOptions(["--prefix", prefix, "--cache", cache]));
 	const env = { ...process.env, npm_execpath: npmCli, NO_COLOR: "1",
