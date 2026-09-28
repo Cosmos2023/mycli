@@ -30,8 +30,10 @@ jobs:
       - name: Measure Agent Worker memory scenarios
         run: npm run benchmark:agent-workers -- --output agent-worker-memory.jsonl
       - name: Measure 500-compaction resume and transcript paging
+        if: '!cancelled()'
         run: npm run --silent benchmark:long-history -- --profile compact_stress --storage-schema v15 > compact-stress-resume.json
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: agent-worker-memory-${{ runner.os }}
           path: |
@@ -81,14 +83,25 @@ jobs:
           & backend/packages/tools/native/windows/mycli-windows-sandbox.exe --ensure-setup
           if ($LASTEXITCODE -ne 0) { throw "Windows sandbox setup failed" }
       - run: npm ci
-      - run: npm run contracts:check
-      - run: npm run lint
+      # Each gate runs even when an earlier one failed, so one run reports every
+      # failure instead of only the first.
+      - name: Verify generated contracts
+        if: '!cancelled()'
+        run: npm run contracts:check
+      - name: Lint
+        if: '!cancelled()'
+        run: npm run lint
       - name: Run deterministic test suites
+        if: '!cancelled()'
         run: npm run test:ci
-      - run: npm run typecheck
+      - name: Typecheck
+        if: '!cancelled()'
+        run: npm run typecheck
       - name: Provider-free M8 smoke
+        if: '!cancelled()'
         run: npm run smoke:m8
       - name: Packed npm CLI smoke
+        if: '!cancelled()'
         run: npm run smoke:package
 
   node-m8-live-smoke:
