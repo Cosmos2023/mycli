@@ -328,7 +328,10 @@ function isWithin(path: string, parent: string): boolean {
 
 function canonicalPath(path: string): string {
 	try {
-		return realpathSync(resolve(path));
+		// The native call expands Windows 8.3 names, which `fs.promises.realpath`
+		// and the sandbox profiles also return; the JS fallback would keep the
+		// short form and make diagnostics disagree with every other path.
+		return realpathSync.native(resolve(path));
 	} catch {
 		return resolve(path);
 	}
