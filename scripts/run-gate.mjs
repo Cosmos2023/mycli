@@ -32,7 +32,9 @@ if (!label || !command) {
 function reportFailure(label, output) {
 	const lines = output.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
 	const diagnostics = lines.filter((line) => /error TS\d+|✖ |error:|Error:|ERR_|not ok|Cannot find/i.test(line));
-	const selected = (diagnostics.length > 0 ? diagnostics : lines).slice(-6);
+	// The tail names the failing workspace or package; the diagnostics carry the
+	// cause. Keep both, bounded, because annotations are capped per step.
+	const selected = [...new Set([...diagnostics.slice(-6), ...lines.slice(-8)])].slice(-14);
 	process.stdout.write(`::error title=${label}::gate failed\n`);
 	for (const line of selected) {
 		process.stdout.write(`::error::${line.replaceAll("%", "%25")}\n`);

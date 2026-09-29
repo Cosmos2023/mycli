@@ -786,7 +786,9 @@ function extensionDiagnostics(
 	};
 }
 
-async function eventually(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {
+// Shared runners reap the extension processes slowly, so this only bounds how
+// long a leak may go unnoticed rather than how fast a clean exit must be.
+async function eventually(predicate: () => boolean, timeoutMs = 15_000): Promise<void> {
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
 		if (predicate()) return;
