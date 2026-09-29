@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -212,6 +212,12 @@ async function runSmoke(sourceConfig, protocol) {
 			// Shared runners reap sandboxed extension processes slowly; the bound is
 			// only there so a genuine leak still fails the smoke.
 			&& await eventually(() => !existsSync(mcpPidFile) && !existsSync(pluginPidFile), 30_000);
+		const cleanupDetail = cleanupCompleted ? undefined : {
+			exit_code: exitCode,
+			processes_started: extensionProcessesStarted,
+			mcp: processMarkerState(mcpPidFile),
+			plugin: processMarkerState(pluginPidFile),
+		};
 		const hookCompleted = existsSync(hookMarker);
 		const pythonStarted = existsSync(pythonMarker);
 		const persisted = persistedState(homeDir, sessionId, counts);
@@ -232,6 +238,7 @@ async function runSmoke(sourceConfig, protocol) {
 				approval_count: approvalCount,
 				persisted,
 				cleanup_completed: cleanupCompleted,
+				...(cleanupDetail ? { cleanup_detail: cleanupDetail } : {}),
 				python_started: pythonStarted,
 			},
 			exitCode: completed ? 0 : 1,
@@ -422,6 +429,24 @@ async function eventually(predicate, timeoutMs = 5_000) {
 		await new Promise((resolve) => setTimeout(resolve, 20));
 	}
 	return predicate();
+}
+
+function processMarkerState(path) {
+	if (!existsSync(path)) return { present: false };
+	let pid;
+	try {
+		const value = Number.parseInt(readFileSync(path, "utf8").trim(), 10);
+		if (Number.isSafeInteger(value) && value > 0) pid = value;
+	} catch {
+		// A marker we cannot read is still a marker that outlived its process.
+	}
+	if (pid === undefined) return { present: true };
+	try {
+		process.kill(pid, 0);
+		return { present: true, pid, alive: true };
+	} catch (error) {
+		return { present: true, pid, alive: false, code: error?.code };
+	}
 }
 
 async function waitFor(read, deadlineAt) {

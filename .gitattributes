@@ -5,5 +5,9 @@ backend/packages/contracts/src/generated/**/*.ts text eol=lf
 # this report, so none of them may be rewritten to CRLF on a checkout with
 # core.autocrlf enabled.
 docs/provider-catalog-evidence.md text eol=lf
+# The configuration reference is generated with LF and compared byte for byte.
+docs/reference/configuration.md text eol=lf
+docs/reference/configuration-reference.json text eol=lf
+docs/reference/config.example.toml text eol=lf
 tests/fixtures/error-system/emitters.json text eol=lf
 tests/fixtures/error-system/failures.json text eol=lf
