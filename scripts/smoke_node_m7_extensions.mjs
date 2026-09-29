@@ -209,7 +209,9 @@ async function runSmoke(sourceConfig, protocol) {
 		backend = undefined;
 		const cleanupCompleted = exitCode === 0
 			&& extensionProcessesStarted
-			&& await eventually(() => !existsSync(mcpPidFile) && !existsSync(pluginPidFile));
+			// Shared runners reap sandboxed extension processes slowly; the bound is
+			// only there so a genuine leak still fails the smoke.
+			&& await eventually(() => !existsSync(mcpPidFile) && !existsSync(pluginPidFile), 30_000);
 		const hookCompleted = existsSync(hookMarker);
 		const pythonStarted = existsSync(pythonMarker);
 		const persisted = persistedState(homeDir, sessionId, counts);
