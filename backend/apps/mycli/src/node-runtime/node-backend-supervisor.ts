@@ -6,6 +6,7 @@ import {
 	GatewayFrameDecoder, GatewayFrameReader, GatewayRequestBudget, GatewayWriteQueue,
 	GatewayFlowControlError, gatewayLimits, type GatewayFlowControlLimits,
 } from "@mycli/gateway/flow-control";
+import { sourceWorkerNodeOptions } from "@mycli/runtime";
 import type { NodeBackend, StartNodeBackendOptions } from "./node-backend.ts";
 import type {
 	StartupProfileSnapshot,
@@ -337,8 +338,10 @@ class WorkerNodeBackendSupervisor implements NodeBackend {
 		this.#nextInputSequence = 1;
 		this.#publishedInterrupts = new Set<string>();
 		this.#startupProfile = undefined;
+		const nodeOptions = sourceWorkerNodeOptions(this.#workerUrl);
 		const worker = new Worker(this.#workerUrl, {
 			workerData: { generation, options, limits: this.#limits, networkApprovalAvailable: this.#networkApprovalAvailable },
+			...(nodeOptions ? { env: { ...process.env, NODE_OPTIONS: nodeOptions } } : {}),
 		});
 		this.#worker = worker;
 		let recoveryTimer: NodeJS.Timeout | undefined;

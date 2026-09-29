@@ -4,6 +4,7 @@ import { Worker } from "node:worker_threads";
 import type { ResourceLimits, TransferListItem } from "node:worker_threads";
 import type { AgentLoopPriority } from "../agents/agent-loop-contracts.ts";
 import { AGENT_WORKER_PROVIDER_RPC_MAX_BYTES } from "./agent-worker-provider-rpc.ts";
+import { sourceWorkerNodeOptions } from "./source-worker-node-options.ts";
 
 export interface AgentWorkerPoolOptions {
 	readonly maxWorkers?: number;
@@ -627,9 +628,11 @@ export class AgentWorkerPool {
 		const workerGeneration = (this.#generations.get(workerId) ?? 0) + 1;
 		this.#generations.set(workerId, workerGeneration);
 		const ready = deferred<void>();
+		const nodeOptions = sourceWorkerNodeOptions(this.#workerUrl);
 		const worker = new Worker(this.#workerUrl, {
 			workerData: { workerId, workerGeneration },
 			resourceLimits: this.#resourceLimits,
+			...(nodeOptions ? { env: { ...process.env, NODE_OPTIONS: nodeOptions } } : {}),
 		});
 		const record: WorkerRecord = {
 			workerId,

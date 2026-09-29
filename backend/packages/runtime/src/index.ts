@@ -157,6 +157,7 @@ export {
 	AgentWorkerContextState,
 	ImmutableAgentSnapshotCache,
 } from "./workers/agent-worker-context.ts";
+export { sourceWorkerNodeOptions } from "./workers/source-worker-node-options.ts";
 export type {
 	AgentWorkerContextSnapshot,
 	AgentWorkerJobSecrets,

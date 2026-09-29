@@ -9,7 +9,32 @@ import {
 	AgentWorkerPoolClosedError,
 	AgentWorkerPoolMemoryPressureError,
 	AgentWorkerStartupError,
+	sourceWorkerNodeOptions,
 } from "../../src/index.ts";
+
+test("asks for Node's transform pipeline when a worker entry is TypeScript", (t) => {
+	const sourceEntry = new URL("./agent-worker-entrypoint.ts", import.meta.url);
+
+	assert.equal(
+		sourceWorkerNodeOptions(new URL("../fixtures/agent-worker-late-message.mjs", import.meta.url)),
+		undefined,
+	);
+	assert.equal(sourceWorkerNodeOptions(new URL("file:///agent-worker-entrypoint.js")), undefined);
+	if (!process.allowedNodeEnvironmentFlags.has("--experimental-transform-types")) {
+		t.skip("transform mode is unavailable");
+		return;
+	}
+
+	assert.match(sourceWorkerNodeOptions(sourceEntry) ?? "", /--experimental-transform-types/u);
+	assert.match(
+		sourceWorkerNodeOptions(sourceEntry, { NODE_OPTIONS: "--max-old-space-size=512" }) ?? "",
+		/^--max-old-space-size=512 --experimental-transform-types/u,
+	);
+	assert.equal(
+		sourceWorkerNodeOptions(sourceEntry, { NODE_OPTIONS: "--experimental-transform-types" }),
+		undefined,
+	);
+});
 
 test("applies measured V8 limits and exposes redacted Worker resource metrics", async (t) => {
 	const pool = new AgentWorkerPool({
