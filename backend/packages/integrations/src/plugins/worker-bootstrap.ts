@@ -39,6 +39,10 @@ const input = createInterface({ input: process.stdin, crlfDelay: Infinity });
 input.on("line", (line) => { void acceptLine(line); });
 input.once("close", () => {
 	for (const controller of active) controller.abort();
+	// The host owns this process. When its stdin pipe closes the plugin must not
+	// outlive it: a sandbox that kills the wrapper around this worker would
+	// otherwise leak the plugin process and the markers it still has to remove.
+	setImmediate(() => process.exit(0));
 });
 
 async function acceptLine(line: string): Promise<void> {
