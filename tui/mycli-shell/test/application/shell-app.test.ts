@@ -7981,10 +7981,14 @@ test("mycli shell holds mutable tables until source-backed native scrollback com
 	terminal.resize(64, 18);
 	await setTimeout(100);
 	await terminal.flush();
-	assert.equal(
-		terminal.historyLines().filter((line) => line.includes("table-history-")).length,
-		0,
-	);
+	// Keep the leaked rows in the failure message: this only reproduces on
+	// shared Windows runners, where the runner log is the only evidence.
+	const leakedTableHistory = terminal.historyLines().filter((line) => line.includes("table-history-"));
+	assert.deepEqual(leakedTableHistory, [], JSON.stringify({
+		history_length: terminal.historyLines().length,
+		rendered_rows: (state.messages[0]?.text ?? "").split("\n").length,
+		leaked: leakedTableHistory,
+	}));
 
 	const completedAssistant = {
 		...state.messages[0]!,
