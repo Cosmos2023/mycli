@@ -146,8 +146,9 @@ export class AgentWorkerPoolClosedError extends Error {
 export class AgentWorkerStartupError extends Error {
 	readonly code = "agent_worker_startup_failed" as const;
 
-	constructor() {
-		super("agent_worker_startup_failed: Worker did not become ready");
+	constructor(detail?: string) {
+		const reason = detail === undefined ? "" : boundedFailureDetail(detail);
+		super(`agent_worker_startup_failed: Worker did not become ready${reason ? `: ${reason}` : ""}`);
 		this.name = "AgentWorkerStartupError";
 	}
 }
@@ -647,7 +648,11 @@ export class AgentWorkerPool {
 		};
 		this.#workers.set(workerId, record);
 		worker.on("message", (message: unknown) => this.#handleMessage(record, message));
-		worker.once("error", () => this.#handleExit(record, "worker failed"));
+		worker.once("error", (error: unknown) => this.#handleExit(
+			record,
+			"worker failed",
+			`worker failed: ${failureDetail(error)}`,
+		));
 		worker.once("exit", (code) => this.#handleExit(record, `worker exited with code ${code}`));
 		try {
 			await withTimeout(ready.promise, this.#startupTimeoutMs, new AgentWorkerStartupError());
@@ -854,11 +859,11 @@ export class AgentWorkerPool {
 		this.#failWorker(record, "worker protocol failure");
 	}
 
-	#handleExit(record: WorkerRecord, reason: string): void {
+	#handleExit(record: WorkerRecord, reason: string, detail: string = reason): void {
 		if (this.#workers.get(record.workerId) !== record) return;
 		this.#workers.delete(record.workerId);
 		this.#clearIdleTimer(record);
-		record.ready.reject(new AgentWorkerStartupError());
+		record.ready.reject(new AgentWorkerStartupError(detail));
 		record.control?.reject(new AgentWorkerPoolClosedError());
 		const failedLease = record.lease;
 		failedLease?.messageListeners.clear();
@@ -1195,6 +1200,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function boundedReason(value: string): string {
 	return value.trim().slice(0, 256) || "agent Worker stopped";
+}
+
+function failureDetail(error: unknown): string {
+	if (error instanceof Error) return error.message;
+	return typeof error === "string" ? error : "unknown Worker failure";
+}
+
+function boundedFailureDetail(value: string): string {
+	return value.replaceAll(/\s+/gu, " ").trim().slice(0, 256);
 }
 
 function assertMessageSize(value: unknown, maximum: number): number {

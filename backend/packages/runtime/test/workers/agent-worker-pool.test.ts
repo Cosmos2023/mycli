@@ -565,6 +565,28 @@ test("bounds Worker startup and removes an unready instance", async (t) => {
 	assert.equal(pool.snapshot().workerCount, 0);
 });
 
+test("surfaces the Worker failure reason when a source Worker never becomes ready", async (t) => {
+	const pool = new AgentWorkerPool({
+		maxWorkers: 1,
+		maxQueue: 0,
+		startupTimeoutMs: 5_000,
+		shutdownTimeoutMs: 20,
+		idleTimeoutMs: 5_000,
+		workerUrl: new URL("../fixtures/agent-worker-import-failure.mjs", import.meta.url),
+	});
+	t.after(async () => pool.close());
+
+	await assert.rejects(
+		pool.acquire(leaseInput("import-failure", "interactive", "root")),
+		(error: unknown) => {
+			assert.ok(error instanceof AgentWorkerStartupError);
+			assert.match(error.message, /injected Worker import failure/u);
+			return true;
+		},
+	);
+	await waitFor(() => pool.snapshot().workerCount === 0, 5_000);
+});
+
 test("bounds release cleanup and replaces an unresponsive Worker", async (t) => {
 	const pool = new AgentWorkerPool({
 		maxWorkers: 1,
