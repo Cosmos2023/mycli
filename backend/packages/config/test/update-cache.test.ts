@@ -299,7 +299,10 @@ test("timed out and unwritable refreshes remain non-fatal", async (t) => {
 		currentVersion: CURRENT_VERSION,
 		requestTimeoutMs: 5,
 		fetch: (async (_input, init) => await new Promise<Response>((_resolve, reject) => {
-			const abort = (): void => reject(new DOMException("aborted", "AbortError"));
+			// AbortSignal.timeout() is unref'd, so a fetch that only waits for it can
+			// let the event loop drain first and then be reported as unresolved.
+			const hold = setTimeout(() => undefined, 1_000);
+			const abort = (): void => { clearTimeout(hold); reject(new DOMException("aborted", "AbortError")); };
 			if (init?.signal?.aborted) abort();
 			else init?.signal?.addEventListener("abort", abort, { once: true });
 		})) as typeof fetch,

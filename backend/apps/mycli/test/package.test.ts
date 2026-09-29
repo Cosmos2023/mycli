@@ -50,7 +50,9 @@ const packages = [
 	{
 		name: "contracts",
 		root: new URL("../../../packages/contracts/", import.meta.url),
-		build: "tsc -p tsconfig.build.json",
+		// Runs tsc in a child with an explicit stack budget; the generated
+		// validators otherwise sit at the compiler's default limit.
+		build: "node scripts/tsc.mjs -p tsconfig.build.json",
 	},
 	{
 		name: "TUI",
