@@ -391,6 +391,7 @@ function gatewayHarness(options: {
 	sessionService?: {
 		readonly list?: (query: SessionQuery) => readonly SessionSummary[];
 		readonly inspect?: (sessionId: string) => SessionSummary | undefined;
+		readonly rename?: (sessionId: string, title: string) => SessionSummary;
 		readonly previewResume?: (sessionId: string) => Promise<ResumeRepairPreview>;
 		readonly applyResumeRepair?: (
 			input: ApplyResumeRepairInput,
@@ -756,6 +757,12 @@ function gatewayHarness(options: {
 			} : {}),
 			...(options.sessionService?.inspect ? {
 				inspect: (sessionId: string) => options.sessionService!.inspect!(sessionId),
+			} : {}),
+			...(options.sessionService?.rename ? {
+				rename: (sessionId: string, title: string) => {
+					sessionCommandCalls.push({ kind: "rename", sessionId, title });
+					return options.sessionService!.rename!(sessionId, title);
+				},
 			} : {}),
 			...(options.sessionService?.previewResume ? {
 				previewResume: async (sessionId: string) => {
@@ -3725,6 +3732,51 @@ test("session list uses the shared service filters and projects enriched summari
 		current: false,
 	}]);
 	await harness.gateway.close();
+});
+
+test("names an untitled session from its first prompt", async (t) => {
+	const renamed: Array<{ sessionId: string; title: string }> = [];
+	let title: string | undefined;
+	const harness = gatewayHarness({
+		sessions: {},
+		sessionService: {
+			inspect: () => testSessionSummary("session-node", { title }),
+			rename: (sessionId, nextTitle) => {
+				renamed.push({ sessionId, title: nextTitle });
+				title = nextTitle;
+				return testSessionSummary(sessionId, { title: nextTitle });
+			},
+		},
+	});
+	t.after(async () => { harness.releaseTurn(); await harness.gateway.close(); });
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	await harness.send("turn.submit", {
+		message: "  重构   支付 模块  ",
+		client_turn_id: "turn-name-1",
+		client_user_message_id: "user-name-1",
+	});
+	assert.deepEqual(renamed, [{ sessionId: "session-node", title: "重构 支付 模块" }]);
+
+	const kept: string[] = [];
+	const titledHarness = gatewayHarness({
+		sessions: {},
+		sessionService: {
+			inspect: () => testSessionSummary("session-node", { title: "existing title" }),
+			rename: (sessionId, nextTitle) => {
+				kept.push(nextTitle);
+				return testSessionSummary(sessionId, { title: nextTitle });
+			},
+		},
+	});
+	t.after(async () => { titledHarness.releaseTurn(); await titledHarness.gateway.close(); });
+	await waitFor(() => notification(titledHarness.messages, "runtime.ready"));
+	await titledHarness.send("turn.submit", {
+		message: "second prompt must not rename",
+		client_turn_id: "turn-name-2",
+		client_user_message_id: "user-name-2",
+	});
+	assert.deepEqual(kept, []);
 });
 
 test("status and status command expose shared session lifecycle and ownership state", async () => {

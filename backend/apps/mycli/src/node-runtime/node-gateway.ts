@@ -429,7 +429,10 @@ class InProcessNodeGateway implements NodeGateway {
 			case "shell.stop_all":
 				return this.#shellController.stopAll();
 			case "turn.submit":
-				return this.#turnController.submit(request.params);
+				return this.#turnController.submit(request.params).then((submitted) => {
+					this.#nameUntitledSession(request.params);
+					return submitted;
+				});
 			case "approval.respond":
 			case "decision.resolve":
 				return this.#options.networkApprovals?.respond(request.params) ?? this.#turnController.respondApproval(request.params);
@@ -856,6 +859,24 @@ class InProcessNodeGateway implements NodeGateway {
 		const coreResult = await this.#coreCommand(invocation, params);
 		if (coreResult) return coreResult;
 		throw new GatewayFailure("method_not_found", "Unknown command.");
+	}
+
+	/**
+	 * A session starts without a title, which leaves session lists showing a raw
+	 * id. The first prompt becomes the default name; `/rename` still overrides it.
+	 */
+	#nameUntitledSession(params: JsonObject): void {
+		const commands = this.#options.sessionCommands;
+		if (!commands?.inspect || !commands.rename) return;
+		const title = sessionTitleFromPrompt(typeof params.message === "string" ? params.message : "");
+		if (!title) return;
+		const sessionId = this.#sessionController.sessionId();
+		try {
+			if (commands.inspect(sessionId)?.title?.trim()) return;
+			commands.rename(sessionId, title);
+		} catch {
+			// Naming is a convenience and must never fail an accepted turn.
+		}
 	}
 
 	async #coreCommand(invocation: ReturnType<typeof resolveSlashCommand>, params: JsonObject): Promise<JsonObject | undefined> {
@@ -1643,6 +1664,20 @@ interface CompactionCommandPresentation {
 	readonly title: string;
 	readonly summary: string;
 	readonly severity: "info" | "success" | "warning" | "error";
+}
+
+const SESSION_TITLE_MAX_CHARS = 60;
+
+/**
+ * Derives a readable session name from the first prompt. Non-ASCII text is
+ * counted by code point so CJK prompts are not cut in half.
+ */
+function sessionTitleFromPrompt(text: string): string | undefined {
+	const flattened = text.replaceAll(/\s+/gu, " ").trim();
+	if (!flattened) return undefined;
+	const characters = [...flattened];
+	if (characters.length <= SESSION_TITLE_MAX_CHARS) return flattened;
+	return `${characters.slice(0, SESSION_TITLE_MAX_CHARS - 1).join("")}…`;
 }
 
 function compactionCommandPresentation(
