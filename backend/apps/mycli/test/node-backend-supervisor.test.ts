@@ -280,7 +280,7 @@ function objectValue(value: unknown): JsonObject | undefined {
 		: undefined;
 }
 
-async function waitFor<T>(read: () => T | undefined, timeoutMs = 2_000): Promise<T> {
+async function waitFor<T>(read: () => T | undefined, timeoutMs = 10_000): Promise<T> {
 	const deadline = Date.now() + timeoutMs;
 	for (;;) {
 		const value = read();

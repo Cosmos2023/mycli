@@ -785,7 +785,7 @@ function deferred<Value>() {
 	return { promise, resolve };
 }
 
-async function waitFor(read: () => boolean, timeoutMs = 1_000): Promise<void> {
+async function waitFor(read: () => boolean, timeoutMs = 5_000): Promise<void> {
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
 		if (read()) return;

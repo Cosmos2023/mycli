@@ -836,7 +836,7 @@ function processMarkerState(path: string): {
 	}
 }
 
-async function waitFor<T>(read: () => T | undefined | false, timeoutMs = 5_000): Promise<T> {
+async function waitFor<T>(read: () => T | undefined | false, timeoutMs = 10_000): Promise<T> {
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
 		const value = read();

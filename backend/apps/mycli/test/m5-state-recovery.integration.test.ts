@@ -1149,7 +1149,8 @@ async function waitForFinal(messages: readonly JsonObject[], clientTurnId: strin
 	return terminal;
 }
 
-async function waitFor<T>(read: () => T | undefined | false, timeoutMs = 5_000): Promise<T> {
+// Source workers cost about a second to start on Node 22 and more on shared runners.
+async function waitFor<T>(read: () => T | undefined | false, timeoutMs = 10_000): Promise<T> {
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
 		const value = read();

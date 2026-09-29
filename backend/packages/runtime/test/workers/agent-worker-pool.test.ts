@@ -625,7 +625,8 @@ function leaseInput(
 	});
 }
 
-async function waitFor(read: () => boolean, timeoutMs = 2_000): Promise<void> {
+// Source workers cost about a second to start on Node 22 and more on shared runners.
+async function waitFor(read: () => boolean, timeoutMs = 10_000): Promise<void> {
 	const deadline = Date.now() + timeoutMs;
 	while (!read()) {
 		if (Date.now() >= deadline) throw new Error("timed_out_waiting_for_agent_worker_pool");
