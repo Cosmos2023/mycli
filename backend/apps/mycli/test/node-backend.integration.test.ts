@@ -6867,7 +6867,10 @@ async function jsonLines(path: string): Promise<readonly Record<string, unknown>
 		.map((line) => JSON.parse(line) as Record<string, unknown>);
 }
 
-async function waitFor<T>(read: () => T | undefined | false, timeoutMs = 3_000): Promise<T> {
+// Worker-backed turns spawn a source Worker, which costs roughly a second on
+// Node 22 and more on shared runners; a 3s bound made slow runners report
+// backend timeouts instead of real failures.
+async function waitFor<T>(read: () => T | undefined | false, timeoutMs = 10_000): Promise<T> {
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
 		const value = read();

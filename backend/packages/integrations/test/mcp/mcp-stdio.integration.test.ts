@@ -87,7 +87,9 @@ test("MCP stdio timeout rejects the call and closes the child process", {
 	t.after(async () => rm(root, { recursive: true, force: true }));
 	const pidFile = join(root, "server.pid");
 	const client = new McpClient({
-		config: stdioConfig(pidFile, 500),
+		// The call below still exceeds this budget, but a shared runner needs more
+		// than 500ms to connect the fixture before the timeout can be exercised.
+		config: stdioConfig(pidFile, 2_000),
 		cwd: root,
 		sandboxProfile: fullAccessSandbox(root),
 	});
