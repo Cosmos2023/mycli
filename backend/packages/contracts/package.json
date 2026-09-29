@@ -16,11 +16,11 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "node scripts/tsc.mjs -p tsconfig.build.json",
     "check": "node scripts/generate.mjs --check",
     "generate": "node scripts/generate.mjs",
     "test": "node --import tsx --test \"test/**/*.test.ts\" --test-reporter=dot",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "node scripts/tsc.mjs --noEmit"
   },
   "dependencies": {
     "ajv": "^8.17.1"
