@@ -998,7 +998,9 @@ try {
 		installDir,
 		true,
 		{ ...managementEnv, NO_COLOR: "1", TERM: "dumb" },
-		[0],
+		// Same throwaway-home caveat as `doctor --json`: the sandbox check fails
+		// until the host has run the privileged setup.
+		process.platform === "win32" ? [0, 1] : [0],
 		5_000,
 	);
 	if (/\x1b\[/u.test(plainDoctor)) {
@@ -1357,13 +1359,17 @@ function run(
 			const missingModule = commandFailureModule(stderr);
 			const headlessLine = /headless-cli-smoke\.mjs:(\d+):\d+/u.exec(stderr)?.[1];
 			// The classification alone is not actionable; keep a bounded tail of the
-			// child's own diagnostics so a failure explains itself.
-			const detail = stderr.replaceAll(/\s+/gu, " ").trim().slice(0, 400);
+			// child's own diagnostics so a failure explains itself. Node prints its
+			// warnings first, so the head of stderr rarely names the real failure.
+			const detail = stderr.replaceAll(/\s+/gu, " ").trim().slice(-400);
+			const stdoutTail = stdout.replaceAll(/\s+/gu, " ").trim().slice(-400);
+			const invocation = [command, ...args].join(" ").replaceAll(/\s+/gu, " ").slice(0, 240);
 			reject(new Error(
-				`command_failed: ${command} (${code ?? "signal"}) kind=${commandFailureKind(stderr)}`
+				`command_failed: ${invocation} (${code ?? "signal"}) kind=${commandFailureKind(stderr)}`
 				+ (missingModule ? ` module=${missingModule}` : "")
 				+ (headlessLine ? ` headless_line=${headlessLine}` : "")
-				+ (detail ? ` detail=${detail}` : ""),
+				+ (detail ? ` detail=${detail}` : "")
+				+ (stdoutTail ? ` stdout=${stdoutTail}` : ""),
 			));
 		});
 	});
