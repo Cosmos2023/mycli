@@ -41,6 +41,28 @@ jobs:
           if [[ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
+      # The unit suite reads the host sandbox state: `doctor` reports an unready
+      # sandbox as a failed check, so the helper has to be present and set up
+      # here as well.
+      - name: Build Node Windows sandbox helper
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cmake `
+            -S native/windows-sandbox-helper `
+            -B native/windows-sandbox-helper/build `
+            -A x64
+          cmake --build native/windows-sandbox-helper/build --config Release --target mycli-windows-sandbox
+          New-Item -ItemType Directory -Force backend/packages/tools/native/windows | Out-Null
+          Copy-Item `
+            native/windows-sandbox-helper/build/Release/mycli-windows-sandbox.exe `
+            backend/packages/tools/native/windows/mycli-windows-sandbox.exe
+      - name: Initialize Windows sandbox identities
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & backend/packages/tools/native/windows/mycli-windows-sandbox.exe --ensure-setup
+          if ($LASTEXITCODE -ne 0) { throw "Windows sandbox setup failed" }
       - run: npm ci
       # Each step runs even when an earlier one failed, so one run reports every
       # failure instead of only the first, and the wrapper republishes each
