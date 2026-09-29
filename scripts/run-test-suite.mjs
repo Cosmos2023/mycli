@@ -14,6 +14,7 @@ import {
 	TEST_SUITE_NAMES,
 	TEST_TARGETS,
 } from "./test-suite-catalog.mjs";
+import { reportFailingTests } from "./ci-annotations.mjs";
 
 const SELECTOR_NAMES = Object.freeze([...TEST_SUITE_NAMES, "ci"]);
 
@@ -112,33 +113,6 @@ export async function runSelectedTestSuites(options) {
 		`\n[test] ${selected.length} files passed in ${formatDuration(performance.now() - startedAt)}\n`,
 	);
 	return 0;
-}
-
-/**
- * GitHub renders `::error::` workflow commands as check annotations, which stay
- * readable without a token. Otherwise the failing test names only exist inside
- * the step log, which anonymous readers cannot fetch.
- */
-function reportFailingTests(output) {
-	if (process.env.GITHUB_ACTIONS !== "true") return;
-	const lines = output.split(/\r?\n/u);
-	const messages = [];
-	for (let index = 0; index < lines.length && messages.length < 40; index += 1) {
-		const line = lines[index];
-		if (!/^(?:✖ |test at )/u.test(line)) continue;
-		messages.push(line);
-		// Annotations carry no expanded log, so the assertion detail has to travel
-		// with the name or the failure is still unreproducible from outside.
-		for (let extra = 1; extra <= 12 && index + extra < lines.length; extra += 1) {
-			const raw = lines[index + extra];
-			if (/^(?:✖ |ℹ |test at )/u.test(raw)) break;
-			const detail = raw.trim();
-			if (detail !== "") messages.push(`  ${detail}`);
-		}
-	}
-	for (const message of messages.slice(0, 60)) {
-		process.stdout.write(`::error::${message.replaceAll("%", "%25")}\n`);
-	}
 }
 
 async function runTarget(target, rows, forwarded, suite) {

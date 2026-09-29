@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import {
 	assertVendoredSandboxHelperIdentity,
 } from "./windows-sandbox-release-checks.mjs";
+import { reportFailingTests } from "./ci-annotations.mjs";
 import { runWindowsSandboxAcceptance } from "./windows-sandbox-acceptance.mjs";
 
 const HELPER_PATH = fileURLToPath(new URL(
@@ -62,8 +63,13 @@ const evidence = await runWindowsSandboxAcceptance({
 			if (event.file === undefined) summary = event.counts;
 		});
 		const output = tests.compose(spec);
-		output.pipe(process.stdout, { end: false });
+		const chunks = [];
+		output.on("data", (chunk) => {
+			chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+			process.stdout.write(chunk);
+		});
 		await finished(output);
+		if (summary?.failed) reportFailingTests(Buffer.concat(chunks).toString("utf8"));
 		return summary;
 	},
 });
