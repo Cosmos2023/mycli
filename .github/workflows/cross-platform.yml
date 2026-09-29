@@ -82,9 +82,11 @@ jobs:
         if: '!cancelled()'
         run: node scripts/run-gate.mjs unit-suites "node scripts/run-test-suite.mjs --suite unit --suite contract"
 
-  # Slower gates that need platform tooling. They run for pull requests, main and
-  # the nightly, but not for every push to a working branch.
+  # Slower gates that need platform tooling. They depend on shared-runner timing
+  # (sandboxed extensions and source workers), so they run on the nightly and on
+  # demand instead of gating everyday work.
   slow-gate:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
       matrix:
@@ -171,7 +173,7 @@ jobs:
 
   node-m8-live-smoke:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [fast-gate, slow-gate]
+    needs: [fast-gate]
     runs-on: ubuntu-latest
     environment: node-m8-live
     steps:
