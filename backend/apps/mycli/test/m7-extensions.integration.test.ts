@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { removeFixtureDirectoryAfterTests } from "../../../packages/storage/test/fixtures/directory-cleanup.ts";
 import { spawn } from "node:child_process";
 import { createServer, type ServerResponse } from "node:http";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -574,7 +574,10 @@ test("M7 runs skills MCP hooks plugins and a subagent entirely in Node", {
 	assert.equal(existsSync(pluginPidFile), true);
 
 	await shutdown();
-	await eventually(() => !existsSync(mcpPidFile) && !existsSync(pluginPidFile));
+	await eventually(
+		() => !existsSync(mcpPidFile) && !existsSync(pluginPidFile),
+		() => extensionMarkerDiagnostics({ mcpPidFile, pluginPidFile }),
+	);
 	const store = openRuntimeSessionStore({ dbPath: join(home, ".mycli", "sessions.db") });
 	try {
 		const history = store.loadHistoryItems("m7-parent");
@@ -788,13 +791,49 @@ function extensionDiagnostics(
 
 // Shared runners reap the extension processes slowly, so this only bounds how
 // long a leak may go unnoticed rather than how fast a clean exit must be.
-async function eventually(predicate: () => boolean, timeoutMs = 15_000): Promise<void> {
+async function eventually(
+	predicate: () => boolean,
+	diagnostics?: () => string,
+	timeoutMs = 30_000,
+): Promise<void> {
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
 		if (predicate()) return;
 		await new Promise((resolve) => setTimeout(resolve, 20));
 	}
-	assert.fail("M7 extension process did not exit before timeout");
+	assert.fail(`M7 extension process did not exit before timeout${diagnostics ? `: ${diagnostics()}` : ""}`);
+}
+
+function extensionMarkerDiagnostics(input: {
+	readonly mcpPidFile: string;
+	readonly pluginPidFile: string;
+}): string {
+	return JSON.stringify({
+		mcp: processMarkerState(input.mcpPidFile),
+		plugin: processMarkerState(input.pluginPidFile),
+	});
+}
+
+function processMarkerState(path: string): {
+	readonly present: boolean;
+	readonly pid?: number;
+	readonly alive?: boolean;
+} {
+	if (!existsSync(path)) return Object.freeze({ present: false });
+	let pid: number | undefined;
+	try {
+		const value = Number.parseInt(readFileSync(path, "utf8").trim(), 10);
+		if (Number.isSafeInteger(value) && value > 0) pid = value;
+	} catch {
+		// A marker we cannot read is still a marker that outlived its process.
+	}
+	if (pid === undefined) return Object.freeze({ present: true });
+	try {
+		process.kill(pid, 0);
+		return Object.freeze({ present: true, pid, alive: true });
+	} catch {
+		return Object.freeze({ present: true, pid, alive: false });
+	}
 }
 
 async function waitFor<T>(read: () => T | undefined | false, timeoutMs = 5_000): Promise<T> {
