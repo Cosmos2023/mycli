@@ -65,7 +65,9 @@ export function createShellEnvironment(input: ShellEnvironmentInput): ShellEnvir
 		}
 		env[key] = value;
 	}
-	env.PWD = realpathSync(input.cwd);
+	// Match fs.promises.realpath, which resolves the cwd for callers: on Windows the
+	// JS fallback can retain 8.3 names while the native API expands them.
+	env.PWD = realpathSync.native(input.cwd);
 	env.MYCLI_CI = "1";
 	if ((input.platform ?? process.platform) === "win32") {
 		// Keep Python and similar runtimes on UTF-8 instead of the console code page.

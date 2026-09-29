@@ -194,7 +194,9 @@ function permissionPaths(
 			return invalidArguments();
 		}
 		try {
-			const absolute = realpathSync(isAbsolute(normalized)
+			// Match fs.promises.realpath, which the callers and tests use: on Windows
+			// the JS fallback can retain 8.3 names while the native API expands them.
+			const absolute = realpathSync.native(isAbsolute(normalized)
 				? resolve(normalized)
 				: resolve(workspaceRoot, normalized));
 			if (!paths.includes(absolute)) paths.push(absolute);
