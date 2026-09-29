@@ -84,25 +84,26 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Windows sandbox setup failed" }
       - run: npm ci
       # Each gate runs even when an earlier one failed, so one run reports every
-      # failure instead of only the first.
+      # failure instead of only the first, and the wrapper republishes each
+      # failing gate's diagnostics as annotations.
       - name: Verify generated contracts
         if: '!cancelled()'
-        run: npm run contracts:check
+        run: node scripts/run-gate.mjs contracts "npm run contracts:check"
       - name: Lint
         if: '!cancelled()'
-        run: npm run lint
+        run: node scripts/run-gate.mjs lint "npm run lint"
       - name: Run deterministic test suites
         if: '!cancelled()'
-        run: npm run test:ci
+        run: node scripts/run-gate.mjs test-suites "npm run test:ci"
       - name: Typecheck
         if: '!cancelled()'
-        run: npm run typecheck
+        run: node scripts/run-gate.mjs typecheck "npm run typecheck"
       - name: Provider-free M8 smoke
         if: '!cancelled()'
-        run: npm run smoke:m8
+        run: node scripts/run-gate.mjs m8-smoke "npm run smoke:m8"
       - name: Packed npm CLI smoke
         if: '!cancelled()'
-        run: npm run smoke:package
+        run: node scripts/run-gate.mjs packed-smoke "npm run smoke:package"
 
   node-m8-live-smoke:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
