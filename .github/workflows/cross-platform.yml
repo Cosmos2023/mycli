@@ -3,17 +3,23 @@ name: cross-platform
 on:
   push:
     branches:
-      - "**"
+      - main
     tags-ignore:
       - "ci-windows-sandbox-*"
   pull_request:
+  schedule:
+    # Nightly, so the slow and privileged gates still report on a moving main.
+    - cron: "0 18 * * *"
+  workflow_dispatch:
 
 concurrency:
   group: cross-platform-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  agent-worker-memory-benchmark:
+  # Fast, platform-relevant gates. These are the ones a change should be judged
+  # by during development: build, generated contracts, lint, types and unit tests.
+  fast-gate:
     strategy:
       fail-fast: false
       matrix:
@@ -26,21 +32,37 @@ jobs:
           node-version: "24.x"
           cache: npm
           cache-dependency-path: package-lock.json
+      - name: Install Linux process prerequisites
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap build-essential make g++
+          if [[ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
       - run: npm ci
-      - name: Measure Agent Worker memory scenarios
-        run: npm run benchmark:agent-workers -- --output agent-worker-memory.jsonl
-      - name: Measure 500-compaction resume and transcript paging
+      # Each step runs even when an earlier one failed, so one run reports every
+      # failure instead of only the first, and the wrapper republishes each
+      # failing step's diagnostics as annotations.
+      - name: Build
+        run: node scripts/run-gate.mjs build "npm run build"
+      - name: Verify generated contracts
         if: '!cancelled()'
-        run: npm run --silent benchmark:long-history -- --profile compact_stress --storage-schema v15 > compact-stress-resume.json
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: agent-worker-memory-${{ runner.os }}
-          path: |
-            agent-worker-memory.jsonl
-            compact-stress-resume.json
+        run: node scripts/run-gate.mjs contracts "npm run contracts:check"
+      - name: Lint
+        if: '!cancelled()'
+        run: node scripts/run-gate.mjs lint "npm run lint"
+      - name: Typecheck
+        if: '!cancelled()'
+        run: node scripts/run-gate.mjs typecheck "npm run typecheck"
+      - name: Unit and contract suites
+        if: '!cancelled()'
+        run: node scripts/run-gate.mjs unit-suites "node scripts/run-test-suite.mjs --suite unit --suite contract"
 
-  node-m8-gate:
+  # Slower gates that need platform tooling. They run for pull requests, main and
+  # the nightly, but not for every push to a working branch.
+  slow-gate:
     strategy:
       fail-fast: false
       matrix:
@@ -83,21 +105,11 @@ jobs:
           & backend/packages/tools/native/windows/mycli-windows-sandbox.exe --ensure-setup
           if ($LASTEXITCODE -ne 0) { throw "Windows sandbox setup failed" }
       - run: npm ci
-      # Each gate runs even when an earlier one failed, so one run reports every
-      # failure instead of only the first, and the wrapper republishes each
-      # failing gate's diagnostics as annotations.
-      - name: Verify generated contracts
+      - name: Build
+        run: node scripts/run-gate.mjs build "npm run build"
+      - name: Integration, platform and release suites
         if: '!cancelled()'
-        run: node scripts/run-gate.mjs contracts "npm run contracts:check"
-      - name: Lint
-        if: '!cancelled()'
-        run: node scripts/run-gate.mjs lint "npm run lint"
-      - name: Run deterministic test suites
-        if: '!cancelled()'
-        run: node scripts/run-gate.mjs test-suites "npm run test:ci"
-      - name: Typecheck
-        if: '!cancelled()'
-        run: node scripts/run-gate.mjs typecheck "npm run typecheck"
+        run: node scripts/run-gate.mjs slow-suites "node scripts/run-test-suite.mjs --suite integration --suite platform --suite release"
       - name: Provider-free M8 smoke
         if: '!cancelled()'
         run: node scripts/run-gate.mjs m8-smoke "npm run smoke:m8"
@@ -105,9 +117,39 @@ jobs:
         if: '!cancelled()'
         run: node scripts/run-gate.mjs packed-smoke "npm run smoke:package"
 
+  # Benchmarks and the privileged Windows acceptance are nightly and on demand:
+  # they are slow, run on shared hardware, and should not decide a pull request.
+  agent-worker-memory-benchmark:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-2022]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.x"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - name: Measure Agent Worker memory scenarios
+        run: npm run benchmark:agent-workers -- --output agent-worker-memory.jsonl
+      - name: Measure 500-compaction resume and transcript paging
+        if: '!cancelled()'
+        run: npm run --silent benchmark:long-history -- --profile compact_stress --storage-schema v15 > compact-stress-resume.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: agent-worker-memory-${{ runner.os }}
+          path: |
+            agent-worker-memory.jsonl
+            compact-stress-resume.json
+
   node-m8-live-smoke:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: node-m8-gate
+    needs: [fast-gate, slow-gate]
     runs-on: ubuntu-latest
     environment: node-m8-live
     steps:
@@ -145,6 +187,7 @@ jobs:
           exit "$code"
 
   windows-sandbox-helper:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
       matrix:
