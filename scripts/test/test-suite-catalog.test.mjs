@@ -100,7 +100,13 @@ test("quality workflows use the canonical CI suite without rerunning milestone t
 		"../../.github/workflows/release.yml",
 	]) {
 		const workflow = await readFile(new URL(relativePath, import.meta.url), "utf8");
-		assert.match(workflow, /run: npm run test:ci/u, relativePath);
+		// The gate wrapper runs the same script and republishes its failing tests
+		// as annotations, so either spelling satisfies the canonical-suite rule.
+		assert.match(
+			workflow,
+			/run: (?:npm run test:ci|node scripts\/run-gate\.mjs test-suites "npm run test:ci")/u,
+			relativePath,
+		);
 		assert.doesNotMatch(workflow, /run: npm run test:m8/u, relativePath);
 	}
 });
