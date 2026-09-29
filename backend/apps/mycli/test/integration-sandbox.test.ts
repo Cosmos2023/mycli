@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { realpathSync } from "node:fs";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -79,7 +80,9 @@ test("MCP readable-root bounds cannot silently become unrestricted host executio
 		const launch = prepareSandboxedProcess([process.execPath], profile, probes);
 		assert.equal(launch.isolation, "windows_native");
 		assert.equal(launch.executable, probes.windowsHelperPath);
-		assert.deepEqual(JSON.parse(launch.args[1]!).readable_roots, [root]);
+		// The launch canonicalizes every root, which expands 8.3 names that a
+		// short-form TEMP directory keeps in the raw fixture path.
+		assert.deepEqual(JSON.parse(launch.args[1]!).readable_roots, [realpathSync.native(root)]);
 		assert.throws(() => prepareSandboxedProcess([process.execPath], profile, { ...probes, isExecutable: () => false }),
 			(error: unknown) => error instanceof ProcessSandboxError && error.kind === "sandbox_unavailable");
 		return;
