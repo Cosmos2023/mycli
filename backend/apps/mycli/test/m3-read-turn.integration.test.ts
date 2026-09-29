@@ -135,7 +135,9 @@ function event(messages: Array<Record<string, unknown>>, method: string): Record
 	return messages.find((message) => message.method === method && !("id" in message));
 }
 
-async function waitFor<T>(read: () => T | undefined | false, timeoutMs = 3_000): Promise<T> {
+// Worker-backed turns spawn a source Worker, which costs about a second on
+// Node 22 and more on shared runners.
+async function waitFor<T>(read: () => T | undefined | false, timeoutMs = 10_000): Promise<T> {
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
 		const value = read();
