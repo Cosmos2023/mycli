@@ -977,7 +977,9 @@ try {
 		[["hooks", "list", "--json"], "list", [0]],
 		[["plugins", "list", "--json"], "list", [0]],
 		[["mcp", "list", "--json"], "list", [0]],
-		[["doctor", "--json"], "doctor", [0]],
+		// A throwaway home has no Windows sandbox state, so doctor legitimately
+		// reports that check as failed and exits non-zero there.
+		[["doctor", "--json"], "doctor", process.platform === "win32" ? [0, 1] : [0]],
 		[["config", "validate", "--json"], "validate", [0]],
 		[["session", "list", "--json"], "list", [0]],
 		[["update", "status", "--json"], "status", [0]],
@@ -1354,10 +1356,14 @@ function run(
 			}
 			const missingModule = commandFailureModule(stderr);
 			const headlessLine = /headless-cli-smoke\.mjs:(\d+):\d+/u.exec(stderr)?.[1];
+			// The classification alone is not actionable; keep a bounded tail of the
+			// child's own diagnostics so a failure explains itself.
+			const detail = stderr.replaceAll(/\s+/gu, " ").trim().slice(0, 400);
 			reject(new Error(
 				`command_failed: ${command} (${code ?? "signal"}) kind=${commandFailureKind(stderr)}`
 				+ (missingModule ? ` module=${missingModule}` : "")
-				+ (headlessLine ? ` headless_line=${headlessLine}` : ""),
+				+ (headlessLine ? ` headless_line=${headlessLine}` : "")
+				+ (detail ? ` detail=${detail}` : ""),
 			));
 		});
 	});
