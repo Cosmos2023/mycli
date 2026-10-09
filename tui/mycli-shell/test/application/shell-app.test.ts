@@ -4636,8 +4636,41 @@ test("clicking the collapsed reasoning preview expands it", async () => {
 	assert.doesNotMatch(stripAnsi(runtime.chatContainer.render(80).join("\n")), /More detail/);
 
 	terminal.input?.(`\x1b[<0;5;${previewRow + 1}M`);
+	terminal.input?.(`\x1b[<0;5;${previewRow + 1}m`);
 
 	assert.match(stripAnsi(runtime.chatContainer.render(80).join("\n")), /More detail/);
+	await runtime.shutdown();
+});
+
+test("dragging across transcript rows copies the selection", async () => {
+	const terminal = new TestTerminal();
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			messages: [
+				{ id: "u1", role: "user", text: "first prompt" },
+				{ id: "a1", role: "assistant", text: "alpha bravo charlie" },
+			],
+			transcript: [
+				{ id: "u1", kind: "message", message: { id: "u1", role: "user", text: "first prompt" } },
+				{ id: "a1", kind: "message", message: { id: "a1", role: "assistant", text: "alpha bravo charlie" } },
+			],
+			settings: { ...sampleState().settings, hideThinking: true },
+		},
+		terminal,
+	});
+	runtime.start();
+
+	const rows = stripAnsi(runtime.ui.render(80).join("\n")).split("\n");
+	const startRow = rows.findIndex((line) => line.includes("first prompt"));
+	const endRow = rows.findIndex((line) => line.includes("alpha bravo charlie"));
+	assert.ok(startRow >= 0 && endRow >= 0, "expected both transcript rows to be visible");
+
+	terminal.input?.(`\x1b[<0;1;${startRow + 1}M`);
+	terminal.input?.(`\x1b[<32;6;${endRow + 1}M`);
+	terminal.input?.(`\x1b[<0;6;${endRow + 1}m`);
+
+	assert.match(stripAnsi(runtime.ui.render(80).join("\n")), /Copied \d+ line\(s\)\.|Clipboard unavailable/);
 	await runtime.shutdown();
 });
 

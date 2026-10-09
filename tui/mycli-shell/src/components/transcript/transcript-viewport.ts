@@ -1,5 +1,18 @@
 import { Container, type Component } from "../../tui-core/tui.ts";
-import { visibleWidth } from "../../tui-core/utils.ts";
+import { sliceByColumn, visibleWidth } from "../../tui-core/utils.ts";
+import { theme } from "../../theme/theme.ts";
+import { stripVTControlCharacters } from "node:util";
+
+type TranscriptSelectionPoint = { readonly line: number; readonly column: number };
+
+function orderedSelection(
+	anchor: TranscriptSelectionPoint,
+	focus: TranscriptSelectionPoint,
+): { from: TranscriptSelectionPoint; to: TranscriptSelectionPoint } {
+	const forward = anchor.line < focus.line
+		|| (anchor.line === focus.line && anchor.column <= focus.column);
+	return forward ? { from: anchor, to: focus } : { from: focus, to: anchor };
+}
 
 type TranscriptContentChange =
 	| { kind: "full" }
@@ -77,6 +90,7 @@ export class TranscriptViewportComponent implements Component {
 	private lastRenderedLineOrigin = 0;
 	private lastRenderedContentLineage: number | undefined;
 	private lastVisibleStart = 0;
+	private selection: { anchor: TranscriptSelectionPoint; focus: TranscriptSelectionPoint } | undefined;
 
 	/**
 	 * `contentRevision` must change before the owner mutates any transcript-visible content.
@@ -91,6 +105,7 @@ export class TranscriptViewportComponent implements Component {
 
 	markContentChanged(): void {
 		this.pendingContentChange = { kind: "full" };
+		this.selection = undefined;
 	}
 
 	/** Record an owner-validated stable component prefix for the last content section. */
@@ -263,9 +278,10 @@ export class TranscriptViewportComponent implements Component {
 
 		const start = this.visibleStart(lines, height, this.committedStart(lines, width));
 		this.lastVisibleStart = start;
+		this.lastRenderedLines = lines;
 		// The enclosing transcript area adds spare rows after live activity so
 		// activity follows output while the input stays at the bottom.
-		return lines.slice(start, start + height);
+		return this.applySelectionHighlight(lines.slice(start, start + height), start);
 	}
 
 	/** Component and its row rendered at the given row of the visible transcript window. */
@@ -282,6 +298,69 @@ export class TranscriptViewportComponent implements Component {
 			cursor = end;
 		}
 		return undefined;
+	}
+
+	/** Start a text selection at a row of the visible transcript window. */
+	beginSelection(row: number, column: number): void {
+		const point = { line: Math.max(0, this.lastVisibleStart + row), column: Math.max(0, column) };
+		this.selection = { anchor: point, focus: point };
+	}
+
+	extendSelection(row: number, column: number): void {
+		if (!this.selection) return;
+		this.selection = {
+			anchor: this.selection.anchor,
+			focus: { line: Math.max(0, this.lastVisibleStart + row), column: Math.max(0, column) },
+		};
+	}
+
+	hasSelection(): boolean {
+		const selection = this.selection;
+		if (!selection) return false;
+		return selection.anchor.line !== selection.focus.line || selection.anchor.column !== selection.focus.column;
+	}
+
+	clearSelection(): void {
+		this.selection = undefined;
+	}
+
+	selectedText(): string | undefined {
+		const selection = this.selection;
+		if (!selection) return undefined;
+		const { from, to } = orderedSelection(selection.anchor, selection.focus);
+		const lines = this.lastRenderedLines;
+		const selected: string[] = [];
+		for (let line = from.line; line <= to.line; line += 1) {
+			const raw = lines[line];
+			if (raw === undefined) continue;
+			const width = visibleWidth(raw);
+			const startCol = line === from.line ? from.column : 0;
+			const endCol = line === to.line ? to.column : width;
+			const text = endCol <= startCol
+				? ""
+				: stripVTControlCharacters(sliceByColumn(raw, startCol, endCol - startCol));
+			selected.push(text.replace(/\s+$/u, ""));
+		}
+		const text = selected.join("\n").replace(/\s+$/u, "");
+		return text.length > 0 ? text : undefined;
+	}
+
+	private applySelectionHighlight(visible: string[], start: number): string[] {
+		const selection = this.selection;
+		if (!selection) return visible;
+		const { from, to } = orderedSelection(selection.anchor, selection.focus);
+		return visible.map((line, index) => {
+			const lineIndex = start + index;
+			if (lineIndex < from.line || lineIndex > to.line) return line;
+			const width = visibleWidth(line);
+			const startCol = lineIndex === from.line ? from.column : 0;
+			const endCol = lineIndex === to.line ? to.column : width;
+			if (endCol <= startCol) return line;
+			const prefix = sliceByColumn(line, 0, startCol);
+			const middle = sliceByColumn(line, startCol, endCol - startCol);
+			const rest = sliceByColumn(line, endCol, Math.max(0, width - endCol));
+			return `${prefix}${theme.inverse(middle)}${rest}`;
+		});
 	}
 
 	private committedStart(lines: string[], width: number): number {

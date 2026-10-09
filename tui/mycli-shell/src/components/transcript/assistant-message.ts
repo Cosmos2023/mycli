@@ -95,8 +95,12 @@ export class AssistantMessageComponent extends Container {
 	/** True when the given rendered row is the collapsed reasoning preview line. */
 	isReasoningPreviewRow(row: number, width: number): boolean {
 		if (!this.thinkingPreview || row < 0) return false;
+		// The preview is truncated to the content width, so match a bounded prefix
+		// instead of the whole first line.
+		const needle = this.thinkingPreview.slice(0, 24);
+		if (needle.length < 2) return false;
 		const line = this.render(width)[row];
-		return line !== undefined && line.includes(this.thinkingPreview);
+		return line !== undefined && line.includes(needle);
 	}
 
 	holdsNativeScrollbackTail(): boolean {

@@ -106,8 +106,8 @@ test("stream terminal uses inline native scrollback by default without mouse cap
 	assert.doesNotMatch(output.output, /\x1b\[\?1049[hl]/);
 	assert.doesNotMatch(output.output, /\x1b\[2J\x1b\[H/);
 	assert.doesNotMatch(output.output, /\x1b\[3J/);
-	assert.doesNotMatch(output.output, /\x1b\[\?(1000|1002|1003|1006)h/);
-	assert.match(output.output, /\x1b\[\?1006l\x1b\[\?1000l/);
+	assert.doesNotMatch(output.output, /\x1b\[\?(1000|1002|1006)h/);
+	assert.match(output.output, /\x1b\[\?1006l\x1b\[\?1002l\x1b\[\?1000l/);
 	assert.match(output.output, /\x1b\[\?2004l/);
 	assert.equal(terminal.nativeScrollback, true);
 	assert.equal(input.resumed, true);
@@ -129,6 +129,7 @@ test("stream terminal can use alternate screen explicitly", () => {
 
 	assert.match(output.output, /\x1b\[\?1049h/);
 	assert.match(output.output, /\x1b\[\?1049l/);
+	assert.match(output.output, /\x1b\[\?1000h\x1b\[\?1002h\x1b\[\?1006h/);
 	assert.equal(terminal.alternateScreen, false);
 	assert.equal(terminal.nativeScrollback, true);
 });

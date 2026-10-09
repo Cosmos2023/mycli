@@ -8,6 +8,7 @@ import {
 	TranscriptViewportComponent,
 } from "../../../src/components/transcript/transcript-viewport.ts";
 import { Container, type Component } from "../../../src/tui-core/tui.ts";
+import { theme } from "../../../src/theme/theme.ts";
 
 class CountingComponent extends Container {
 	renderCalls = 0;
@@ -118,6 +119,26 @@ test("short transcript uses its content height and retains intentional blank row
 	const lines = ["first", "", "second", ""];
 	const viewport = viewportFor([new MutableLinesComponent(lines)], 20);
 	assert.deepEqual(viewport.render(80), lines);
+});
+
+test("transcript viewport highlights and extracts a dragged mouse selection", () => {
+	const { viewport } = viewportHarness([new MutableLinesComponent(["hello world", "second line"])], 20, undefined, 10);
+	assert.deepEqual(viewport.render(80), ["hello world", "second line"]);
+
+	theme.setColorMode("16");
+	try {
+		viewport.beginSelection(0, 0);
+		viewport.extendSelection(1, 6);
+		assert.equal(viewport.hasSelection(), true);
+		assert.match(viewport.render(80)[0] ?? "", /\x1b\[7m/);
+		assert.equal(viewport.selectedText(), "hello world\nsecond");
+
+		viewport.clearSelection();
+		assert.equal(viewport.hasSelection(), false);
+		assert.equal(viewport.selectedText(), undefined);
+	} finally {
+		theme.setColorMode("none");
+	}
 });
 
 test("transcript viewport renders only the bounded tail", () => {

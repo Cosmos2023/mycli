@@ -156,6 +156,11 @@ export class StreamTerminal implements Terminal {
 		if (this.startInAlternateScreen) this.enterAlternateScreen();
 		this.write("\x1b[?2004h");
 		this.write("\x1b[?1004h");
+		// Only capture the mouse when the shell owns the screen. In native-scrollback
+		// mode the terminal must keep wheel scrolling and native selection.
+		if (!this.nativeScrollback) {
+			this.write("\x1b[?1000h\x1b[?1002h\x1b[?1006h");
+		}
 		this.streams.output.on("resize", this.resizeHandler);
 		if (this.platform !== "win32") {
 			this.sigwinchHandler = () => this.resizeHandler?.();
@@ -174,7 +179,7 @@ export class StreamTerminal implements Terminal {
 	}
 
 	stop(): void {
-		this.write("\x1b[?1006l\x1b[?1000l");
+		this.write("\x1b[?1006l\x1b[?1002l\x1b[?1000l");
 		this.write("\x1b[?2004l");
 		this.write("\x1b[?1004l");
 		this.stdinBuffer?.destroy();

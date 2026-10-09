@@ -212,6 +212,7 @@ export class MycliShellRuntime {
 	private readonly composerSnapshots = new Map<string, ComposerSessionSnapshot>();
 	private toolDetailMode: ToolDetailMode = "default";
 	private readonly toolDetailProjector = new ToolDetailProjector();
+	private transcriptPointer: { reasoning: AssistantMessageComponent | null; dragged: boolean } | null = null;
 	private nativeResizeTimer: ReturnType<typeof setTimeout> | undefined;
 	private nativeTranscriptDeltaHeld = false;
 	private transcriptViewer: ActiveTranscriptViewer | null = null;
@@ -545,34 +546,64 @@ export class MycliShellRuntime {
 			this.scrollTranscript(-3);
 			return { consume: true };
 		}
-		const mouse = data.match(/^\x1b\[<(\d+);(\d+);(\d+)M$/);
+		const mouse = data.match(/^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/);
 		if (mouse) {
 			const button = Number.parseInt(mouse[1] ?? "", 10);
-			if (button === 64) {
-				this.scrollTranscript(3);
+			const pressed = mouse[4] === "M";
+			const column = Math.max(0, Number.parseInt(mouse[2] ?? "", 10) - 1);
+			const row = Math.max(0, Number.parseInt(mouse[3] ?? "", 10) - 1);
+			if (pressed && (button === 64 || button === 65)) {
+				this.scrollTranscript(button === 64 ? 3 : -3);
 				return { consume: true };
 			}
-			if (button === 65) {
-				this.scrollTranscript(-3);
-				return { consume: true };
-			}
-			if (button === 0 && this.handleTranscriptClick(Number.parseInt(mouse[3] ?? "", 10))) {
-				return { consume: true };
-			}
+			if (this.handleTranscriptPointer(button, column, row, pressed)) return { consume: true };
 		}
 		return undefined;
 	}
 
-	/** Left-clicking a collapsed reasoning preview expands the details. */
-	private handleTranscriptClick(screenRow: number): boolean {
-		const row = screenRow - 1;
+	/**
+	 * Left press starts a selection; a stationary release on a collapsed reasoning
+	 * preview expands the details instead, and a dragged release copies the selection.
+	 */
+	private handleTranscriptPointer(button: number, column: number, row: number, pressed: boolean): boolean {
 		const width = this.ui.terminal.columns;
-		if (row < 0 || row >= this.transcriptHeight(width)) return false;
-		const hit = this.transcriptViewport.hitTest(row);
-		if (!hit || !(hit.component instanceof AssistantMessageComponent)) return false;
-		if (!hit.component.isReasoningPreviewRow(hit.lineInComponent, width)) return false;
-		this.toggleToolDetails();
-		return true;
+		const height = this.transcriptHeight(width);
+		if (row < 0 || row >= height) return false;
+		const isLeft = button === 0;
+		const isDrag = button === 32;
+		if (pressed && isLeft) {
+			const hit = this.transcriptViewport.hitTest(row);
+			const reasoning = hit
+				&& hit.component instanceof AssistantMessageComponent
+				&& hit.component.isReasoningPreviewRow(hit.lineInComponent, width)
+				? hit.component
+				: null;
+			this.transcriptPointer = { reasoning, dragged: false };
+			this.transcriptViewport.beginSelection(row, column);
+			this.ui.requestRender();
+			return true;
+		}
+		if (pressed && isDrag && this.transcriptPointer) {
+			this.transcriptPointer.dragged = true;
+			this.transcriptViewport.extendSelection(row, column);
+			this.ui.requestRender();
+			return true;
+		}
+		if (!pressed && isLeft && this.transcriptPointer) {
+			const pointer = this.transcriptPointer;
+			this.transcriptPointer = null;
+			if (!pointer.dragged && pointer.reasoning) {
+				this.transcriptViewport.clearSelection();
+				this.toggleToolDetails();
+				return true;
+			}
+			const text = this.transcriptViewport.selectedText();
+			this.transcriptViewport.clearSelection();
+			this.ui.requestRender();
+			if (text) this.copyToClipboard(text, `Copied ${text.split("\n").length} line(s).`);
+			return true;
+		}
+		return false;
 	}
 
 	private scrollTranscript(deltaLines: number): void {
