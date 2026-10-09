@@ -2979,6 +2979,24 @@ test("runtime adapter treats mirrored thinking delta as alias without duplicatin
 	assert.equal(reasoningItems[0]?.text, "thinking");
 });
 
+test("runtime adapter accumulates streamed reasoning deltas into one block", () => {
+	let state = initialRuntimeState();
+	state = reduceRuntimeEvent(state, "turn.started", { client_turn_id: "c1" });
+	state = reduceRuntimeEvent(state, "message.delta", { client_turn_id: "c1", text: "answer" });
+	for (const [reasoning, mirrored] of [["first ", "first "], ["second", "second"]] as const) {
+		state = reduceRuntimeEvent(state, "reasoning.delta", { client_turn_id: "c1", text: reasoning });
+		state = reduceRuntimeEvent(state, "thinking.delta", { client_turn_id: "c1", text: mirrored });
+	}
+
+	const reasoningItems = state.transcript.filter((item) => item.type === "reasoning");
+	assert.equal(reasoningItems.length, 1);
+	assert.equal(reasoningItems[0]?.text, "first second");
+	assert.equal(state.liveReasoning?.text, "first second");
+
+	const shell = projectRuntimeState(state);
+	assert.equal(shell.messages.find((message) => message.role === "assistant")?.thinking, "first second");
+});
+
 test("runtime adapter keeps ordinary running status out of pending transcript area", () => {
 	let state = initialRuntimeState();
 	state = reduceRuntimeEvent(state, "turn.started", { client_turn_id: "c1" });

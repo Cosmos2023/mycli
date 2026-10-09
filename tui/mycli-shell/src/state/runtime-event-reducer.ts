@@ -446,16 +446,21 @@ function reduceRuntimeEventUnchecked(
 		};
 	}
 	if (method === "reasoning.delta" || method === "thinking.delta") {
-		const text = reasoningText(params);
-		const transcript =
-			method === "thinking.delta" && state.liveReasoning?.text === text
-				? state.transcript
-				: applyReasoning(state.transcript, text, params);
+		const delta = reasoningText(params);
+		const previous = state.liveReasoning;
+		if (
+			method === "thinking.delta"
+			&& previous?.kind === "reasoning"
+			&& previous.text.endsWith(delta)
+		) {
+			return state;
+		}
+		const text = `${previous?.text ?? ""}${delta}`;
 		return {
 			...state,
 			turnRunning: true,
 			liveReasoning: { kind: method === "thinking.delta" ? "thinking" : "reasoning", text },
-			transcript,
+			transcript: applyReasoning(state.transcript, text, params),
 		};
 	}
 	if (method === "tool.start" || method === "tool.progress" || method === "tool.complete" || method === "tool.failed") {
