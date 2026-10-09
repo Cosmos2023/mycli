@@ -27,6 +27,7 @@ export class AssistantMessageComponent extends Container {
 	private textMarkdown?: Markdown;
 	private thinkingMarkdown?: Markdown;
 	private thinkingPreview?: string;
+	private collapseLabel?: string;
 
 	constructor(text: string, thinking?: string, thinkingHidden = true) {
 		super();
@@ -39,15 +40,22 @@ export class AssistantMessageComponent extends Container {
 	updateMessage(text: string, thinking?: string, thinkingHidden = true): void {
 		const previousText = this.visibleText();
 		const previousThinking = this.visibleThinking();
+		const previousCollapse = this.collapseLabel;
 		this.text = text;
 		this.thinking = thinking;
 		this.thinkingHidden = thinkingHidden;
 		const nextText = this.visibleText();
 		const nextThinking = this.visibleThinking();
-		if (Boolean(previousText) !== Boolean(nextText) || Boolean(previousThinking) !== Boolean(nextThinking)) {
+		const nextCollapse = this.collapseLabelFor(nextThinking);
+		if (
+			Boolean(previousText) !== Boolean(nextText)
+			|| Boolean(previousThinking) !== Boolean(nextThinking)
+			|| Boolean(previousCollapse) !== Boolean(nextCollapse)
+		) {
 			this.rebuild();
 			return;
 		}
+		this.collapseLabel = nextCollapse;
 		if (nextText !== previousText) this.textMarkdown?.setText(nextText);
 		if (nextThinking !== previousThinking) this.thinkingMarkdown?.setText(nextThinking);
 		if (nextText !== previousText || nextThinking !== previousThinking) {
@@ -66,6 +74,7 @@ export class AssistantMessageComponent extends Container {
 		this.thinkingMarkdown = undefined;
 		const thinking = this.visibleThinking();
 		this.thinkingPreview = thinking && this.thinkingHidden ? reasoningPreviewLine(thinking) : undefined;
+		this.collapseLabel = this.collapseLabelFor(thinking);
 		const text = this.visibleText();
 		if (thinking) {
 			this.thinkingMarkdown = new Markdown(thinking, 0, 0, markdownTheme(), {
@@ -79,6 +88,11 @@ export class AssistantMessageComponent extends Container {
 		this.markRenderDirty();
 	}
 
+	private collapseLabelFor(thinking: string): string | undefined {
+		if (!thinking || this.thinkingHidden) return undefined;
+		return theme.fg("muted", `${uiGlyphs().minus} Show less (${formatKeyText(keyForAction("app.tools.expand"))} collapse)`);
+	}
+
 	private visibleText(): string {
 		return this.text.trim();
 	}
@@ -89,18 +103,19 @@ export class AssistantMessageComponent extends Container {
 		if (!this.thinkingHidden) return text;
 		const firstLine = reasoningPreviewLine(text);
 		if (!firstLine) return "";
-		return `${firstLine} ${uiGlyphs().ellipsis} + show detail (${formatKeyText(keyForAction("app.tools.expand"))})`;
+		return `${firstLine} ${uiGlyphs().ellipsis} + Show details (${formatKeyText(keyForAction("app.tools.expand"))})`;
 	}
 
 	/** True when the given rendered row is the collapsed reasoning preview line. */
 	isDetailsToggleRow(row: number, width: number): boolean {
-		if (!this.thinkingPreview || !this.thinkingMarkdown || row < 1) return false;
-		// render() emits a leading blank row, so the collapsed preview occupies the
-		// first rendered rows of the body. Match structurally: the rendered line may
-		// differ from the raw markdown (bold, headings, wrapping).
+		if (!this.thinkingMarkdown || row < 1) return false;
+		// render() emits a leading blank row, so the reasoning occupies the first
+		// rendered rows of the body. Match structurally: the rendered line may differ
+		// from the raw markdown (bold, headings, wrapping).
 		const contentWidth = transcriptMessageContentWidth(Math.max(1, Math.floor(width)));
-		const previewRows = this.thinkingMarkdown.render(contentWidth).length;
-		return row <= previewRows;
+		const thinkingRows = this.thinkingMarkdown.render(contentWidth).length;
+		if (this.thinkingPreview) return row <= thinkingRows;
+		return this.collapseLabel !== undefined && row === thinkingRows + 1;
 	}
 
 	holdsNativeScrollbackTail(): boolean {
@@ -111,10 +126,11 @@ export class AssistantMessageComponent extends Container {
 		return theme.fg("text", `${uiGlyphs().bullet} `);
 	}
 
-	private bodyParts(): Array<Markdown | "separator"> {
-		const parts: Array<Markdown | "separator"> = [];
+	private bodyParts(): Array<Markdown | "separator" | { raw: string }> {
+		const parts: Array<Markdown | "separator" | { raw: string }> = [];
 		if (this.thinkingMarkdown) parts.push(this.thinkingMarkdown);
-		if (this.thinkingMarkdown && this.textMarkdown) parts.push("separator");
+		if (this.collapseLabel) parts.push({ raw: this.collapseLabel });
+		if ((this.thinkingMarkdown || this.collapseLabel) && this.textMarkdown) parts.push("separator");
 		if (this.textMarkdown) parts.push(this.textMarkdown);
 		return parts;
 	}
@@ -124,6 +140,10 @@ export class AssistantMessageComponent extends Container {
 		for (const part of this.bodyParts()) {
 			if (part === "separator") {
 				lines.push(" ".repeat(safeWidth));
+				continue;
+			}
+			if (!(part instanceof Markdown)) {
+				lines.push(...renderTranscriptMessageLines([part.raw], safeWidth, "  "));
 				continue;
 			}
 			lines.push(...renderTranscriptMessageLines(part.render(contentWidth), safeWidth, this.bulletPrefix()));
@@ -157,6 +177,14 @@ export class AssistantMessageComponent extends Container {
 				totalLines += 1;
 				if (remaining > 0) {
 					chunks.unshift([" ".repeat(safeWidth)]);
+					remaining -= 1;
+				}
+				continue;
+			}
+			if (!(part instanceof Markdown)) {
+				totalLines += 1;
+				if (remaining > 0) {
+					chunks.unshift(renderTranscriptMessageLines([part.raw], safeWidth, "  "));
 					remaining -= 1;
 				}
 				continue;

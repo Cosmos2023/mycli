@@ -6,6 +6,7 @@ import { uiGlyphs } from "../../theme/terminal-style.ts";
 import { terminalContent } from "../../transcript/terminal-content.ts";
 import { keyHint } from "../shared/keybinding-hints.ts";
 import { TRANSCRIPT_HEADER_INDENT, TRANSCRIPT_BRANCH_INDENT } from "./transcript-gutter.ts";
+import { stripVTControlCharacters } from "node:util";
 
 const ACTIONS: Readonly<Record<GatewayAgentInteraction["kind"], readonly [string, string, string]>> = {
 	spawn: ["Starting agent", "Started agent", "Start agent"],
@@ -31,7 +32,9 @@ export class AgentInteractionComponent extends Container {
 			this.addChild(tool.expanded ? new Text(preview, TRANSCRIPT_BRANCH_INDENT, 0) : {
 				render: (width: number): string[] => {
 					const lines = new Text(preview, TRANSCRIPT_BRANCH_INDENT, 0).render(width);
-					return lines.length > 2 ? [...lines.slice(0, 2), ...new Text(theme.fg("dim", `... ${keyHint("app.tools.expand", "to expand")}`), TRANSCRIPT_BRANCH_INDENT, 0).render(width)] : lines;
+					return lines.length > 2
+						? [...lines.slice(0, 2), ...new Text(theme.fg("dim", `+ Show details (${keyHint("app.tools.expand", "expand")})`), TRANSCRIPT_BRANCH_INDENT, 0).render(width)]
+						: lines;
 				},
 				invalidate: (): void => {},
 			});
@@ -43,6 +46,15 @@ export class AgentInteractionComponent extends Container {
 			this.addChild(new Text(theme.fg("dim", tool.name), TRANSCRIPT_BRANCH_INDENT, 0));
 			const detail = tool.detailPreview ?? tool.outputPreview ?? tool.summaryPreview;
 			if (detail) this.addChild(new Text(theme.fg("muted", terminalContent(detail)), TRANSCRIPT_BRANCH_INDENT, 0));
+			this.addChild(new Text(theme.fg("muted", `${uiGlyphs().minus} Show less (${keyHint("app.tools.expand", "collapse")})`), TRANSCRIPT_BRANCH_INDENT, 0));
 		}
+	}
+
+	/** True when the given rendered row is this block's expand/collapse affordance. */
+	isDetailsToggleRow(row: number, width: number): boolean {
+		const lines = this.render(width).map((line) => stripVTControlCharacters(line));
+		if (row !== lines.length - 1) return false;
+		const last = lines[row] ?? "";
+		return last.includes("Show details") || last.includes("Show less");
 	}
 }

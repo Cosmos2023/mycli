@@ -566,7 +566,7 @@ test("mycli shell renders promoted shell surfaces", () => {
 	assert.match(output, /Read word\.txt/);
 	assert.match(output, /^› Read word\.txt and summarize it\./m);
 	assert.doesNotMatch(output, /Thinking\.\.\./);
-	assert.match(output, /^• I should inspect the file … \+ show detail \(ctrl\+o\)/m);
+	assert.match(output, /^• I should inspect the file … \+ Show details \(ctrl\+o\)/m);
 	assert.match(output, /Summary: hello/);
 	assert.match(output, /^• Summary: hello\./m);
 	assert.match(output, /Read/);
@@ -1913,7 +1913,7 @@ test("tool rendering stays collapsed until expanded and marks failure", () => {
 	let output = stripAnsi(collapsed.render(80).join("\n"));
 	assert.match(output, /Edit/);
 	assert.match(output, /⎿ \/Users\/cosmos\/Desktop\/mycli\/word\.txt · line 1/);
-	assert.match(output, /more lines/);
+	assert.match(output, /\+\s?\d+ lines? \(/);
 	assert.doesNotMatch(output, /line 1\n/);
 
 	const expanded = new ToolExecutionComponent({
@@ -2091,7 +2091,7 @@ test("tool rendering previews write content like coding-agent", () => {
 	assert.match(output, /doc line 1/);
 	assert.match(output, /doc line 10/);
 	assert.doesNotMatch(output, /doc line 13/);
-	assert.match(output, /\(3 more lines, 13 total,/);
+	assert.match(output, /\+ 3 lines \(/);
 
 	const expanded = new ToolExecutionComponent({
 		id: "write",
@@ -2270,21 +2270,21 @@ test("completed Shell output keeps a five-row head and tail summary", () => {
 	const lines = rendered.render(100).map((line) => stripAnsi(line));
 	const output = lines.join("\n");
 	const firstOutput = lines.find((line) => line.includes("└ output 1"));
-	const omission = lines.find((line) => line.includes("… +3 lines"));
+	const omission = lines.find((line) => line.includes("+ 3 lines"));
 	const tailOutput = lines.find((line) => line.includes("output 6"));
 
 	assert.match(output, /output 1/);
 	assert.match(output, /output 2/);
 	assert.doesNotMatch(output, /output 3/);
 	assert.doesNotMatch(output, /output 5/);
-	assert.match(output, /… \+3 lines \(ctrl\+t to view transcript\)/);
+	assert.match(output, /\+ 3 lines \(ctrl\+o to expand\)/);
 	assert.match(output, /output 6/);
 	assert.match(output, /output 7/);
 	assert.ok(firstOutput);
 	assert.ok(omission);
 	assert.ok(tailOutput);
-	assert.equal(omission.indexOf("…"), firstOutput.indexOf("└") + 2);
-	assert.equal(tailOutput.indexOf("output 6"), omission.indexOf("…"));
+	assert.equal(omission.indexOf("+ 3 lines"), firstOutput.indexOf("└") + 2);
+	assert.equal(tailOutput.indexOf("output 6"), omission.indexOf("+ 3 lines"));
 });
 
 test("completed Shell keeps a backend omission between retained head and tail", () => {
@@ -2298,15 +2298,15 @@ test("completed Shell keeps a backend omission between retained head and tail", 
 
 	const lines = rendered.render(100).map((line) => stripAnsi(line));
 	const headIndex = lines.findIndex((line) => line.includes("└ 天气预报"));
-	const omissionIndex = lines.findIndex((line) => line.includes("… +17 lines"));
+	const omissionIndex = lines.findIndex((line) => line.includes("+ 17 lines"));
 	const tailIndex = lines.findIndex((line) => line.includes("关注 @igor_chubin"));
 
 	assert.ok(headIndex >= 0);
 	assert.ok(omissionIndex > headIndex);
 	assert.ok(tailIndex > omissionIndex);
-	assert.equal(lines[omissionIndex]?.indexOf("…"), lines[headIndex]?.indexOf("└") + 2);
-	assert.equal(lines[tailIndex]?.indexOf("关注"), lines[omissionIndex]?.indexOf("…"));
-	assert.match(lines[omissionIndex] ?? "", /… \+17 lines \(ctrl\+t to view transcript\)/);
+	assert.equal(lines[omissionIndex]?.indexOf("+ 17 lines"), lines[headIndex]?.indexOf("└") + 2);
+	assert.equal(lines[tailIndex]?.indexOf("关注"), lines[omissionIndex]?.indexOf("+ 17 lines"));
+	assert.match(lines[omissionIndex] ?? "", /\+ 17 lines \(ctrl\+o to expand\)/);
 });
 
 test("Codex-style foreground Bash shows elapsed interrupt hint", () => {
@@ -4600,14 +4600,14 @@ test("ctrl o expands collapsed reasoning in the main transcript", async () => {
 	runtime.start();
 
 	const collapsed = stripAnsi(runtime.chatContainer.render(80).join("\n"));
-	assert.match(collapsed, /^• Checking the parser\. … \+ show detail \(ctrl\+o\)/m);
+	assert.match(collapsed, /^• Checking the parser\. … \+ Show details \(ctrl\+o\)/m);
 	assert.doesNotMatch(collapsed, /More detail/);
 
 	terminal.input?.("\x0f");
 
 	const expanded = stripAnsi(runtime.chatContainer.render(80).join("\n"));
 	assert.match(expanded, /More detail/);
-	assert.doesNotMatch(expanded, /\+ show detail/);
+	assert.match(expanded, /Show less/);
 	await runtime.shutdown();
 });
 
@@ -4631,7 +4631,7 @@ test("clicking the collapsed reasoning preview expands it", async () => {
 	runtime.start();
 
 	const rows = stripAnsi(runtime.ui.render(80).join("\n")).split("\n");
-	const previewRow = rows.findIndex((line) => line.includes("+ show detail"));
+	const previewRow = rows.findIndex((line) => line.includes("+ Show details"));
 	assert.ok(previewRow >= 0, "expected a collapsed reasoning preview row");
 	assert.doesNotMatch(stripAnsi(runtime.chatContainer.render(80).join("\n")), /More detail/);
 
@@ -4662,7 +4662,7 @@ test("legacy mouse encoding also expands the collapsed reasoning preview", async
 	runtime.start();
 
 	const rows = stripAnsi(runtime.ui.render(80).join("\n")).split("\n");
-	const previewRow = rows.findIndex((line) => line.includes("+ show detail"));
+	const previewRow = rows.findIndex((line) => line.includes("+ Show details"));
 	assert.ok(previewRow >= 0, "expected a collapsed reasoning preview row");
 	const legacy = (code: number): string =>
 		`\x1b[M${String.fromCharCode(32 + code, 37, 32 + previewRow + 1)}`;
@@ -4705,7 +4705,7 @@ test("clicking a collapsed tool hint expands only that tool", async () => {
 	runtime.start();
 
 	const rows = stripAnsi(runtime.ui.render(80).join("\n")).split("\n");
-	const hintRow = rows.findIndex((line) => line.includes("more lines") || line.includes("details hidden"));
+	const hintRow = rows.findIndex((line) => line.includes("to expand)") || line.includes("Show less"));
 	assert.ok(hintRow >= 0, "expected a collapsed tool hint row");
 
 	terminal.input?.(`\x1b[<0;5;${hintRow + 1}M`);
@@ -5925,7 +5925,7 @@ test("mycli shell applies runtime-backed visual settings to active rendering", a
 	assert.equal(theme.name(), "dark");
 	assert.equal(runtime.ui.getShowHardwareCursor(), false);
 	assert.equal(runtime.ui.getClearOnShrink(), true);
-	assert.match(stripAnsi(runtime.chatContainer.render(80).join("\n")), /^• Visible reasoning … \+ show detail \(ctrl\+o\)/m);
+	assert.match(stripAnsi(runtime.chatContainer.render(80).join("\n")), /^• Visible reasoning … \+ Show details \(ctrl\+o\)/m);
 	assert.match(stripAnsi(runtime.statusContainer.render(80).join("\n")), /esc to interrupt/);
 	assert.doesNotMatch(stripAnsi(runtime.subagentTaskContainer.render(80).join("\n")), /Inspect auth bug/);
 	assert.equal(runtime.footerContainer.render(80).length, 1);

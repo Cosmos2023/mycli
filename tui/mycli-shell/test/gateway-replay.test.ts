@@ -66,7 +66,7 @@ test("historical Shell transcript uses the compact completed output summary", ()
 
 	assert.match(output, /history output 1/);
 	assert.doesNotMatch(output, /history output 3/);
-	assert.match(output, /… \+3 lines \(ctrl\+t to view transcript\)/);
+	assert.match(output, /\+ 3 lines \(ctrl\+o to expand\)/);
 	assert.match(output, /history output 7/);
 });
 

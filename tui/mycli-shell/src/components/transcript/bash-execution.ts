@@ -1,4 +1,5 @@
 import { Spacer } from "../../tui-core/components/spacer.ts";
+import { stripVTControlCharacters } from "node:util";
 import { Text } from "../../tui-core/components/text.ts";
 import { Container } from "../../tui-core/tui.ts";
 import { sliceByColumn, visibleWidth, wrapTextWithAnsi } from "../../tui-core/utils.ts";
@@ -65,6 +66,19 @@ export class BashExecutionComponent extends Container {
 		if (this.bash.outputPreview) {
 			this.addChild(this.outputComponent());
 		}
+		if (this.bash.expanded) {
+			this.addChild(new Text(
+				theme.fg("muted", this.indentedHiddenLinesText(0)),
+				SHELL_CELL_PADDING_X,
+				0,
+			));
+		}
+	}
+
+	/** True when the given rendered row is this block's expand/collapse affordance. */
+	isDetailsToggleRow(row: number, width: number): boolean {
+		const line = stripVTControlCharacters(this.render(width)[row] ?? "");
+		return line.includes(" to expand)") || line.includes("Show less");
 	}
 
 	private statusComponent(): { render: (width: number) => string[]; invalidate: () => void } {
@@ -210,9 +224,10 @@ export class BashExecutionComponent extends Container {
 	}
 
 	private hiddenLinesText(hiddenCount: number): string {
+		const noun = hiddenCount === 1 ? "line" : "lines";
 		return this.bash.expanded
-			? keyHint("app.tools.expand", "collapse")
-			: `${uiGlyphs().ellipsis} +${hiddenCount} lines (${keyHint("app.transcript.open", "to view transcript")})`;
+			? `${uiGlyphs().minus} Show less (${keyHint("app.tools.expand", "collapse")})`
+			: `+ ${hiddenCount} ${noun} (${keyHint("app.tools.expand", "to expand")})`;
 	}
 
 	private indentedHiddenLinesText(hiddenCount: number): string {

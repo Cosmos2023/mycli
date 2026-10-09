@@ -46,9 +46,11 @@ test("Shell previews retain interior blank rows and indentation while streaming"
 		assert.match(lines[first]!, /\u2514 {3}first/u);
 		assert.equal(lines[first + 1]?.trim(), "");
 		assert.match(lines[first + 2]!, /^ {8}second/u);
-		assert.ok(lines.at(-1)?.includes("second"));
+		assert.ok(lines.some((line) => line.includes("second")));
+		if (expanded) assert.match(lines.at(-1) ?? "", /Show less/u);
+		else assert.ok(lines.at(-1)?.includes("second"));
 		component.updateBash({ ...bash, expanded, outputPreview: "\n\n  first\n\n    second\n\nthird\n" });
-		assert.ok(stripAnsi(component.render(80).at(-1) ?? "").includes("third"));
+		assert.ok(component.render(80).map(stripAnsi).some((line) => line.includes("third")));
 	}
 	component.updateBash({ ...bash, outputPreview: "\n \n\u001b[0m\n" });
 	assert.equal(component.render(80).length, 2);
@@ -60,7 +62,7 @@ test("a blank Shell preview retains the hint for older omitted output", () => {
 	});
 	const lines = component.render(80).map(stripAnsi);
 	assert.equal(lines.length, 3);
-	assert.match(lines[2]!, /\+42 lines .*to view transcript/u);
+	assert.match(lines[2]!, /\+ 42 lines .*to expand/u);
 });
 
 test("turn activity stays above the composer during transcript scrolling and state-only updates", async (context) => {

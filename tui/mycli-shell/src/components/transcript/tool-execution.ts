@@ -65,6 +65,13 @@ export class ToolExecutionComponent extends Container {
 		const details = this.detailsComponent();
 		if (details) {
 			this.addChild(details);
+			if (this.tool.expanded) {
+				this.addChild(new Text(
+					theme.fg("muted", `${uiGlyphs().minus} Show less (${keyHint("app.tools.expand", "collapse")})`),
+					TRANSCRIPT_DETAIL_INDENT,
+					0,
+				));
+			}
 		}
 	}
 
@@ -195,10 +202,8 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private hiddenLinesText(hiddenCount: number): string {
-		if (this.tool.contentPreview && this.tool.contentLineCount !== undefined) {
-			return `... (${hiddenCount} more lines, ${this.tool.contentLineCount} total, ${keyHint("app.tools.expand", "to expand")})`;
-		}
-		return `... ${hiddenCount} more lines (${keyHint("app.tools.expand", "to expand")})`;
+		const noun = hiddenCount === 1 ? "line" : "lines";
+		return theme.fg("muted", `+ ${hiddenCount} ${noun} (${keyHint("app.tools.expand", "to expand")})`);
 	}
 
 	private truncateDetailText(text: string, width: number): { visualLines: string[]; skippedCount: number } {
@@ -218,16 +223,14 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private collapsedHint(): string {
-		const reason = this.tool.status === "running" ? "waiting" : this.tool.status === "error" ? "failed" : "details hidden";
-		return theme.fg("muted", `${reason}${this.shouldShowCollapsedHint() ? ` (${keyHint("app.tools.expand", "expand")})` : ""}`);
+		return theme.fg("muted", `+ Show details (${keyHint("app.tools.expand", "expand")})`);
 	}
 
 	/** True when the given rendered row is this block's collapsed expand affordance. */
 	isDetailsToggleRow(row: number, width: number): boolean {
-		if (this.tool.expanded) return false;
 		if (this.tool.agentInteraction || this.tool.terminalInteraction) return false;
 		if (toolContextActivity(this.tool) !== undefined) return false;
-		if (!this.shouldShowCollapsedHint()) return false;
+		if (this.tool.expanded ? !this.detailText() : !this.shouldShowCollapsedHint()) return false;
 		return row === this.render(width).length - 1;
 	}
 

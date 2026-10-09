@@ -25,6 +25,7 @@ export interface UiGlyphs {
 	readonly mask: string;
 	readonly cursor: string;
 	readonly ellipsis: string;
+	readonly minus: string;
 	readonly separator: string;
 	readonly descriptionSeparator: string;
 	readonly horizontal: string;
@@ -70,6 +71,7 @@ const UNICODE_GLYPHS: UiGlyphs = Object.freeze({
 	mask: "•",
 	cursor: "▌",
 	ellipsis: "…",
+	minus: "−",
 	separator: "·",
 	descriptionSeparator: "—",
 	horizontal: "─",
@@ -115,6 +117,7 @@ const ASCII_GLYPHS: UiGlyphs = Object.freeze({
 	mask: "*",
 	cursor: "|",
 	ellipsis: "...",
+	minus: "-",
 	separator: "|",
 	descriptionSeparator: "-",
 	horizontal: "-",
