@@ -113,9 +113,9 @@ test("collapsed reasoning keeps a one-line preview and the answer prefix", () =>
 		new AssistantMessageComponent("The answer.", "Some reasoning.\nMore detail.", true).render(60),
 	);
 	assert.equal(collapsed[0]?.startsWith("• Some reasoning."), true);
-	assert.equal(collapsed[0]?.includes("+ Show details"), true);
+	assert.equal(collapsed[1]?.includes("+ Show details"), true);
 	assert.equal(collapsed.some((line) => line.includes("More detail")), false);
-	assert.equal(collapsed[1]?.startsWith("• The answer."), true);
+	assert.equal(collapsed[2]?.startsWith("• The answer."), true);
 
 	const expanded = visibleContentLines(
 		new AssistantMessageComponent("The answer.", "Some reasoning.", false).render(40),
@@ -136,7 +136,7 @@ test("the Ctrl+T transcript view shows full reasoning that the main view collaps
 	const viewer = visibleContentLines(renderTranscriptWithRanges([block], 60, { hideThinking: false }).lines);
 
 	assert.equal(main.some((line) => line.includes("More detail")), false);
-	assert.equal(main[0]?.includes("+ Show details"), true);
+	assert.equal(main.some((line) => line.includes("+ Show details")), true);
 	assert.equal(viewer.some((line) => line.includes("More detail")), true);
 });
 

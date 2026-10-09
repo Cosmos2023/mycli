@@ -566,7 +566,8 @@ test("mycli shell renders promoted shell surfaces", () => {
 	assert.match(output, /Read word\.txt/);
 	assert.match(output, /^› Read word\.txt and summarize it\./m);
 	assert.doesNotMatch(output, /Thinking\.\.\./);
-	assert.match(output, /^• I should inspect the file … \+ Show details \(ctrl\+o\)/m);
+	assert.match(output, /^• I should inspect the file\s*$/m);
+	assert.match(output, /^  \+ Show details \(ctrl\+o expand\)/m);
 	assert.match(output, /Summary: hello/);
 	assert.match(output, /^• Summary: hello\./m);
 	assert.match(output, /Read/);
@@ -4600,7 +4601,7 @@ test("ctrl o expands collapsed reasoning in the main transcript", async () => {
 	runtime.start();
 
 	const collapsed = stripAnsi(runtime.chatContainer.render(80).join("\n"));
-	assert.match(collapsed, /^• Checking the parser\. … \+ Show details \(ctrl\+o\)/m);
+	assert.match(collapsed, /^  \+ Show details \(ctrl\+o expand\)/m);
 	assert.doesNotMatch(collapsed, /More detail/);
 
 	terminal.input?.("\x0f");
@@ -5925,7 +5926,7 @@ test("mycli shell applies runtime-backed visual settings to active rendering", a
 	assert.equal(theme.name(), "dark");
 	assert.equal(runtime.ui.getShowHardwareCursor(), false);
 	assert.equal(runtime.ui.getClearOnShrink(), true);
-	assert.match(stripAnsi(runtime.chatContainer.render(80).join("\n")), /^• Visible reasoning … \+ Show details \(ctrl\+o\)/m);
+	assert.match(stripAnsi(runtime.chatContainer.render(80).join("\n")), /^  \+ Show details \(ctrl\+o expand\)/m);
 	assert.match(stripAnsi(runtime.statusContainer.render(80).join("\n")), /esc to interrupt/);
 	assert.doesNotMatch(stripAnsi(runtime.subagentTaskContainer.render(80).join("\n")), /Inspect auth bug/);
 	assert.equal(runtime.footerContainer.render(80).length, 1);

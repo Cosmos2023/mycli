@@ -26,8 +26,7 @@ export class AssistantMessageComponent extends Container {
 	private thinkingHidden: boolean;
 	private textMarkdown?: Markdown;
 	private thinkingMarkdown?: Markdown;
-	private thinkingPreview?: string;
-	private collapseLabel?: string;
+	private detailsLabel?: string;
 
 	constructor(text: string, thinking?: string, thinkingHidden = true) {
 		super();
@@ -40,22 +39,21 @@ export class AssistantMessageComponent extends Container {
 	updateMessage(text: string, thinking?: string, thinkingHidden = true): void {
 		const previousText = this.visibleText();
 		const previousThinking = this.visibleThinking();
-		const previousCollapse = this.collapseLabel;
+		const previousLabel = this.detailsLabel;
 		this.text = text;
 		this.thinking = thinking;
 		this.thinkingHidden = thinkingHidden;
 		const nextText = this.visibleText();
 		const nextThinking = this.visibleThinking();
-		const nextCollapse = this.collapseLabelFor(nextThinking);
+		const nextLabel = this.detailsLabelFor(nextThinking);
 		if (
 			Boolean(previousText) !== Boolean(nextText)
 			|| Boolean(previousThinking) !== Boolean(nextThinking)
-			|| Boolean(previousCollapse) !== Boolean(nextCollapse)
+			|| previousLabel !== nextLabel
 		) {
 			this.rebuild();
 			return;
 		}
-		this.collapseLabel = nextCollapse;
 		if (nextText !== previousText) this.textMarkdown?.setText(nextText);
 		if (nextThinking !== previousThinking) this.thinkingMarkdown?.setText(nextThinking);
 		if (nextText !== previousText || nextThinking !== previousThinking) {
@@ -73,8 +71,7 @@ export class AssistantMessageComponent extends Container {
 		this.textMarkdown = undefined;
 		this.thinkingMarkdown = undefined;
 		const thinking = this.visibleThinking();
-		this.thinkingPreview = thinking && this.thinkingHidden ? reasoningPreviewLine(thinking) : undefined;
-		this.collapseLabel = this.collapseLabelFor(thinking);
+		this.detailsLabel = this.detailsLabelFor(thinking);
 		const text = this.visibleText();
 		if (thinking) {
 			this.thinkingMarkdown = new Markdown(thinking, 0, 0, markdownTheme(), {
@@ -88,9 +85,12 @@ export class AssistantMessageComponent extends Container {
 		this.markRenderDirty();
 	}
 
-	private collapseLabelFor(thinking: string): string | undefined {
-		if (!thinking || this.thinkingHidden) return undefined;
-		return theme.fg("muted", `${uiGlyphs().minus} Show less (${formatKeyText(keyForAction("app.tools.expand"))} collapse)`);
+	private detailsLabelFor(thinking: string): string | undefined {
+		if (!thinking) return undefined;
+		const key = formatKeyText(keyForAction("app.tools.expand"));
+		return this.thinkingHidden
+			? theme.fg("muted", `+ Show details (${key} expand)`)
+			: theme.fg("muted", `${uiGlyphs().minus} Show less (${key} collapse)`);
 	}
 
 	private visibleText(): string {
@@ -101,9 +101,7 @@ export class AssistantMessageComponent extends Container {
 		const text = this.thinking?.trim() ?? "";
 		if (!text) return "";
 		if (!this.thinkingHidden) return text;
-		const firstLine = reasoningPreviewLine(text);
-		if (!firstLine) return "";
-		return `${firstLine} ${uiGlyphs().ellipsis} + Show details (${formatKeyText(keyForAction("app.tools.expand"))})`;
+		return reasoningPreviewLine(text);
 	}
 
 	/** True when the given rendered row is the collapsed reasoning preview line. */
@@ -114,8 +112,7 @@ export class AssistantMessageComponent extends Container {
 		// from the raw markdown (bold, headings, wrapping).
 		const contentWidth = transcriptMessageContentWidth(Math.max(1, Math.floor(width)));
 		const thinkingRows = this.thinkingMarkdown.render(contentWidth).length;
-		if (this.thinkingPreview) return row <= thinkingRows;
-		return this.collapseLabel !== undefined && row === thinkingRows + 1;
+		return this.detailsLabel !== undefined && row === thinkingRows + 1;
 	}
 
 	holdsNativeScrollbackTail(): boolean {
@@ -129,8 +126,8 @@ export class AssistantMessageComponent extends Container {
 	private bodyParts(): Array<Markdown | "separator" | { raw: string }> {
 		const parts: Array<Markdown | "separator" | { raw: string }> = [];
 		if (this.thinkingMarkdown) parts.push(this.thinkingMarkdown);
-		if (this.collapseLabel) parts.push({ raw: this.collapseLabel });
-		if ((this.thinkingMarkdown || this.collapseLabel) && this.textMarkdown) parts.push("separator");
+		if (this.detailsLabel) parts.push({ raw: this.detailsLabel });
+		if ((this.thinkingMarkdown || this.detailsLabel) && this.textMarkdown) parts.push("separator");
 		if (this.textMarkdown) parts.push(this.textMarkdown);
 		return parts;
 	}
