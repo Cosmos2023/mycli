@@ -283,6 +283,11 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		this.fdPath = fdPath;
 	}
 
+	/** Replace the suggestion source without rebuilding the provider the editor already holds. */
+	setCommands(commands: readonly (SlashCommand | AutocompleteItem)[]): void {
+		this.commands = [...commands];
+	}
+
 	async getSuggestions(
 		lines: string[],
 		cursorLine: number,
@@ -785,5 +790,44 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		}
 
 		return true;
+	}
+}
+
+/**
+ * Slash suggestions for a grouped command surface.
+ *
+ * A bare `/` browses the grouped list, but any prefix still matches every command, so a command
+ * hidden behind a group keeps completing once the user starts typing its name.
+ */
+export class ScopedSlashAutocompleteProvider implements AutocompleteProvider {
+	constructor(
+		private readonly inner: CombinedAutocompleteProvider,
+		private readonly browsing: readonly SlashCommand[],
+		private readonly complete: readonly SlashCommand[],
+	) {}
+
+	async getSuggestions(
+		lines: string[],
+		cursorLine: number,
+		cursorCol: number,
+		options: { signal: AbortSignal; force?: boolean },
+	): Promise<AutocompleteSuggestions | null> {
+		const textBeforeCursor = (lines[cursorLine] ?? "").slice(0, cursorCol);
+		this.inner.setCommands(textBeforeCursor === "/" ? this.browsing : this.complete);
+		return await this.inner.getSuggestions(lines, cursorLine, cursorCol, options);
+	}
+
+	applyCompletion(
+		lines: string[],
+		cursorLine: number,
+		cursorCol: number,
+		item: AutocompleteItem,
+		prefix: string,
+	): { lines: string[]; cursorLine: number; cursorCol: number } {
+		return this.inner.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
+	}
+
+	shouldTriggerFileCompletion(lines: string[], cursorLine: number, cursorCol: number): boolean {
+		return this.inner.shouldTriggerFileCompletion(lines, cursorLine, cursorCol);
 	}
 }

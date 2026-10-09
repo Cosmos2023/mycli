@@ -97,7 +97,7 @@ import {
 	type TranscriptProjectionState,
 } from "../transcript/transcript-projection.ts";
 import { resolveTranscriptReplayMaxRows } from "../transcript/transcript-replay.ts";
-import { CombinedAutocompleteProvider, type SlashCommand } from "../tui-core/autocomplete.ts";
+import { CombinedAutocompleteProvider, ScopedSlashAutocompleteProvider, type SlashCommand } from "../tui-core/autocomplete.ts";
 import { Spacer } from "../tui-core/components/spacer.ts";
 import { Text } from "../tui-core/components/text.ts";
 import type { KeybindingsManager } from "../tui-core/keybindings.ts";
@@ -2557,17 +2557,23 @@ export class MycliShellRuntime {
 	}
 
 	private refreshAutocompleteProvider(): void {
-		const slashCommands: SlashCommand[] = this.commands()
-			.filter((command) => command.searchOnly !== true && command.available !== false)
-			.map((command) => ({
+		const visible = this.commands().filter((command) => command.searchOnly !== true && command.available !== false);
+		const toSlashCommand = (command: MycliShellCommandSpec): SlashCommand => ({
 			name: command.name.replace(/^\//, ""),
 			description: command.description,
 			...(command.argumentHint ? { argumentHint: command.argumentHint } : {}),
-		}));
+		});
+		// A bare `/` browses the grouped surface; typing a prefix still matches grouped commands.
+		const browsing = visible.filter((command) => command.scope !== "config").map(toSlashCommand);
+		const complete = visible.map(toSlashCommand);
 		this.editor.setAutocompleteProvider(
-			new CombinedAutocompleteProvider(slashCommands, this.autocompleteBasePath(), null, {
-				descriptionSeparator: () => uiGlyphs().descriptionSeparator,
-			}),
+			new ScopedSlashAutocompleteProvider(
+				new CombinedAutocompleteProvider(complete, this.autocompleteBasePath(), null, {
+					descriptionSeparator: () => uiGlyphs().descriptionSeparator,
+				}),
+				browsing,
+				complete,
+			),
 		);
 	}
 

@@ -73,11 +73,15 @@ export class HelpOverlayComponent implements Component, Focusable {
 	private commandLines(width: number): string[] {
 		const lines: string[] = [];
 		const visible = this.options.commands.filter((command) => command.searchOnly !== true && command.available !== false);
+		// Configuration stays a reference entry, but grouped so the navigation surface stays small.
+		const navigation = visible.filter((command) => command.scope !== "config");
 		for (const [category, title] of Object.entries(CATEGORY_LABELS)) {
-			const commands = visible.filter((command) => (command.category ?? "tools") === category);
+			const commands = navigation.filter((command) => (command.category ?? "tools") === category);
 			if (commands.length === 0) continue;
 			lines.push(commandGroupLine(title, commands, width));
 		}
+		const configuration = visible.filter((command) => command.scope === "config");
+		if (configuration.length > 0) lines.push(commandGroupLine("Configuration (/config)", configuration, width));
 		return lines;
 	}
 }
