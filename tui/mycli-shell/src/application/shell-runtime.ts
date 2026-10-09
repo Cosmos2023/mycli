@@ -2683,15 +2683,31 @@ export class MycliShellRuntime {
 
 	/** Toggle the collapsed/expanded state of a single transcript block. */
 	private toggleDetailsAt(id: string): void {
-		const block = this.chatBlocks.get(id);
-		const current = block && block.kind === "message"
-			? !this.reasoningHiddenForId(id)
-			: this.toolDetailMode === "expanded"
-				|| (this.toolDetailMode === "default" && this.blockExpandedByDefault(id));
-		this.detailOverrides.set(id, !current);
+		const targets = this.detailToggleTargets(id);
+		const expanded = targets.every((target) => this.isDetailsExpanded(target));
+		for (const target of targets) this.detailOverrides.set(target, !expanded);
 		this.setState(this.state);
 		this.applyReasoningDisplayMode();
 		this.queueNativeTranscriptHistory(true);
+	}
+
+	/** A collapsed group expands through its members, since the group block disappears when split. */
+	private detailToggleTargets(id: string): string[] {
+		const block = this.projectedChatBlocks.find((item) => item.id === id);
+		if (block?.kind === "tool_group") {
+			return block.group.items.map((item) => (item.kind === "tool" ? item.tool.id : item.bash.id));
+		}
+		return [id];
+	}
+
+	private isDetailsExpanded(id: string): boolean {
+		const block = this.chatBlocks.get(id);
+		if (block?.kind === "message") return !this.reasoningHiddenForId(id);
+		const override = this.detailOverrides.get(id);
+		if (override !== undefined) return override;
+		if (this.toolDetailMode === "expanded") return true;
+		if (this.toolDetailMode === "collapsed") return false;
+		return this.blockExpandedByDefault(id);
 	}
 
 	private blockExpandedByDefault(id: string): boolean {

@@ -4675,6 +4675,43 @@ test("legacy mouse encoding also expands the collapsed reasoning preview", async
 	await runtime.shutdown();
 });
 
+test("context tools expose a show-details affordance that a click expands", async () => {
+	const terminal = new TestTerminal();
+	const read = {
+		id: "read-1",
+		name: "Read",
+		args: "src/app.ts",
+		status: "success" as const,
+		outputPreview: "export const app = 1;",
+		expanded: false,
+	};
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			messages: [],
+			tools: [read],
+			bash: [],
+			transcript: [{ id: read.id, kind: "tool", tool: read }],
+			settings: { ...sampleState().settings, toolDetailsDefault: "collapsed" },
+		},
+		terminal,
+	});
+	runtime.start();
+
+	const rows = stripAnsi(runtime.ui.render(80).join("\n")).split("\n");
+	const hintRow = rows.findIndex((line) => line.includes("+ Show details"));
+	assert.ok(hintRow >= 0, "expected a show-details row for the context tool");
+
+	terminal.input?.(`\x1b[<0;5;${hintRow + 1}M`);
+	terminal.input?.(`\x1b[<0;5;${hintRow + 1}m`);
+
+	const tools = (runtime.getState().transcript ?? [])
+		.filter((block) => block.kind === "tool")
+		.map((block) => (block.kind === "tool" ? block.tool.expanded : undefined));
+	assert.deepEqual(tools, [true]);
+	await runtime.shutdown();
+});
+
 test("clicking a collapsed tool hint expands only that tool", async () => {
 	const terminal = new TestTerminal();
 	const makeTool = (id: string, label: string) => ({

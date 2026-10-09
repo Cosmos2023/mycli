@@ -57,6 +57,11 @@ export class ToolExecutionComponent extends Container {
 		const activity = this.tool.expanded ? undefined : toolContextActivity(this.tool);
 		if (activity) {
 			this.addChild(new ExplorationSummaryComponent([activity]));
+			this.addChild(new Text(
+				theme.fg("muted", `+ Show details (${keyHint("app.tools.expand", "expand")})`),
+				TRANSCRIPT_DETAIL_INDENT,
+				0,
+			));
 			return;
 		}
 		this.addChild(new Spacer(1));
@@ -229,9 +234,10 @@ export class ToolExecutionComponent extends Container {
 	/** True when the given rendered row is this block's collapsed expand affordance. */
 	isDetailsToggleRow(row: number, width: number): boolean {
 		if (this.tool.agentInteraction || this.tool.terminalInteraction) return false;
-		if (toolContextActivity(this.tool) !== undefined) return false;
-		if (this.tool.expanded ? !this.detailText() : !this.shouldShowCollapsedHint()) return false;
-		return row === this.render(width).length - 1;
+		const rows = this.render(width).length;
+		if (this.tool.expanded) return this.detailText() !== "" && row === rows - 1;
+		if (toolContextActivity(this.tool) !== undefined) return row === rows - 1;
+		return this.shouldShowCollapsedHint() && row === rows - 1;
 	}
 
 	private shouldShowCollapsedHint(): boolean {
