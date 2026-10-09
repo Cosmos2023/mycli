@@ -5351,6 +5351,17 @@ const environment = Object.fromEntries(keys.flatMap((key) => {
   next-token type, width, and reference-sensitive token context. Appending a reference-link
   definition must be able to change an earlier `[label][id]` token even when its raw source is
   unchanged.
+- Assistant Markdown recognizes `$…$`, `$$…$$`, `\(…\)` and `\[…\]` before the parser runs, because
+  Marked consumes TeX escapes such as `\{` and `\\`. Complete spans become inert placeholders that
+  the inline renderer expands; fenced and inline code keep their literal source. Inline spans are
+  accepted only when the closer is not followed by an alphanumeric, the body has no surrounding
+  whitespace, and the body is neither a bare digit run nor an all-caps word, so prose such as
+  `cost is $5 and $10` and shell `$HOME` are never rewritten. Display math becomes a multi-row block
+  only when its paragraph is exactly that span; unsupported commands, oversized sources and
+  over-limit layouts keep the original source instead of rendering incorrectly. Layout is bounded to
+  4096 bytes, 16 rows and 256 columns. A paragraph containing math placeholders is excluded from the
+  retained plain/rich paragraph caches, and an append whose suffix contains a math delimiter
+  re-masks the full source because a span may close inside the appended text.
 - Markdown also retains normalized source tokens for append-only streaming. When the source has no
   reference-link syntax, it reparses from the final non-space top-level token, validates that token
   raw lengths still cover the complete source, and splices only that suffix into retained lexer and

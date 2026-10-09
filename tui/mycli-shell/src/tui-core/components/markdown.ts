@@ -2,6 +2,7 @@ import { Lexer, Marked, type Token, Tokenizer, type Tokens } from "marked";
 import { getCapabilities, hyperlink, isImageLine } from "../terminal-image.ts";
 import type { Component, TailRenderResult } from "../tui.ts";
 import { applyBackgroundToLine, visibleWidth, wrapTextWithAnsi } from "../utils.ts";
+import { maskMath, renderDisplayMath, renderInlineMath, type MathReplacement } from "./math.ts";
 
 const STRICT_STRIKETHROUGH_REGEX = /^(~~)(?=[^\s~])((?:\\.|[^\\])*?(?:\\.|[^\s~\\]))\1(?=[^~]|$)/;
 const TABLE_DELIMITER_LINE_REGEX = /^[ \t]*\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)+\|?[ \t]*$/mu;
@@ -236,6 +237,11 @@ function normalizeMarkdownSource(source: string): string {
 	return source.replace(/\t/g, "   ");
 }
 
+/** Math delimiters force a full re-mask because a span may close inside an appended suffix. */
+function hasMathSyntax(source: string): boolean {
+	return source.includes("$") || source.includes("\\(") || source.includes("\\[");
+}
+
 const MAX_INLINE_TAIL_BOUNDARY_TOKENS = 32;
 
 export class Markdown implements Component {
@@ -268,6 +274,8 @@ export class Markdown implements Component {
 	private appendedInlineParagraphUpdates = new WeakMap<Token, AppendedInlineParagraphUpdate>();
 	private normalizedTextExtendsLexedText = false;
 	private pendingNormalizedAppend = "";
+	private mathReplacements = new Map<string, MathReplacement>();
+	private mathPending = false;
 
 	constructor(
 		text: string,
@@ -278,7 +286,7 @@ export class Markdown implements Component {
 		options?: MarkdownOptions,
 	) {
 		this.text = text;
-		this.normalizedText = normalizeMarkdownSource(text);
+		this.normalizedText = this.normalizeSource(text);
 		this.hasReferenceSyntax = text.includes("[");
 		this.paddingX = paddingX;
 		this.paddingY = paddingY;
@@ -289,8 +297,8 @@ export class Markdown implements Component {
 
 	setText(text: string): void {
 		if (this.text === text) return;
-		if (text.startsWith(this.text)) {
-			const suffix = text.slice(this.text.length);
+		const suffix = text.startsWith(this.text) ? text.slice(this.text.length) : undefined;
+		if (suffix !== undefined && !this.mathPending && !hasMathSyntax(suffix)) {
 			const normalizedSuffix = normalizeMarkdownSource(suffix);
 			this.normalizedText += normalizedSuffix;
 			if (this.normalizedTextExtendsLexedText) {
@@ -298,7 +306,7 @@ export class Markdown implements Component {
 			}
 			this.hasReferenceSyntax ||= suffix.includes("[");
 		} else {
-			this.normalizedText = normalizeMarkdownSource(text);
+			this.normalizedText = this.normalizeSource(text);
 			this.hasReferenceSyntax = text.includes("[");
 			this.normalizedTextExtendsLexedText = false;
 			this.pendingNormalizedAppend = "";
@@ -306,6 +314,46 @@ export class Markdown implements Component {
 		this.text = text;
 		this.cachedText = undefined;
 		this.cachedLines = undefined;
+	}
+
+	private normalizeSource(source: string): string {
+		const masked = maskMath(normalizeMarkdownSource(source));
+		this.mathReplacements = new Map(masked.replacements.map((entry) => [entry.placeholder, entry]));
+		this.mathPending = masked.pending;
+		return masked.text;
+	}
+
+	/** Restore rendered math for placeholders that survived Marked, keeping unknown ones literal. */
+	private expandMathPlaceholders(text: string): string {
+		if (this.mathReplacements.size === 0 || !text.includes("\uE000")) return text;
+		let result = "";
+		let cursor = 0;
+		for (;;) {
+			const start = text.indexOf("\uE000", cursor);
+			if (start < 0) break;
+			const end = text.indexOf("\uE001", start);
+			if (end < 0) break;
+			const placeholder = text.slice(start, end + 1);
+			const replacement = this.mathReplacements.get(placeholder);
+			result += text.slice(cursor, start);
+			result += replacement === undefined ? placeholder
+				: replacement.display ? `$$${replacement.source}$$`
+					: renderInlineMath(replacement.source) ?? `$${replacement.source}$`;
+			cursor = end + 1;
+		}
+		return result + text.slice(cursor);
+	}
+
+	/** A paragraph that is exactly one display placeholder becomes a multi-row math block. */
+	private displayMathLines(token: Tokens.Paragraph, width: number): string[] | undefined {
+		if (this.mathReplacements.size === 0) return undefined;
+		const plain = (token.text ?? "").trim();
+		const replacement = this.mathReplacements.get(plain);
+		if (!replacement || !replacement.display) return undefined;
+		const rendered = renderDisplayMath(replacement.source);
+		// A spatial layout must never be wrapped into misleading pieces.
+		if (!rendered || rendered.some((line) => visibleWidth(line) > width)) return undefined;
+		return rendered?.map((line) => this.defaultTextStyle?.color ? this.defaultTextStyle.color(line) : line);
 	}
 
 	holdsStreamingTableTail(): boolean {
@@ -348,6 +396,8 @@ export class Markdown implements Component {
 		this.appendedInlineParagraphUpdates = new WeakMap();
 		this.normalizedTextExtendsLexedText = false;
 		this.pendingNormalizedAppend = "";
+		this.mathReplacements = new Map();
+		this.mathPending = false;
 	}
 
 	render(width: number): string[] {
@@ -965,6 +1015,8 @@ export class Markdown implements Component {
 		if (this.defaultTextStyle !== undefined || nextType !== undefined || contextKey !== undefined) {
 			return null;
 		}
+		// Retained inline tails replay plain source text, which would leak math placeholders.
+		if (token.text.includes("\uE000")) return null;
 		const info = this.streamingInlineParagraphInfo(token);
 		const inlineTokens = token.tokens ?? [];
 		if (!info || info.stableInlineCount <= 0 || info.stableInlineCount >= inlineTokens.length) {
@@ -1083,6 +1135,8 @@ export class Markdown implements Component {
 		if (this.defaultTextStyle !== undefined || nextType !== undefined) {
 			return null;
 		}
+		// Math placeholders need the inline renderer, so this paragraph cannot be retained as text.
+		if (token.text.includes("\uE000")) return null;
 		const inlineTokens = token.tokens ?? [];
 		if (inlineTokens.length !== 1) return null;
 		const inline = inlineTokens[0];
@@ -1925,6 +1979,14 @@ export class Markdown implements Component {
 			}
 
 			case "paragraph": {
+				const mathLines = this.displayMathLines(token as Tokens.Paragraph, width);
+				if (mathLines) {
+					lines.push(...mathLines);
+					if (nextTokenType && nextTokenType !== "list" && nextTokenType !== "space") {
+						lines.push("");
+					}
+					break;
+				}
 				const paragraphText = this.renderInlineTokens(token.tokens || [], styleContext);
 				lines.push(paragraphText);
 				// Don't add spacing if next token is space or list
@@ -2079,7 +2141,7 @@ export class Markdown implements Component {
 					if (token.tokens && token.tokens.length > 0) {
 						result += this.renderInlineTokens(token.tokens, resolvedStyleContext);
 					} else {
-						result += applyTextWithNewlines(token.text);
+						result += this.expandMathPlaceholders(applyTextWithNewlines(token.text));
 					}
 					break;
 
