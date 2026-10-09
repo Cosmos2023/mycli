@@ -86,6 +86,35 @@ test("web_fetch enforces exact and wildcard domain constraints across redirects"
 	assert.deepEqual(calls, ["api.example.com", "img.assets.example.com"]);
 });
 
+test("approval domains gate host-side fetches instead of being silently bypassed", async () => {
+	const calls: string[] = [];
+	const tool = new WebFetchTool({ fetcher: fetcher(async (url) => {
+		calls.push(url.hostname);
+		if (url.hostname === "api.example.com" && url.pathname === "/redirect") {
+			return { statusCode: 302, headers: { location: "https://gated.example.com/next" }, body: new Uint8Array() };
+		}
+		return response(200, "text/plain", "ok");
+	}) });
+	const gated = {
+		...NETWORK_ENABLED,
+		networkDomains: ["api.example.com", "gated.example.com"],
+		networkProxy: { mode: "limited", enableSocks5: false, allowUpstreamProxy: false,
+			approvalDomains: ["gated.example.com"] },
+	} as const;
+
+	// web_fetch has no live responder, so a gated domain fails closed with the reason.
+	const direct = await tool.execute({ url: "https://gated.example.com/start" }, executionOptions(gated));
+	assert.equal(direct.errorKind, "network_approval_unavailable");
+	assert.match(direct.modelOutput, /approval_domains/u);
+	// A redirect into the gated domain is refused before the target is dialed.
+	const redirect = await tool.execute({ url: "https://api.example.com/redirect" }, executionOptions(gated));
+	assert.equal(redirect.errorKind, "network_approval_unavailable");
+	// Domains outside the approval list keep working.
+	const allowed = await tool.execute({ url: "https://api.example.com/ok" }, executionOptions(gated));
+	assert.equal(allowed.success, true);
+	assert.deepEqual(calls, ["api.example.com", "api.example.com"]);
+});
+
 test("URL and address policy rejects local private reserved and documentation targets", async () => {
 	for (const value of [
 		"http://127.0.0.1/",
@@ -227,7 +256,7 @@ function response(statusCode: number, contentType: string, body: string): WebFet
 }
 
 function executionOptions(
-	policy: Pick<ExecutionPolicy, "network" | "networkDomains"> | undefined = NETWORK_ENABLED,
+	policy: Pick<ExecutionPolicy, "network" | "networkDomains" | "networkProxy"> | undefined = NETWORK_ENABLED,
 	signal = new AbortController().signal,
 ): ToolExecutionOptions {
 	return {
@@ -243,6 +272,9 @@ function executionOptions(
 					...(policy.networkDomains === undefined
 						? {}
 						: { networkDomains: policy.networkDomains }),
+					...(policy.networkProxy === undefined
+						? {}
+						: { networkProxy: policy.networkProxy }),
 				},
 		} : {}),
 	};

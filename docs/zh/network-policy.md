@@ -88,7 +88,9 @@ Shell 返回后台句柄后审批仍有效。等待授权最多两分钟，期�
 内网 IP。每个进程最多显示 32 条；目前是实时界面提示，不保存为历史对话。
 
 实时审批目前接入 Shell / Bash，包括子 agent。无交互执行和 stdio MCP 没有网络审批通道，访问
-需要授权的域名会直接拒绝；宿主侧 `web_fetch`、远程 HTTP MCP、hooks 和插件联网不在此功能范围内。
+需要授权的域名会直接拒绝。宿主侧 `web_fetch` 同样没有审批通道，因此访问 `approval_domains`
+中的目标会以 `network_approval_unavailable` 失败，而不是静默绕过已配置的网关；这类目标请改用
+沙箱内 Shell 请求。远程 HTTP MCP、hooks 和插件联网仍不在此功能范围内，继续沿用原有域名白名单行为。
 Windows 共用这些 TypeScript 代码，并已由平台测试在真实沙箱 Shell 中验证：请求在 yield 后继续等待一次审批，停止 Shell 会取消待定决策且不会触达源站。
 
 ## 支持的流量

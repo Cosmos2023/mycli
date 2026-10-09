@@ -91,6 +91,10 @@ export class WebFetchTool implements ToolAdapter {
 		if (!networkDomainAllowed(url.hostname, networkDomains)) {
 			return failure("network_domain_denied", "The target domain is not allowed by the active execution policy.");
 		}
+		const approvalDomains = options.executionPolicy.networkProxy?.approvalDomains;
+		if (requiresLiveApproval(url.hostname, approvalDomains)) {
+			return failure("network_approval_unavailable", APPROVAL_UNAVAILABLE_MESSAGE);
+		}
 		const controller = new AbortController();
 		let timedOut = false;
 		const onAbort = (): void => { controller.abort(options.signal.reason); };
@@ -101,7 +105,7 @@ export class WebFetchTool implements ToolAdapter {
 			controller.abort(new DOMException("web fetch timed out", "AbortError"));
 		}, this.#timeoutMs);
 		try {
-			const fetched = await this.#followRedirects(url, controller.signal, networkDomains);
+			const fetched = await this.#followRedirects(url, controller.signal, networkDomains, approvalDomains);
 			const content = projectContent(fetched.response, fetched.url);
 			return {
 				success: true,
@@ -129,6 +133,7 @@ export class WebFetchTool implements ToolAdapter {
 		initialUrl: URL,
 		signal: AbortSignal,
 		networkDomains: readonly string[] | undefined,
+		approvalDomains: readonly string[] | undefined,
 	): Promise<{ url: URL; response: WebFetchResponse; redirectCount: number }> {
 		let url = initialUrl;
 		for (let redirects = 0; ; redirects += 1) {
@@ -161,8 +166,24 @@ export class WebFetchTool implements ToolAdapter {
 					"Redirect target is not allowed by the active execution policy.",
 				);
 			}
+			if (requiresLiveApproval(url.hostname, approvalDomains)) {
+				throw new WebFetchFailure("network_approval_unavailable",
+					"Redirect target requires approval for every request, which web_fetch cannot request.");
+			}
 		}
 	}
+}
+
+const APPROVAL_UNAVAILABLE_MESSAGE = "This domain requires approval for every request, and web_fetch has no live responder. "
+	+ "Request it from a sandboxed Shell command, or remove the domain from approval_domains.";
+
+/**
+ * `approval_domains` gates every request to that domain. Host-side fetches cannot ask a
+ * live responder, so they fail closed instead of silently bypassing the configured gate.
+ */
+function requiresLiveApproval(hostname: string, approvalDomains: readonly string[] | undefined): boolean {
+	return approvalDomains !== undefined && approvalDomains.length > 0
+		&& networkDomainAllowed(hostname, approvalDomains);
 }
 
 export interface PinnedPublicWebFetcherOptions {

@@ -181,6 +181,11 @@ Changes to managed proxy authorization, Shell process callbacks, gateway approva
   network decisions and rejects new asks while detached. Observers cannot enable approval. Forward
   availability through a generation-fenced worker control message and preserve it across restarts.
   Reattachment enables only fresh requests; ordinary durable approvals and running work survive.
+- `approval_domains` describes destinations that need a live decision, so host-side callers without a
+  responder must fail closed rather than bypass it. `web_fetch` checks the approval list for its
+  initial URL and every redirect target and returns `network_approval_unavailable` with a corrective
+  message. Remote HTTP MCP, hooks and plugin networking keep their existing allowlist behavior and
+  are not implied to support per-request approval.
 - Broker retains at most 32 requests; existing interactive controller queues them with ordinary
   approvals/clarifications. Hidden cancellation never clears the visible request. Live replay uses
   bootstrap of the same process; cold restart restores no responders.

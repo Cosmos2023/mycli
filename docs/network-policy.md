@@ -128,8 +128,11 @@ URL paths, queries, credentials, bodies and resolved private IPs. At most 32 are
 These notices are live UI diagnostics, not durable conversation history.
 
 The live approval bridge currently covers Shell/Bash, including child agents. Headless execution and
-stdio MCP have no live network responder and reject approval-required destinations. This does not
-add per-request approvals to host-side `web_fetch`, remote HTTP MCP, hooks or plugin networking.
+stdio MCP have no live network responder and reject approval-required destinations. Host-side
+`web_fetch` also has no live responder, so it fails closed with `network_approval_unavailable` for a
+destination listed in `approval_domains` instead of silently bypassing the configured gate; request
+such a destination from a sandboxed Shell command instead. Remote HTTP MCP, hooks and plugin
+networking stay outside this interaction scope and keep their existing domain-allowlist behavior.
 Windows uses the same TypeScript bridge, and a platform test runs it through a real sandboxed
 Shell: the request waits for one approval after yield, and stopping the Shell cancels the pending
 decision without reaching the origin.
