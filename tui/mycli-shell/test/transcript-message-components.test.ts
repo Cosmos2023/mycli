@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { AssistantMessageComponent } from "../src/components/transcript/assistant-message.ts";
+import { renderTranscriptBlocks, renderTranscriptWithRanges } from "../src/components/transcript/transcript-renderer.ts";
 import {
 	renderTranscriptMessageLines,
 	transcriptMessageContentWidth,
@@ -107,7 +108,7 @@ test("assistant message updates retain the role prefix", () => {
 	assert.equal(lines[0]?.startsWith("• complete response"), true);
 });
 
-test("assistant reasoning is visible by default and each section keeps its own prefix", () => {
+test("assistant reasoning is hidden by default and each visible section keeps its own prefix", () => {
 	const lines = visibleContentLines(
 		new AssistantMessageComponent("The answer.", "Some reasoning.", false).render(40),
 	);
@@ -116,7 +117,22 @@ test("assistant reasoning is visible by default and each section keeps its own p
 	assert.equal(lines[1]?.startsWith("• The answer."), true);
 
 	const byDefault = visibleContentLines(new AssistantMessageComponent("The answer.", "Some reasoning.").render(40));
-	assert.equal(byDefault.some((line) => line.includes("Some reasoning")), true);
+	assert.equal(byDefault.some((line) => line.includes("Some reasoning")), false);
+	assert.equal(byDefault[0]?.startsWith("• The answer."), true);
+});
+
+test("the Ctrl+T transcript view keeps reasoning the main view hides", () => {
+	const block = {
+		id: "a1",
+		kind: "message" as const,
+		message: { id: "a1", role: "assistant" as const, text: "The answer.", thinking: "Some reasoning." },
+	};
+
+	const main = visibleContentLines(renderTranscriptBlocks([block], 40));
+	const viewer = visibleContentLines(renderTranscriptWithRanges([block], 40, { hideThinking: false }).lines);
+
+	assert.equal(main.some((line) => line.includes("Some reasoning")), false);
+	assert.equal(viewer.some((line) => line.includes("Some reasoning")), true);
 });
 
 test("assistant tail rendering matches slicing full visible and thinking output", () => {

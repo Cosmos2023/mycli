@@ -114,7 +114,9 @@ export class TranscriptViewerComponent implements Component {
 		const contentChanged = this.contentRevision !== this.revision || this.contentWidth !== frameWidth;
 		if (contentChanged) {
 			const anchor = this.blockRanges.find((range) => range.start <= previousTop && range.end > previousTop);
-			const rendered = renderTranscriptWithRanges(this.expandedBlocks(), frameWidth);
+			// The transcript view is the expanded record, so it always keeps reasoning
+			// blocks even when the main transcript hides them.
+			const rendered = renderTranscriptWithRanges(this.expandedBlocks(), frameWidth, { hideThinking: false });
 			this.contentLines = rendered.lines;
 			this.blockRanges = rendered.blockRanges;
 			this.contentRevision = this.revision;

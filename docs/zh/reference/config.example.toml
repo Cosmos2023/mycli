@@ -20,7 +20,7 @@
 
 # 隐藏助手响应中的推理块。
 # 允许值： true, false
-# tui_hide_thinking = false
+# tui_hide_thinking = true
 
 # 增强状态和选择样式的语义对比。
 # 允许值： true, false

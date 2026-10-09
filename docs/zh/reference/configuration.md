@@ -52,7 +52,7 @@
 | `tui.color_mode` | `string` | `"auto"` | 是 | `tui_color_mode` | 选择自动、真彩色、256 色、16 色或无颜色输出。 |
 | `tui.glyph_mode` | `string` | `"auto"` | 是 | `tui_glyph_mode` | 选择自动、Unicode 或纯 ASCII 界面字符。 |
 | `tui.hardware_cursor` | `boolean` | `false` | 是 | `tui_hardware_cursor` | 支持时使用终端光标定位输入法候选框。 |
-| `tui.hide_thinking` | `boolean` | `false` | 是 | `tui_hide_thinking` | 隐藏助手响应中的推理块。 |
+| `tui.hide_thinking` | `boolean` | `true` | 是 | `tui_hide_thinking` | 在主视图（transcript）中隐藏推理块；按 Ctrl+T 打开 transcript 视图仍可查看。 |
 | `tui.high_contrast` | `boolean` | `false` | 是 | `tui_high_contrast` | 增强状态和选择样式的语义对比。 |
 | `tui.reduced_motion` | `boolean` | `false` | 是 | `tui_reduced_motion` | 使用静态进度指示代替终端动画帧。 |
 | `tui.statusbar_mode` | `string` | `"full"` | 是 | `tui_statusbar_mode` | 控制页脚显示的会话和模型状态信息量。 |

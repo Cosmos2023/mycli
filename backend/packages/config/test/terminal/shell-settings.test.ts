@@ -18,7 +18,7 @@ test("shell settings load defaults and persist normalized visual settings", asyn
 		statusbar_mode: "full",
 		view_mode: "default",
 		theme: "dark",
-		hide_thinking: false,
+		hide_thinking: true,
 		tool_details_default: "collapsed",
 		hardware_cursor: false,
 		clear_on_shrink: true,

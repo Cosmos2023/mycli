@@ -41,6 +41,10 @@ export interface RenderedTranscript {
 	readonly blockRanges: readonly TranscriptBlockRange[];
 }
 
-export function renderTranscriptWithRanges(blocks: MycliShellTranscriptBlock[], width: number): RenderedTranscript {
-	return new TranscriptBlocksComponent(blocks).renderWithRanges(width);
+export function renderTranscriptWithRanges(
+	blocks: MycliShellTranscriptBlock[],
+	width: number,
+	options: { readonly hideThinking?: boolean } = {},
+): RenderedTranscript {
+	return new TranscriptBlocksComponent(blocks, options.hideThinking).renderWithRanges(width);
 }

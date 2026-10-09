@@ -19,7 +19,7 @@ export class AssistantMessageComponent extends Container {
 	private textMarkdown?: Markdown;
 	private thinkingMarkdown?: Markdown;
 
-	constructor(text: string, thinking?: string, thinkingHidden = false) {
+	constructor(text: string, thinking?: string, thinkingHidden = true) {
 		super();
 		this.text = text;
 		this.thinking = thinking;
@@ -27,7 +27,7 @@ export class AssistantMessageComponent extends Container {
 		this.rebuild();
 	}
 
-	updateMessage(text: string, thinking?: string, thinkingHidden = false): void {
+	updateMessage(text: string, thinking?: string, thinkingHidden = true): void {
 		const previousText = this.visibleText();
 		const previousThinking = this.visibleThinking();
 		this.text = text;

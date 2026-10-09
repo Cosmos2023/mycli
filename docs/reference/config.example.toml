@@ -18,9 +18,9 @@
 # Allowed: true, false
 # tui_hardware_cursor = false
 
-# Hides reasoning blocks in assistant responses
+# Hides reasoning blocks in the main transcript; the Ctrl+T transcript view still shows them
 # Allowed: true, false
-# tui_hide_thinking = false
+# tui_hide_thinking = true
 
 # Uses stronger semantic contrast for status and selection tokens
 # Allowed: true, false

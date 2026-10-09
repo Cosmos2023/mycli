@@ -540,7 +540,7 @@
     },
     {
       "key": "tui.hide_thinking",
-      "description": "Hides reasoning blocks in assistant responses",
+      "description": "Hides reasoning blocks in the main transcript; the Ctrl+T transcript view still shows them",
       "valueKind": "boolean",
       "writable": true,
       "canonicalPath": "tui_hide_thinking",
@@ -548,7 +548,7 @@
         "hideThinking",
         "hide_thinking"
       ],
-      "defaultValue": false,
+      "defaultValue": true,
       "allowedValues": [
         true,
         false
