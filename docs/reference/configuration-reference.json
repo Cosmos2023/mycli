@@ -548,7 +548,7 @@
         "hideThinking",
         "hide_thinking"
       ],
-      "defaultValue": true,
+      "defaultValue": false,
       "allowedValues": [
         true,
         false

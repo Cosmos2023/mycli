@@ -223,7 +223,7 @@ export function defaultVisualSettings(): Required<MycliShellVisualSettings> {
 		statusbarMode: "full",
 		viewMode: "default",
 		theme: "dark",
-		hideThinking: true,
+		hideThinking: false,
 		toolDetailsDefault: "collapsed",
 		hardwareCursor: false,
 		clearOnShrink: true,

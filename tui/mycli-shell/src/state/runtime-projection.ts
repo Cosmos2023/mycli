@@ -101,7 +101,7 @@ function projectRuntimeShellState(
 				id: item.id,
 				role: "assistant",
 				text: item.text,
-				...(thinking ? { thinking, thinkingHidden: true } : {}),
+				...(thinking ? { thinking } : {}),
 			};
 			messages.push(message);
 			transcript.push({ id: item.id, kind: "message", message });

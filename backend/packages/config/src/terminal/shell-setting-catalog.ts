@@ -64,7 +64,7 @@ export const DEFAULT_SHELL_SETTINGS: ShellSettings = Object.freeze({
 	statusbar_mode: "full",
 	view_mode: "default",
 	theme: "dark",
-	hide_thinking: true,
+	hide_thinking: false,
 	tool_details_default: "collapsed",
 	hardware_cursor: false,
 	clear_on_shrink: true,

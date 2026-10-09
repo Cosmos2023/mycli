@@ -20,7 +20,7 @@
 
 # Hides reasoning blocks in assistant responses
 # Allowed: true, false
-# tui_hide_thinking = true
+# tui_hide_thinking = false
 
 # Uses stronger semantic contrast for status and selection tokens
 # Allowed: true, false

@@ -81,7 +81,7 @@ export function syncTranscriptBlock(
 			cached.component.updateMessage(
 				block.message.text,
 				block.message.thinking,
-				options.hideThinking ?? block.message.thinkingHidden ?? true,
+				options.hideThinking ?? block.message.thinkingHidden ?? false,
 			);
 			return cached;
 		}
@@ -113,7 +113,7 @@ export function syncTranscriptBlock(
 function createMessageComponent(message: MycliShellMessage, hideThinking?: boolean): Component {
 	if (message.role === "user") return new UserMessageComponent(message.text);
 	if (message.role === "assistant") {
-		return new AssistantMessageComponent(message.text, message.thinking, hideThinking ?? message.thinkingHidden ?? true);
+		return new AssistantMessageComponent(message.text, message.thinking, hideThinking ?? message.thinkingHidden ?? false);
 	}
 	if (message.id.startsWith("approval-decision:")) {
 		return new ApprovalDecisionComponent(message.text, message.role === "warning");

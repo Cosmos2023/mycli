@@ -50,7 +50,7 @@ profile, user, system, legacy user, then built-in defaults. Credentials belong i
 | `tui.color_mode` | `string` | `"auto"` | yes | `tui_color_mode` | Selects automatic, truecolor, 256-color, 16-color, or no-color output |
 | `tui.glyph_mode` | `string` | `"auto"` | yes | `tui_glyph_mode` | Selects automatic, Unicode, or ASCII-only interface glyphs |
 | `tui.hardware_cursor` | `boolean` | `false` | yes | `tui_hardware_cursor` | Uses the terminal cursor for IME placement when supported |
-| `tui.hide_thinking` | `boolean` | `true` | yes | `tui_hide_thinking` | Hides reasoning blocks in assistant responses |
+| `tui.hide_thinking` | `boolean` | `false` | yes | `tui_hide_thinking` | Hides reasoning blocks in assistant responses |
 | `tui.high_contrast` | `boolean` | `false` | yes | `tui_high_contrast` | Uses stronger semantic contrast for status and selection tokens |
 | `tui.reduced_motion` | `boolean` | `false` | yes | `tui_reduced_motion` | Uses static progress indicators instead of animated terminal frames |
 | `tui.statusbar_mode` | `string` | `"full"` | yes | `tui_statusbar_mode` | Controls how much session and model status is shown in the footer |
