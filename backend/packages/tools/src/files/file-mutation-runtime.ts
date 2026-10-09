@@ -889,21 +889,42 @@ function exactReplacement(
 	newValue: string,
 	replaceAll: boolean,
 ): { readonly content: string; readonly matches: number } {
-	validateNewContent(newValue);
-	const oldString = preprocessOldString(oldValue, target);
-	if (oldString === newValue) throw new FileMutationError("no_op");
+	// An existing file keeps its own line endings: an LF-authored replacement
+	// matches a CRLF file and is written back with that file's convention.
+	const crlf = usesCrlfLineEndings(content);
+	const newString = toFileLineEndings(newValue, crlf);
+	validateNewContent(newString);
+	const oldString = toFileLineEndings(preprocessOldString(oldValue, target), crlf);
+	if (oldString === newString) throw new FileMutationError("no_op");
 	if (oldString === "") {
 		if (content.trim()) throw new FileMutationError("edit_existing_content");
-		return { content: newValue, matches: 1 };
+		return { content: newString, matches: 1 };
 	}
 	const matches = countOccurrences(content, oldString);
 	if (matches === 0) throw new FileMutationError("string_not_found");
 	return {
 		content: replaceAll
-			? content.split(oldString).join(newValue)
-			: replaceFirst(content, oldString, newValue),
+			? content.split(oldString).join(newString)
+			: replaceFirst(content, oldString, newString),
 		matches: replaceAll ? matches : 1,
 	};
+}
+
+/** CRLF is preserved only when it dominates; ties and mixed files stay LF. */
+function usesCrlfLineEndings(content: string): boolean {
+	let crlf = 0;
+	let lf = 0;
+	for (let index = 0; index < content.length; index += 1) {
+		if (content.charCodeAt(index) !== 0x0a) continue;
+		if (index > 0 && content.charCodeAt(index - 1) === 0x0d) crlf += 1;
+		else lf += 1;
+	}
+	return crlf > lf;
+}
+
+function toFileLineEndings(value: string, crlf: boolean): string {
+	const normalized = value.replace(/\r\n/gu, "\n");
+	return crlf ? normalized.replace(/\n/gu, "\r\n") : normalized;
 }
 
 function sha256(value: string): string {

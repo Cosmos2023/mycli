@@ -126,6 +126,80 @@ test("Edit applies consecutive replacements against current file content", async
 	assert.equal(await readFile(fixture.target, "utf8"), "value = 3\n");
 });
 
+test("Edit preserves CRLF line endings for an LF-authored replacement", async (t) => {
+	const fixture = await workspaceFixture(t, "alpha\r\nbeta\r\ngamma\r\n");
+	const adapters = createAdapters(fixture.root);
+
+	const result = await adapters.edit.execute({
+		file_path: "a.ts",
+		old_string: "beta\ngamma",
+		new_string: "beta\nBETA",
+	}, options());
+
+	assert.equal(result.success, true);
+	assert.equal(result.metadata.status, "edited");
+	assert.equal(result.metadata.matches, 1);
+	assert.equal(result.metadata.addedLines, 1);
+	assert.equal(result.metadata.removedLines, 1);
+	assert.equal(await readFile(fixture.target, "utf8"), "alpha\r\nbeta\r\nBETA\r\n");
+});
+
+test("Edit accepts a CRLF-authored replacement without rewriting untouched content", async (t) => {
+	const fixture = await workspaceFixture(t, "alpha\r\nbeta\r\n");
+	const adapters = createAdapters(fixture.root);
+
+	const result = await adapters.edit.execute({
+		file_path: "a.ts",
+		old_string: "beta\r\n",
+		new_string: "beta\r\ngamma\r\n",
+	}, options());
+
+	assert.equal(result.success, true);
+	assert.equal(result.metadata.matches, 1);
+	assert.equal(await readFile(fixture.target, "utf8"), "alpha\r\nbeta\r\ngamma\r\n");
+});
+
+test("Edit keeps the LF convention when CRLF does not dominate", async (t) => {
+	const lf = await workspaceFixture(t, "alpha\nbeta\n");
+	const mixed = await workspaceFixture(t, "alpha\nbeta\r\ngamma\n");
+	const lfAdapters = createAdapters(lf.root);
+	const mixedAdapters = createAdapters(mixed.root);
+
+	const lfResult = await lfAdapters.edit.execute({
+		file_path: "a.ts",
+		old_string: "beta\r\n",
+		new_string: "beta\r\ngamma\r\n",
+	}, options());
+	const mixedResult = await mixedAdapters.edit.execute({
+		file_path: "a.ts",
+		old_string: "beta",
+		new_string: "BETA",
+	}, options());
+
+	assert.equal(lfResult.success, true);
+	assert.equal(lfResult.metadata.matches, 1);
+	assert.equal(await readFile(lf.target, "utf8"), "alpha\nbeta\ngamma\n");
+	assert.equal(mixedResult.success, true);
+	assert.equal(await readFile(mixed.target, "utf8"), "alpha\nBETA\r\ngamma\n");
+});
+
+test("Patch update preserves CRLF line endings", async (t) => {
+	const fixture = await workspaceFixture(t, "alpha\r\nbeta\r\n");
+	const adapters = createAdapters(fixture.root);
+
+	const result = await adapters.patch.execute({
+		operations: [{
+			type: "update",
+			file_path: "a.ts",
+			old_string: "beta",
+			new_string: "beta\ngamma",
+		}],
+	}, options());
+
+	assert.equal(result.success, true);
+	assert.equal(await readFile(fixture.target, "utf8"), "alpha\r\nbeta\r\ngamma\r\n");
+});
+
 test("Patch remains a distinct first-class structured operation tool", async (t) => {
 	const fixture = await workspaceFixture(t, "value = 1\n");
 	const adapters = createAdapters(fixture.root);

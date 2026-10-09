@@ -124,6 +124,8 @@ Use stable error kinds for model recovery and diagnostics:
 Required tests for mutation tool changes:
 
 - Edit success without a prior Read, consecutive updates, first-match default, and `replace_all`.
+- CRLF preservation for Edit and Patch update, including an LF-authored replacement in a CRLF
+  file, a CRLF-authored replacement, and LF/mixed content that must keep the LF convention.
 - Patch ordered add/update/delete/move success without a prior `Read`, first/all-match behavior,
   target and aggregate limits, and move-plus-update folding.
 - Write, Edit, and Patch tests for content changes after preview: Write overwrites current content,
@@ -177,6 +179,10 @@ Required tests for mutation tool changes:
 - `Edit` and Patch update operations read the file content present when they execute. With
   `replace_all=false`, they replace the first exact match even when more matches exist; with
   `replace_all=true`, they replace every exact match.
+- `Edit` and Patch update preserve the captured file's line endings. When CRLF dominates that
+  content, an LF-authored `old_string`/`new_string` is matched and written back as CRLF; ties,
+  mixed content, and LF files keep the LF convention. Untouched bytes are never rewritten, and
+  `Write` continues to store the caller's content verbatim.
 - Provider calls to `Write` cannot supply `expected_sha256`. Direct adapter calls that still contain
   the legacy field are accepted and ignore it.
 - Restricted writable targets are resolved against the real workspace root. Traversal, absolute
