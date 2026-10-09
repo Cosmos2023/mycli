@@ -297,7 +297,6 @@ also clears the temporary override so the saved choice takes effect.
 | `/permissions` | optional `[allow\|revoke\|clear]` | overlay when bare; backend when inline | yes | common |
 | `/sandbox` | optional `[read-only\|workspace-write\|danger-full-access\|next]` | backend | no | search-only |
 | `/settings` | none | opens the categorized settings center | yes | common |
-| `/config` | none | lists the configuration commands behind one entry; the listed commands still work when typed directly | yes | common |
 | `/new` | none | creates and switches to a fresh backend session | no | common |
 | `/resume` | optional `[session-id]` | picker when bare; backend when inline | no | common |
 | `/fork` | optional `[source] [new-session] [message-index]` | backend | no | common |

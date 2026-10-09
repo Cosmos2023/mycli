@@ -776,8 +776,6 @@ export type MycliShellCommandSpec = {
 	availableDuringTurn: boolean;
 	aliases?: string[];
 	category?: "diagnostics" | "interface" | "integrations" | "model" | "safety" | "session" | "tools";
-	/** `config` commands are listed under `/config` rather than the default palette. */
-	scope?: "top" | "config";
 	searchOnly?: boolean;
 	available?: boolean;
 	unavailableReason?: string;

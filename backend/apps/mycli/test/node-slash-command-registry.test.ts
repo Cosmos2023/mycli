@@ -111,29 +111,13 @@ test("Node slash registry matches the current command and retirement matrix", ()
 		"[--apply-empty|--apply-payloads|--apply-orphans|--apply-vacuum|--apply-transcript-normalization|--apply-content-blobs|--apply-content-blob-gc]",
 	);
 	assert.equal(maintenance?.available_during_turn, false);
-	assert.equal(fixture.schema_version, 4);
+	assert.equal(fixture.schema_version, 3);
 	assert.equal(matrix.commands.length, fixture.command_count);
 	assert.equal(matrix.retired_commands.length, fixture.retired_command_count);
 	assert.equal(
 		createHash("sha256").update(JSON.stringify(matrix)).digest("hex"),
 		fixture.sha256,
 	);
-});
-
-test("configuration commands are grouped behind /config and stay routable by name", () => {
-	const matrix = slashCommandParityMatrix();
-	const commands = matrix.commands as readonly { readonly name: string; readonly scope: string }[];
-	const scoped = commands
-		.filter((command) => command.scope === "config")
-		.map((command) => command.name)
-		.sort();
-	assert.deepEqual(scoped, ["/goal", "/hooks", "/mcp", "/mode", "/model", "/permissions",
-		"/plan", "/plugins", "/sandbox", "/settings", "/skills", "/trust"]);
-	// Grouping only changes discovery: every scoped command keeps its own route and `/config` is top-level.
-	const routing = builtinCommandRoutingNames();
-	for (const name of [...scoped, "/config"]) assert.ok(routing.has(name), name);
-	assert.equal(commands.find((command) => command.name === "/config")?.scope, "top");
-	assert.equal(commands.some((command) => command.name === "/config" && command.scope === "config"), false);
 });
 
 test("documented commands and retirements stay aligned with the canonical slash registry", () => {

@@ -4,8 +4,6 @@ export type SlashCommandSurface = "cli" | "tui";
 type SlashArgumentPolicy = "none" | "optional" | "required";
 type SlashCommandOwner = "backend" | "tui";
 export type SlashCommandPresentation = "none" | "overlay" | "transcript";
-/** `config` commands stay reachable by name but are listed under `/config` instead of the default palette. */
-export type SlashCommandScope = "top" | "config";
 type SlashCommandCategory =
 	| "diagnostics"
 	| "interface"
@@ -25,7 +23,6 @@ interface SlashCommandManifestItem {
 	readonly aliases: readonly `/${string}`[];
 	readonly category: SlashCommandCategory;
 	readonly search_only: boolean;
-	readonly scope: SlashCommandScope;
 }
 
 export interface ResolvedSlashCommand {
@@ -44,7 +41,7 @@ type SlashDispatchPolicy = {
 	readonly inlineClientAction?: string;
 };
 
-type SlashCommandSpec = Omit<SlashCommandManifestItem, "aliases" | "category" | "search_only" | "scope"> & {
+type SlashCommandSpec = Omit<SlashCommandManifestItem, "aliases" | "category" | "search_only"> & {
 	readonly dispatch: Readonly<Partial<Record<SlashCommandSurface, SlashDispatchPolicy>>>;
 	readonly presentation: SlashCommandPresentation;
 	readonly surfaces: readonly SlashCommandSurface[];
@@ -176,11 +173,6 @@ const BUILTIN_SLASH_COMMANDS: readonly SlashCommandSpec[] = Object.freeze([
 		tuiPolicy: tuiPolicy("open_settings"),
 		surfaces: TUI_SURFACE,
 		presentation: "none",
-	}),
-	spec("config", "/config", "Browse configuration commands", {
-		tuiPolicy: tuiPolicy("open_config"),
-		surfaces: TUI_SURFACE,
-		presentation: "overlay",
 	}),
 	spec("new", "/new", "Start a new session", {
 		surfaces: TUI_SURFACE,
@@ -440,7 +432,6 @@ export function slashCommandParityMatrix(): Readonly<Record<string, unknown>> {
 			available_during_turn: command.available_during_turn,
 			category: commandCategory(command.id),
 			search_only: !command.visible,
-		scope: commandScope(command.id),
 			surfaces: [...command.surfaces].sort(),
 			visible: command.visible,
 		})),
@@ -459,22 +450,8 @@ function commandManifestItem(command: SlashCommandSpec): SlashCommandManifestIte
 		aliases: Object.freeze([]),
 		category: commandCategory(command.id),
 		search_only: !command.visible,
-		scope: commandScope(command.id),
 	});
 }
-
-/**
- * Configuration lives behind `/config` so the top-level palette stays a navigation surface.
- * Grouping is declarative and frozen by a test; add new configuration commands here.
- */
-function commandScope(id: string): SlashCommandScope {
-	return CONFIG_SCOPED_COMMANDS.has(id) ? "config" : "top";
-}
-
-const CONFIG_SCOPED_COMMANDS: ReadonlySet<string> = new Set([
-	"model", "mode", "plan", "permissions", "sandbox", "trust", "goal",
-	"settings", "skills", "mcp", "plugins", "hooks",
-]);
 
 function commandCategory(id: string): SlashCommandCategory {
 	if (["model", "mode", "plan"].includes(id)) return "model";

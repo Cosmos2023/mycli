@@ -97,7 +97,7 @@ import {
 	type TranscriptProjectionState,
 } from "../transcript/transcript-projection.ts";
 import { resolveTranscriptReplayMaxRows } from "../transcript/transcript-replay.ts";
-import { CombinedAutocompleteProvider, ScopedSlashAutocompleteProvider, type SlashCommand } from "../tui-core/autocomplete.ts";
+import { CombinedAutocompleteProvider, type SlashCommand } from "../tui-core/autocomplete.ts";
 import { Spacer } from "../tui-core/components/spacer.ts";
 import { Text } from "../tui-core/components/text.ts";
 import type { KeybindingsManager } from "../tui-core/keybindings.ts";
@@ -853,21 +853,11 @@ export class MycliShellRuntime {
 	}
 
 	showCommandPalette(): void {
-		this.openCommandPalette("top");
-	}
-
-	/** Configuration commands stay reachable by name but are listed behind `/config`. */
-	showConfigPalette(): void {
-		this.openCommandPalette("config");
-	}
-
-	private openCommandPalette(scope: "top" | "config"): void {
 		const commands = this.commands();
 		this.showSelector((done) => {
 			const palette = new CommandPaletteComponent({
 				tui: this.ui,
 				commands,
-				scope,
 				turnRunning: () => this.isTurnRunning(),
 				settingsCatalog: this.state.settingsCatalog,
 				onSelect: (command) => {
@@ -941,7 +931,6 @@ export class MycliShellRuntime {
 	async handleClientAction(action: string, args: string): Promise<void> {
 		const handlers: Record<string, (actionArgs: string) => void | Promise<void>> = {
 			open_command_palette: () => this.showCommandPalette(),
-			open_config: () => this.showConfigPalette(),
 			open_help: () => this.showHelp(),
 			open_model_selector: () => this.showModelSelector(args || undefined),
 			open_permissions: () => this.showPermissionSelector(),
@@ -2557,23 +2546,17 @@ export class MycliShellRuntime {
 	}
 
 	private refreshAutocompleteProvider(): void {
-		const visible = this.commands().filter((command) => command.searchOnly !== true && command.available !== false);
-		const toSlashCommand = (command: MycliShellCommandSpec): SlashCommand => ({
+		const slashCommands: SlashCommand[] = this.commands()
+			.filter((command) => command.searchOnly !== true && command.available !== false)
+			.map((command) => ({
 			name: command.name.replace(/^\//, ""),
 			description: command.description,
 			...(command.argumentHint ? { argumentHint: command.argumentHint } : {}),
-		});
-		// A bare `/` browses the grouped surface; typing a prefix still matches grouped commands.
-		const browsing = visible.filter((command) => command.scope !== "config").map(toSlashCommand);
-		const complete = visible.map(toSlashCommand);
+		}));
 		this.editor.setAutocompleteProvider(
-			new ScopedSlashAutocompleteProvider(
-				new CombinedAutocompleteProvider(complete, this.autocompleteBasePath(), null, {
-					descriptionSeparator: () => uiGlyphs().descriptionSeparator,
-				}),
-				browsing,
-				complete,
-			),
+			new CombinedAutocompleteProvider(slashCommands, this.autocompleteBasePath(), null, {
+				descriptionSeparator: () => uiGlyphs().descriptionSeparator,
+			}),
 		);
 	}
 

@@ -16,9 +16,6 @@ export type CommandPaletteOptions = {
 	readonly commands: readonly MycliShellCommandSpec[];
 	readonly turnRunning: boolean | (() => boolean);
 	readonly settingsCatalog?: MycliShellSettingsCatalog;
-	/** `config` shows only `/config` commands; the default palette hides them. */
-	readonly scope?: "top" | "config";
-	readonly title?: string;
 	readonly onSelect: (command: MycliShellCommandSpec) => void;
 	readonly onCancel: () => void;
 };
@@ -32,8 +29,6 @@ export class CommandPaletteComponent extends Container implements Focusable {
 	private selectedIndex = 0;
 	private readonly turnRunning: () => boolean;
 	private readonly settingsCatalog?: MycliShellSettingsCatalog;
-	private readonly scope: "top" | "config";
-	private readonly title: string;
 	private readonly onSelectCallback: (command: MycliShellCommandSpec) => void;
 	private readonly onCancelCallback: () => void;
 	private _focused = false;
@@ -50,11 +45,8 @@ export class CommandPaletteComponent extends Container implements Focusable {
 	constructor(options: CommandPaletteOptions) {
 		super();
 		this.tui = options.tui;
-		this.scope = options.scope ?? "top";
-		this.title = options.title ?? (this.scope === "config" ? "Configuration" : "Commands");
 		this.commands = [...options.commands];
-		this.defaultCommands = this.commands.filter((command) => command.searchOnly !== true
-			&& command.available !== false && this.matchesScope(command));
+		this.defaultCommands = this.commands.filter((command) => command.searchOnly !== true && command.available !== false);
 		this.filteredCommands = this.defaultCommands;
 		this.turnRunning = typeof options.turnRunning === "function"
 			? options.turnRunning : () => options.turnRunning === true;
@@ -67,15 +59,10 @@ export class CommandPaletteComponent extends Container implements Focusable {
 	setCommands(commands: readonly MycliShellCommandSpec[]): void {
 		const selected = this.filteredCommands[this.selectedIndex]?.name;
 		this.commands = [...commands];
-		this.defaultCommands = this.commands.filter((command) => command.searchOnly !== true
-			&& command.available !== false && this.matchesScope(command));
+		this.defaultCommands = this.commands.filter((command) => command.searchOnly !== true && command.available !== false);
 		this.filter(this.searchInput.getValue());
 		this.selectedIndex = Math.max(0, this.filteredCommands.findIndex((command) => command.name === selected));
 		this.tui.requestRender();
-	}
-
-	private matchesScope(command: MycliShellCommandSpec): boolean {
-		return this.scope === "config" ? command.scope === "config" : command.scope !== "config";
 	}
 
 	override render(width: number): string[] {
@@ -84,7 +71,7 @@ export class CommandPaletteComponent extends Container implements Focusable {
 		const lines = [
 			border,
 			"",
-			theme.bold(this.title),
+			theme.bold("Commands"),
 			theme.fg("muted", `Type to search ${uiGlyphs().separator} Enter run ${uiGlyphs().separator} Esc close`),
 			"",
 			...this.searchInput.render(safeWidth),

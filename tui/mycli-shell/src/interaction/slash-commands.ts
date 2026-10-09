@@ -33,7 +33,6 @@ function commandFromUnknown(value: unknown): MycliShellCommandSpec | null {
 	const category = categories.includes(record.category as MycliShellCommandSpec["category"])
 		? record.category as MycliShellCommandSpec["category"]
 		: "tools";
-	const scope = record.scope === "config" ? "config" as const : record.scope === "top" ? "top" as const : undefined;
 	const aliases = Array.isArray(record.aliases)
 		? [...new Set(record.aliases.flatMap((alias) => {
 			if (typeof alias !== "string") return [];
@@ -53,7 +52,6 @@ function commandFromUnknown(value: unknown): MycliShellCommandSpec | null {
 		availableDuringTurn: record.available_during_turn,
 		aliases,
 		category,
-		...(scope === undefined ? {} : { scope }),
 		searchOnly: record.search_only === true,
 		available: record.available !== false,
 		...(unavailableReason ? { unavailableReason } : {}),
