@@ -558,6 +558,20 @@ export class MycliShellRuntime {
 			}
 			if (this.handleTranscriptPointer(button, column, row, pressed)) return { consume: true };
 		}
+		// Legacy X10 encoding: ESC [ M <button+32> <column+32> <row+32>.
+		const legacy = data.match(/^\x1b\[M([\s\S])([\s\S])([\s\S])$/);
+		if (legacy) {
+			const code = legacy[1]!.charCodeAt(0) - 32;
+			const column = Math.max(0, legacy[2]!.charCodeAt(0) - 33);
+			const row = Math.max(0, legacy[3]!.charCodeAt(0) - 33);
+			if (code === 64 || code === 65) {
+				this.scrollTranscript(code === 64 ? 3 : -3);
+				return { consume: true };
+			}
+			if (this.handleTranscriptPointer(code === 32 ? 32 : 0, column, row, code !== 3)) {
+				return { consume: true };
+			}
+		}
 		return undefined;
 	}
 

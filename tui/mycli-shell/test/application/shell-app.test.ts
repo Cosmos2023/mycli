@@ -4617,7 +4617,7 @@ test("clicking the collapsed reasoning preview expands it", async () => {
 		id: "assistant-click",
 		role: "assistant" as const,
 		text: "The answer.",
-		thinking: "Checking the parser.\nMore detail.",
+		thinking: "**Checking** the parser.\nMore detail.",
 	};
 	const runtime = new MycliShellRuntime({
 		initialState: {
@@ -4637,6 +4637,38 @@ test("clicking the collapsed reasoning preview expands it", async () => {
 
 	terminal.input?.(`\x1b[<0;5;${previewRow + 1}M`);
 	terminal.input?.(`\x1b[<0;5;${previewRow + 1}m`);
+
+	assert.match(stripAnsi(runtime.chatContainer.render(80).join("\n")), /More detail/);
+	await runtime.shutdown();
+});
+
+test("legacy mouse encoding also expands the collapsed reasoning preview", async () => {
+	const terminal = new TestTerminal();
+	const assistant = {
+		id: "assistant-legacy-click",
+		role: "assistant" as const,
+		text: "The answer.",
+		thinking: "Checking the parser.\nMore detail.",
+	};
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			messages: [assistant],
+			transcript: [{ id: assistant.id, kind: "message", message: assistant }],
+			settings: { ...sampleState().settings, hideThinking: true },
+		},
+		terminal,
+	});
+	runtime.start();
+
+	const rows = stripAnsi(runtime.ui.render(80).join("\n")).split("\n");
+	const previewRow = rows.findIndex((line) => line.includes("+ show detail"));
+	assert.ok(previewRow >= 0, "expected a collapsed reasoning preview row");
+	const legacy = (code: number): string =>
+		`\x1b[M${String.fromCharCode(32 + code, 37, 32 + previewRow + 1)}`;
+
+	terminal.input?.(legacy(0));
+	terminal.input?.(legacy(3));
 
 	assert.match(stripAnsi(runtime.chatContainer.render(80).join("\n")), /More detail/);
 	await runtime.shutdown();

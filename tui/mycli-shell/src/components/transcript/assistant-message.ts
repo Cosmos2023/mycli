@@ -94,13 +94,13 @@ export class AssistantMessageComponent extends Container {
 
 	/** True when the given rendered row is the collapsed reasoning preview line. */
 	isReasoningPreviewRow(row: number, width: number): boolean {
-		if (!this.thinkingPreview || row < 0) return false;
-		// The preview is truncated to the content width, so match a bounded prefix
-		// instead of the whole first line.
-		const needle = this.thinkingPreview.slice(0, 24);
-		if (needle.length < 2) return false;
-		const line = this.render(width)[row];
-		return line !== undefined && line.includes(needle);
+		if (!this.thinkingPreview || !this.thinkingMarkdown || row < 1) return false;
+		// render() emits a leading blank row, so the collapsed preview occupies the
+		// first rendered rows of the body. Match structurally: the rendered line may
+		// differ from the raw markdown (bold, headings, wrapping).
+		const contentWidth = transcriptMessageContentWidth(Math.max(1, Math.floor(width)));
+		const previewRows = this.thinkingMarkdown.render(contentWidth).length;
+		return row <= previewRows;
 	}
 
 	holdsNativeScrollbackTail(): boolean {
