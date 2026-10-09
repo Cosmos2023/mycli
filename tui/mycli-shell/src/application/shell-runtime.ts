@@ -211,8 +211,9 @@ export class MycliShellRuntime {
 	private pendingLocalImages: MycliShellLocalImageAttachment[] = [];
 	private readonly composerSnapshots = new Map<string, ComposerSessionSnapshot>();
 	private toolDetailMode: ToolDetailMode = "default";
+	private readonly detailOverrides = new Map<string, boolean>();
 	private readonly toolDetailProjector = new ToolDetailProjector();
-	private transcriptPointer: { reasoning: AssistantMessageComponent | null; dragged: boolean } | null = null;
+	private transcriptPointer: { targetId: string | undefined; dragged: boolean } | null = null;
 	private nativeResizeTimer: ReturnType<typeof setTimeout> | undefined;
 	private nativeTranscriptDeltaHeld = false;
 	private transcriptViewer: ActiveTranscriptViewer | null = null;
@@ -587,12 +588,10 @@ export class MycliShellRuntime {
 		const isDrag = button === 32;
 		if (pressed && isLeft) {
 			const hit = this.transcriptViewport.hitTest(row);
-			const reasoning = hit
-				&& hit.component instanceof AssistantMessageComponent
-				&& hit.component.isReasoningPreviewRow(hit.lineInComponent, width)
-				? hit.component
-				: null;
-			this.transcriptPointer = { reasoning, dragged: false };
+			const targetId = hit
+				? this.detailsToggleBlockId(hit.component, hit.lineInComponent, width)
+				: undefined;
+			this.transcriptPointer = { targetId, dragged: false };
 			this.transcriptViewport.beginSelection(row, column);
 			this.ui.requestRender();
 			return true;
@@ -606,9 +605,9 @@ export class MycliShellRuntime {
 		if (!pressed && isLeft && this.transcriptPointer) {
 			const pointer = this.transcriptPointer;
 			this.transcriptPointer = null;
-			if (!pointer.dragged && pointer.reasoning) {
+			if (!pointer.dragged && pointer.targetId) {
 				this.transcriptViewport.clearSelection();
-				this.toggleToolDetails();
+				this.toggleDetailsAt(pointer.targetId);
 				return true;
 			}
 			const text = this.transcriptViewport.selectedText();
@@ -618,6 +617,16 @@ export class MycliShellRuntime {
 			return true;
 		}
 		return false;
+	}
+
+	private detailsToggleBlockId(component: Component, lineInComponent: number, width: number): string | undefined {
+		const toggle = component as { isDetailsToggleRow?: (row: number, width: number) => boolean };
+		if (typeof toggle.isDetailsToggleRow !== "function") return undefined;
+		if (!toggle.isDetailsToggleRow(lineInComponent, width)) return undefined;
+		for (const [id, block] of this.chatBlocks) {
+			if (block.component === component) return id;
+		}
+		return undefined;
 	}
 
 	private scrollTranscript(deltaLines: number): void {
@@ -1958,7 +1967,9 @@ export class MycliShellRuntime {
 			const block = projected[index]!;
 			const cached = this.chatBlocks.get(block.id);
 			const next = syncTranscriptBlock(block, cached, {
-				hideThinking: this.reasoningHiddenForRender(),
+				hideThinking: block.kind === "message"
+					? this.reasoningHiddenForId(block.id)
+					: this.reasoningHiddenForRender(),
 				now: this.now,
 			});
 			this.chatBlocks.set(block.id, next);
@@ -2644,6 +2655,8 @@ export class MycliShellRuntime {
 	}
 
 	private toggleToolDetails(): void {
+		// Ctrl+O is the global switch, so it drops any per-item overrides.
+		this.detailOverrides.clear();
 		if (this.toolDetailMode === "expanded") {
 			this.toolDetailMode = "collapsed";
 		} else if (this.toolDetailMode === "collapsed") {
@@ -2668,20 +2681,46 @@ export class MycliShellRuntime {
 		this.queueNativeTranscriptHistory(true);
 	}
 
+	/** Toggle the collapsed/expanded state of a single transcript block. */
+	private toggleDetailsAt(id: string): void {
+		const block = this.chatBlocks.get(id);
+		const current = block && block.kind === "message"
+			? !this.reasoningHiddenForId(id)
+			: this.toolDetailMode === "expanded"
+				|| (this.toolDetailMode === "default" && this.blockExpandedByDefault(id));
+		this.detailOverrides.set(id, !current);
+		this.setState(this.state);
+		this.applyReasoningDisplayMode();
+		this.queueNativeTranscriptHistory(true);
+	}
+
+	private blockExpandedByDefault(id: string): boolean {
+		const projected = this.state.transcript?.find((item) => item.id === id);
+		if (projected?.kind === "tool") return projected.tool.expanded === true;
+		if (projected?.kind === "bash") return projected.bash.expanded === true;
+		if (projected?.kind === "provider_attempt") return projected.providerAttempt.expanded;
+		return false;
+	}
+
 	private applyToolDetailMode(state: MycliShellState, transcriptUpdate?: TranscriptUpdateKind): MycliShellState {
-		return this.toolDetailProjector.project(state, this.toolDetailMode, transcriptUpdate);
+		return this.toolDetailProjector.project(state, this.toolDetailMode, transcriptUpdate, this.detailOverrides);
 	}
 
 	/** Reasoning shares the details toggle; refresh only the rendered assistant messages. */
 	private applyReasoningDisplayMode(): void {
-		const hidden = this.reasoningHiddenForRender();
 		let changed = false;
-		for (const block of this.chatBlocks.values()) {
+		for (const [id, block] of this.chatBlocks) {
 			if (block.kind !== "message" || !(block.component instanceof AssistantMessageComponent)) continue;
-			block.component.setThinkingHidden(hidden);
+			block.component.setThinkingHidden(this.reasoningHiddenForId(id));
 			changed = true;
 		}
 		if (changed) this.ui.invalidate();
+	}
+
+	private reasoningHiddenForId(id: string): boolean {
+		const override = this.detailOverrides.get(id);
+		if (override !== undefined) return !override;
+		return this.reasoningHiddenForRender();
 	}
 
 	private reasoningHiddenForRender(): boolean {

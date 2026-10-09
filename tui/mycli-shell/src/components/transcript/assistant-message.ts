@@ -93,7 +93,7 @@ export class AssistantMessageComponent extends Container {
 	}
 
 	/** True when the given rendered row is the collapsed reasoning preview line. */
-	isReasoningPreviewRow(row: number, width: number): boolean {
+	isDetailsToggleRow(row: number, width: number): boolean {
 		if (!this.thinkingPreview || !this.thinkingMarkdown || row < 1) return false;
 		// render() emits a leading blank row, so the collapsed preview occupies the
 		// first rendered rows of the body. Match structurally: the rendered line may

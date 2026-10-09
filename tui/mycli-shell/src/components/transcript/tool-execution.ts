@@ -222,6 +222,15 @@ export class ToolExecutionComponent extends Container {
 		return theme.fg("muted", `${reason}${this.shouldShowCollapsedHint() ? ` (${keyHint("app.tools.expand", "expand")})` : ""}`);
 	}
 
+	/** True when the given rendered row is this block's collapsed expand affordance. */
+	isDetailsToggleRow(row: number, width: number): boolean {
+		if (this.tool.expanded) return false;
+		if (this.tool.agentInteraction || this.tool.terminalInteraction) return false;
+		if (toolContextActivity(this.tool) !== undefined) return false;
+		if (!this.shouldShowCollapsedHint()) return false;
+		return row === this.render(width).length - 1;
+	}
+
 	private shouldShowCollapsedHint(): boolean {
 		return (
 			!this.tool.expanded &&

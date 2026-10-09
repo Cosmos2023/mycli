@@ -3,7 +3,8 @@ import type { TranscriptUpdateKind } from "../model.ts";
 
 export type ToolDetailMode = "default" | "expanded" | "collapsed";
 
-type ToolDetailOverrideMode = Exclude<ToolDetailMode, "default">;
+/** Per-item expand/collapse overrides keyed by transcript block id. */
+export type DetailOverrides = ReadonlyMap<string, boolean>;
 
 type DetailArrayUpdate<T> = {
 	values: T[];
@@ -13,7 +14,8 @@ type DetailArrayUpdate<T> = {
 };
 
 type ToolDetailProjectionCache = {
-	mode: ToolDetailOverrideMode;
+	mode: ToolDetailMode;
+	overrides: DetailOverrides | undefined;
 	sourceTools: MycliShellTool[];
 	tools: MycliShellTool[];
 	toolById: Map<string, MycliShellTool>;
@@ -97,14 +99,22 @@ function detailIndex<T extends { id: string }>(
 export class ToolDetailProjector {
 	private cache: ToolDetailProjectionCache | null = null;
 
-	project(state: MycliShellState, mode: ToolDetailMode, transcriptUpdate?: TranscriptUpdateKind): MycliShellState {
-		if (mode === "default") {
+	project(
+		state: MycliShellState,
+		mode: ToolDetailMode,
+		transcriptUpdate?: TranscriptUpdateKind,
+		overrides?: DetailOverrides,
+	): MycliShellState {
+		if (mode === "default" && (overrides?.size ?? 0) === 0) {
 			this.cache = null;
 			return state;
 		}
-		const expanded = mode === "expanded";
+		// `undefined` keeps each item's own value, otherwise the mode sets the base.
+		const base = mode === "default" ? undefined : mode === "expanded";
+		const expandedFor = (id: string, current: boolean): boolean =>
+			overrides?.get(id) ?? base ?? current;
 		const retained = this.cache;
-		const previous = retained?.mode === mode ? retained : null;
+		const previous = retained?.mode === mode && retained.overrides === overrides ? retained : null;
 		const sourceTools = retained && state.tools === retained.tools
 			? retained.sourceTools
 			: state.tools;
@@ -119,14 +129,20 @@ export class ToolDetailProjector {
 			previous?.sourceTools,
 			previous?.tools,
 			transcriptUpdate,
-			(tool) => tool.expanded === expanded ? tool : { ...tool, expanded },
+			(tool) => {
+				const next = expandedFor(tool.id, tool.expanded === true);
+				return tool.expanded === next ? tool : { ...tool, expanded: next };
+			},
 		);
 		const bashUpdate = projectDetailArray(
 			sourceBash,
 			previous?.sourceBash,
 			previous?.bash,
 			transcriptUpdate,
-			(item) => item.expanded === expanded ? item : { ...item, expanded },
+			(item) => {
+				const next = expandedFor(item.id, item.expanded === true);
+				return item.expanded === next ? item : { ...item, expanded: next };
+			},
 		);
 		const toolById = detailIndex(toolUpdate, previous?.toolById);
 		const bashById = detailIndex(bashUpdate, previous?.bashById);
@@ -138,18 +154,21 @@ export class ToolDetailProjector {
 				transcriptUpdate,
 				(block) => {
 					if (block.kind === "provider_attempt") {
-						return block.providerAttempt.expanded === expanded ? block
-							: { ...block, providerAttempt: { ...block.providerAttempt, expanded } };
+						const next = expandedFor(block.id, block.providerAttempt.expanded);
+						return block.providerAttempt.expanded === next ? block
+							: { ...block, providerAttempt: { ...block.providerAttempt, expanded: next } };
 					}
 					if (block.kind === "tool") {
+						const fallback = expandedFor(block.tool.id, block.tool.expanded === true);
 						const tool = toolById.get(block.tool.id) ?? (
-							block.tool.expanded === expanded ? block.tool : { ...block.tool, expanded }
+							block.tool.expanded === fallback ? block.tool : { ...block.tool, expanded: fallback }
 						);
 						return tool === block.tool ? block : { ...block, tool };
 					}
 					if (block.kind === "bash") {
+						const fallback = expandedFor(block.bash.id, block.bash.expanded === true);
 						const bash = bashById.get(block.bash.id) ?? (
-							block.bash.expanded === expanded ? block.bash : { ...block.bash, expanded }
+							block.bash.expanded === fallback ? block.bash : { ...block.bash, expanded: fallback }
 						);
 						return bash === block.bash ? block : { ...block, bash };
 					}
@@ -159,6 +178,7 @@ export class ToolDetailProjector {
 			: undefined;
 		this.cache = {
 			mode,
+			overrides,
 			sourceTools,
 			tools: toolUpdate.values,
 			toolById,

@@ -4674,6 +4674,50 @@ test("legacy mouse encoding also expands the collapsed reasoning preview", async
 	await runtime.shutdown();
 });
 
+test("clicking a collapsed tool hint expands only that tool", async () => {
+	const terminal = new TestTerminal();
+	const makeTool = (id: string, label: string) => ({
+		id,
+		name: "Shell",
+		args: `echo ${label}`,
+		status: "success" as const,
+		outputPreview: label,
+		hiddenLineCount: 5,
+		detailPreview: Array.from({ length: 10 }, (_, index) => `${label} line ${index}`).join("\n"),
+		expanded: false,
+	});
+	const first = makeTool("tool-1", "first");
+	const second = makeTool("tool-2", "second");
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			messages: [],
+			tools: [first, second],
+			bash: [],
+			transcript: [
+				{ id: first.id, kind: "tool", tool: first },
+				{ id: second.id, kind: "tool", tool: second },
+			],
+			settings: { ...sampleState().settings, toolDetailsDefault: "collapsed" },
+		},
+		terminal,
+	});
+	runtime.start();
+
+	const rows = stripAnsi(runtime.ui.render(80).join("\n")).split("\n");
+	const hintRow = rows.findIndex((line) => line.includes("more lines") || line.includes("details hidden"));
+	assert.ok(hintRow >= 0, "expected a collapsed tool hint row");
+
+	terminal.input?.(`\x1b[<0;5;${hintRow + 1}M`);
+	terminal.input?.(`\x1b[<0;5;${hintRow + 1}m`);
+
+	const tools = (runtime.getState().transcript ?? [])
+		.filter((block) => block.kind === "tool")
+		.map((block) => (block.kind === "tool" ? block.tool.expanded : undefined));
+	assert.deepEqual(tools, [true, false]);
+	await runtime.shutdown();
+});
+
 test("dragging across transcript rows copies the selection", async () => {
 	const terminal = new TestTerminal();
 	const runtime = new MycliShellRuntime({
