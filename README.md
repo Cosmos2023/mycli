@@ -246,6 +246,10 @@ Default shortcuts:
 | `Ctrl+C` | Interrupt active work or pause an active goal; see idle behavior below |
 | `Ctrl+A` in an approval | Inspect the complete command or permission request |
 
+In fullscreen mode (`MYCLI_TUI_ALTERNATE_SCREEN=1`) the shell captures the mouse: a left click on
+a collapsed reasoning preview expands it, and dragging selects transcript rows and copies them on
+release. Native-scrollback mode, which is the default, leaves the mouse to the terminal.
+
 When idle with no active goal, Ctrl+C clears a nonempty draft. With an empty composer, pressing
 Ctrl+C twice within two seconds exits. Interrupting goal work pauses its automatic continuation.
 Selectors own their keys while open. Keybindings and terminal accessibility options are
