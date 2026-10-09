@@ -54,8 +54,9 @@ export function pluginMcpServerId(pluginId: string, serverName: string): string 
 
 function normalizeOAuth(value: unknown): unknown {
 	if (!isObject(value)) return value;
-	const { clientId, callbackPort, ...rest } = value;
+	const { clientId, clientSecret, callbackPort, ...rest } = value;
 	return { ...rest, ...(clientId === undefined || rest.client_id !== undefined ? {} : { client_id: clientId }),
+		...(clientSecret === undefined || rest.client_secret !== undefined ? {} : { client_secret: clientSecret }),
 		...(callbackPort === undefined || rest.callback_port !== undefined ? {} : { callback_port: callbackPort }) };
 }
 

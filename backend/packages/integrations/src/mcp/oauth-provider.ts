@@ -18,7 +18,12 @@ export class McpOAuthProvider implements OAuthClientProvider {
 		readonly state?: string;
 		readonly onAuthorization?: (url: URL) => void | Promise<void>;
 	}) {
-		this.#client = options.existing?.client ?? (options.config.oauth?.clientId ? { client_id: options.config.oauth.clientId } : undefined);
+		// A pre-registered confidential client supplies its own secret; the SDK then
+		// selects basic or post authentication from the server metadata.
+		this.#client = options.existing?.client ?? (options.config.oauth?.clientId ? {
+			client_id: options.config.oauth.clientId,
+			...(options.config.oauth.clientSecret === undefined ? {} : { client_secret: options.config.oauth.clientSecret }),
+		} : undefined);
 		this.#tokens = options.existing?.tokens;
 		this.#record = options.existing;
 	}

@@ -35,14 +35,18 @@ export function mcpExtendedConfig(raw: Readonly<Record<string, unknown>>): Pick<
 
 function oauthSettings(value: unknown): McpServerConfig["oauth"] {
 	if (value === undefined) return undefined;
-	if (!record(value) || Object.keys(value).some((key) => !["client_id", "scopes", "callback_port"].includes(key))
+	if (!record(value) || Object.keys(value).some((key) => !["client_id", "client_secret", "scopes", "callback_port"].includes(key))
 		|| value.client_id !== undefined && (typeof value.client_id !== "string" || !value.client_id.trim() || value.client_id.length > 2_048)
+		|| value.client_secret !== undefined && (typeof value.client_secret !== "string"
+			|| !value.client_secret.trim() || value.client_secret.length > 2_048)
+		|| value.client_secret !== undefined && value.client_id === undefined
 		|| value.scopes !== undefined && (!Array.isArray(value.scopes) || value.scopes.length > 64
 			|| value.scopes.some((scope) => typeof scope !== "string" || !/^[\x21\x23-\x5b\x5d-\x7e]{1,256}$/u.test(scope)))
 		|| value.callback_port !== undefined && (!Number.isSafeInteger(value.callback_port) || Number(value.callback_port) < 1 || Number(value.callback_port) > 65_535)) {
 		throw new McpConfigError("invalid_mcp_oauth");
 	}
 	return Object.freeze({ ...(typeof value.client_id === "string" ? { clientId: value.client_id } : {}),
+		...(typeof value.client_secret === "string" ? { clientSecret: value.client_secret } : {}),
 		...(Array.isArray(value.scopes) ? { scopes: Object.freeze([...new Set(value.scopes as string[])]) } : {}),
 		...(value.callback_port === undefined ? {} : { callbackPort: Number(value.callback_port) }) });
 }

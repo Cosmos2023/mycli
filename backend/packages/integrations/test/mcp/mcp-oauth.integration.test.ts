@@ -138,6 +138,45 @@ test("MCP OAuth validates state/PKCE, stores private credentials, and serializes
 	assert.equal(await store.load(), undefined);
 });
 
+test("MCP OAuth authenticates a pre-registered confidential client without dynamic registration", { timeout: 10_000 }, async (t) => {
+	const f = await fixture(t, { clientId: "registered-client", clientSecret: "registered-secret",
+		authMethods: ["client_secret_post"] });
+	const config: McpServerConfig = { ...f.config,
+		oauth: { clientId: "registered-client", clientSecret: "registered-secret" } };
+	await loginMcpOAuth({ ...f, config, signal: new AbortController().signal, fetch: policyMcpFetch(undefined),
+		onAuthorization: async (value) => {
+			const url = new URL(value);
+			f.authorization(url);
+			const callback = new URL(url.searchParams.get("redirect_uri")!);
+			callback.searchParams.set("state", url.searchParams.get("state")!);
+			callback.searchParams.set("code", "fixture-code");
+			assert.equal((await fetch(callback)).status, 200);
+		} });
+	const record = await new McpOAuthStore(f.homeDir, config).load();
+	assert.equal(record?.tokens.access_token, "token-1");
+	assert.equal(record?.client.client_id, "registered-client");
+	assert.equal(record?.client.client_secret, "registered-secret");
+	assert.equal(f.counters.exchange, 1);
+	assert.equal(f.counters.register, 0);
+});
+
+test("MCP OAuth configuration requires a client id for a client secret and rejects unknown fields", () => {
+	const config = parseMcpServerConfig("fixture", { url: "https://example.invalid/mcp",
+		oauth: { client_id: "registered-client", client_secret: "registered-secret" } }, {});
+	assert.deepEqual(config.oauth, { clientId: "registered-client", clientSecret: "registered-secret" });
+	for (const oauth of [
+		{ client_secret: "orphan-secret" },
+		{ client_id: "registered-client", client_secret: "" },
+		{ client_id: "registered-client", client_secret: " ".repeat(4) },
+		{ client_id: "registered-client", client_secret: "x".repeat(2_049) },
+		{ client_id: "registered-client", client_secret: 42 },
+		{ client_id: "registered-client", client_secret: "registered-secret", clientSecret: "other" },
+	]) {
+		assert.throws(() => parseMcpServerConfig("fixture", { url: "https://example.invalid/mcp", oauth }, {}),
+			{ errorClass: "invalid_mcp_oauth" }, JSON.stringify(oauth));
+	}
+});
+
 test("cancelled OAuth login closes its callback and does not overwrite a previous login", { timeout: 5_000 }, async (t) => {
 	const f = await fixture(t);
 	const store = new McpOAuthStore(f.homeDir, f.config);
@@ -177,10 +216,16 @@ test("cancellation while binding the callback cannot leave login waiting", { tim
 	await assert.rejects(login);
 });
 
-async function fixture(t: TestContext) {
+async function fixture(t: TestContext, options: {
+	readonly clientId?: string;
+	readonly clientSecret?: string;
+	readonly authMethods?: readonly string[];
+} = {}) {
 	const homeDir = await mkdtemp(join(tmpdir(), "mycli-mcp-oauth-"));
 	t.after(() => rm(homeDir, { recursive: true, force: true }));
-	const counters = { exchange: 0, refresh: 0, effects: 0, leakedHeaders: 0 };
+	const counters = { exchange: 0, refresh: 0, effects: 0, leakedHeaders: 0, register: 0 };
+	const clientId = options.clientId ?? "fixture-client";
+	const authMethods = options.authMethods ?? ["none"];
 	let base = "";
 	let challenge = "";
 	let redirectUri = "";
@@ -195,14 +240,17 @@ async function fixture(t: TestContext) {
 				json({ resource: `${base}/mcp`, authorization_servers: [base], scopes_supported: ["read"] });
 			} else if (url.pathname === "/.well-known/oauth-authorization-server") {
 				json({ issuer: base, authorization_endpoint: `${base}/authorize`, token_endpoint: `${base}/token`, registration_endpoint: `${base}/register`,
-					response_types_supported: ["code"], grant_types_supported: ["authorization_code", "refresh_token"], token_endpoint_auth_methods_supported: ["none"], code_challenge_methods_supported: ["S256"] });
+					response_types_supported: ["code"], grant_types_supported: ["authorization_code", "refresh_token"],
+					token_endpoint_auth_methods_supported: [...authMethods], code_challenge_methods_supported: ["S256"] });
 			} else if (url.pathname === "/register") {
+				counters.register += 1;
 				const body = JSON.parse(await bodyText(req)) as object;
 				res.statusCode = 201;
-				json({ ...body, client_id: "fixture-client" });
+				json({ ...body, client_id: clientId });
 			} else if (url.pathname === "/token") {
 				const form = new URLSearchParams(await bodyText(req));
-				assert.equal(form.get("client_id"), "fixture-client");
+				if (!authMethods.includes("client_secret_basic")) assert.equal(form.get("client_id"), clientId);
+				assert.equal(form.get("client_secret"), options.clientSecret ?? null);
 				if (form.get("grant_type") === "authorization_code") {
 					assert.equal(form.get("code"), "fixture-code");
 					assert.equal(form.get("redirect_uri"), redirectUri);
@@ -228,7 +276,7 @@ async function fixture(t: TestContext) {
 	assert.ok(address && typeof address !== "string");
 	base = `http://127.0.0.1:${address.port}`;
 	const config = parseMcpServerConfig("fixture", { url: `${base}/mcp`, headers: { "x-private": "fixture-secret" } }, {});
-	return { config, homeDir, counters, authorization: (url: URL): void => {
+	return { config, homeDir, counters, clientId, authorization: (url: URL): void => {
 		challenge = url.searchParams.get("code_challenge")!;
 		redirectUri = url.searchParams.get("redirect_uri")!;
 		assert.equal(url.searchParams.get("code_challenge_method"), "S256");

@@ -38,6 +38,7 @@ export interface McpServerConfig {
 	readonly cwd?: string;
 	readonly oauth?: {
 		readonly clientId?: string;
+		readonly clientSecret?: string;
 		readonly scopes?: readonly string[];
 		readonly callbackPort?: number;
 	};

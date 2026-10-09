@@ -17,8 +17,9 @@ test("configured MCP discovery shares plugin selectors, OAuth normalization, tru
 	await writeFile(join(bundle, ".codex-plugin/plugin.json"), JSON.stringify({ name: "docs", mcpServers: {
 		mcpServers: {
 			search: { type: "http", url: "https://example.invalid/mcp", http_headers: { "X-Private": "${FIXTURE_TOKEN}" },
-				oauth: { clientId: "bundle-client", callbackPort: 32100, scopes: ["read"] } },
-			canonical: { url: "https://example.invalid/mcp", oauth: { clientId: "ignored", client_id: "preferred", callbackPort: 32100, callback_port: 32101 } },
+				oauth: { clientId: "bundle-client", clientSecret: "bundle-secret", callbackPort: 32100, scopes: ["read"] } },
+			canonical: { url: "https://example.invalid/mcp", oauth: { clientId: "ignored", client_id: "preferred",
+				clientSecret: "ignored-secret", client_secret: "preferred-secret", callbackPort: 32100, callback_port: 32101 } },
 			broken: { command: "must-not-run", env: false, required: true },
 		},
 	} }));
@@ -30,8 +31,8 @@ test("configured MCP discovery shares plugin selectors, OAuth normalization, tru
 	assert.equal(mcpServerSelector(search), "docs@local/search");
 	assert.deepEqual(search.plugin, { id: "docs@local", source: "repo", serverName: "search" });
 	assert.equal(search.transport, "streamable_http");
-	assert.deepEqual(search.oauth, { clientId: "bundle-client", callbackPort: 32100, scopes: ["read"] });
-	assert.deepEqual(config.get("docs@local/canonical")?.oauth, { clientId: "preferred", callbackPort: 32101 });
+	assert.deepEqual(search.oauth, { clientId: "bundle-client", clientSecret: "bundle-secret", callbackPort: 32100, scopes: ["read"] });
+	assert.deepEqual(config.get("docs@local/canonical")?.oauth, { clientId: "preferred", clientSecret: "preferred-secret", callbackPort: 32101 });
 	assert.deepEqual(config.requiredPluginFailures, [pluginMcpServerId("docs@local", "broken")]);
 	assert.ok(config.pluginIssues.some((issue) => issue.errorClass === "plugin_mcp_env_invalid"));
 	assert.equal((await discoverConfiguredMcpServers({ ...options, includeRepository: false })).servers.length, 0);
@@ -45,7 +46,7 @@ test("configured MCP discovery shares plugin selectors, OAuth normalization, tru
 	assert.equal(inspection.servers[0]?.selector, "docs@local/search");
 	assert.equal(inspection.servers[0]?.source, "plugin");
 	assert.equal(inspection.servers[0]?.authStatus, "not_logged_in");
-	assert.doesNotMatch(JSON.stringify(inspection), /private-fixture|example\.invalid/u);
+	assert.doesNotMatch(JSON.stringify(inspection), /private-fixture|example\.invalid|bundle-secret|preferred-secret/u);
 
 	await mkdir(join(homeDir, ".mycli"), { recursive: true });
 	await writeFile(join(homeDir, ".mycli/mcp_servers.toml"), `[servers.${search.id}]\ncommand = "explicit-override"\n[servers.${config.requiredPluginFailures[0]}]\ncommand = "explicit-override"\n`);

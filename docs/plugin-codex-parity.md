@@ -151,8 +151,11 @@ relative references can be resolved. MCP server ids are stable and isolated per 
 descriptions retain plugin provenance. MCP JSON supports `mcpServers`, root substitutions
 `${CODEX_PLUGIN_ROOT}` / `${CLAUDE_PLUGIN_ROOT}`, `env_vars`, `http_headers`, `bearer_token_env_var`,
 `cwd`, and `tool_timeout_sec`, in addition to mycli's normal MCP fields. OAuth `clientId` is normalized
-to `client_id`. Mycli also accepts `callbackPort` as `callback_port`, retaining per-server callback
-configuration; the inspected Codex implementation uses its global callback setting instead.
+to `client_id`, and `clientSecret` to `client_secret`. Mycli also accepts `callbackPort` as
+`callback_port`, retaining per-server callback configuration; the inspected Codex implementation
+uses its global callback setting instead. A configured client id and secret select a pre-registered
+client, so login skips dynamic registration and the token endpoint authenticates with the method the
+server advertises. A secret without a client id is rejected.
 Canonical keys take precedence when both spellings are present. Missing environment values
 produce configuration issues; values are not printed in management diagnostics.
 

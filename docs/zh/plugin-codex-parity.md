@@ -103,7 +103,7 @@ my-plugin/
 
 也识别 `.claude-plugin/plugin.json`。省略组件字段时发现 `skills/`、`.mcp.json`、`hooks/hooks.json` 和 `.app.json`。声明路径必须以 `./` 开头、存在且位于真实包根内。Skills 接受单路径或数组；MCP 接受 JSON 路径或内联服务器表；hooks 接受 JSON 路径、内联表或这些值的数组。声明文件无效时，在替换旧包前安装失败；个别 MCP/hook 条目损坏产生有界问题，有效项继续可用，bundle 显示 `partial`。
 
-插件 skill 使用 `my-plugin:review` 或 `my-plugin@personal:review`，用于激活、持久上下文和对话显示。指令携带包根和源文件以解析相对引用。MCP 服务器 ID 稳定且按插件隔离，描述保留插件来源。除普通 MCP 字段外，MCP JSON 支持 `mcpServers`、根替换 `${CODEX_PLUGIN_ROOT}` / `${CLAUDE_PLUGIN_ROOT}`、`env_vars`、`http_headers`、`bearer_token_env_var`、`cwd` 和 `tool_timeout_sec`。OAuth `clientId` 规范化为 `client_id`。mycli 还将 `callbackPort` 接受为 `callback_port`，保留逐服务器回调配置；检查的 Codex 实现使用全局回调设置。两种拼写同时出现时标准键优先。缺失环境值产生配置问题，诊断不打印值。
+插件 skill 使用 `my-plugin:review` 或 `my-plugin@personal:review`，用于激活、持久上下文和对话显示。指令携带包根和源文件以解析相对引用。MCP 服务器 ID 稳定且按插件隔离，描述保留插件来源。除普通 MCP 字段外，MCP JSON 支持 `mcpServers`、根替换 `${CODEX_PLUGIN_ROOT}` / `${CLAUDE_PLUGIN_ROOT}`、`env_vars`、`http_headers`、`bearer_token_env_var`、`cwd` 和 `tool_timeout_sec`。OAuth `clientId` 规范化为 `client_id`，`clientSecret` 规范化为 `client_secret`。mycli 还将 `callbackPort` 接受为 `callback_port`，保留逐服务器回调配置；检查的 Codex 实现使用全局回调设置。配置了 client id 和 secret 时使用预注册客户端，登录跳过动态注册，由服务器声明的方式完成 token 端点认证；只有 secret 没有 client id 会被拒绝。两种拼写同时出现时标准键优先。缺失环境值产生配置问题，诊断不打印值。
 
 命令 hook 支持现有 `PreToolUse`、`PostToolUse`、`SessionStart`、`UserPromptSubmit`、`Stop` 分组。环境包含 `CODEX_PLUGIN_ROOT` 与 `CLAUDE_PLUGIN_ROOT`，Shell 命令中应引用这些变量。启用/安装插件授权声明的 hooks，但仍在现有工作区沙箱执行。不支持 prompt/agent hook 类型和其他 Codex 事件。OpenAI 托管 Apps 无法在 mycli 执行；声明 Apps 会产生 `plugin_apps_unavailable`，其他组件仍可用。
 

@@ -24,6 +24,10 @@ implement or verify these boundaries.
 OAuth:
 - Only explicit login owns browser interaction, loopback state/PKCE and a five-minute deadline.
   Configured bearer auth and OAuth are separate identities. No automatic login during discovery.
+- A configured `clientId` with `clientSecret` selects a pre-registered confidential client: the
+  provider returns `client_id`/`client_secret`, dynamic registration is skipped, and the SDK chooses
+  basic or post authentication from the server metadata. A secret without a client id is invalid.
+  The secret is part of the credential identity and never appears in management or diagnostics.
 - Credentials are private, bounded, atomic and isolated by config identity; never log tokens,
   metadata bodies, verifiers, codes, authorization headers or secret URL paths.
 - Enabled plugin MCP servers use the same login/logout/configuration service. Plugin ID/source/raw
