@@ -1898,7 +1898,7 @@ export class MycliShellRuntime {
 			const block = projected[index]!;
 			const cached = this.chatBlocks.get(block.id);
 			const next = syncTranscriptBlock(block, cached, {
-				hideThinking: this.state.settings?.hideThinking,
+				hideThinking: this.reasoningHiddenForRender(),
 				now: this.now,
 			});
 			this.chatBlocks.set(block.id, next);
@@ -2596,16 +2596,38 @@ export class MycliShellRuntime {
 				block.kind === "tool"
 					? block.tool.expanded !== true
 					: block.kind === "provider_attempt" ? !block.providerAttempt.expanded
-						: block.kind === "bash" && block.bash.expanded !== true,
+						: block.kind === "bash" ? block.bash.expanded !== true
+							: block.kind === "message" && block.message.role === "assistant"
+								? Boolean(block.message.thinking) && this.reasoningHiddenForRender()
+								: false,
 			);
 			this.toolDetailMode = hasCollapsed ? "expanded" : "collapsed";
 		}
 		this.setState(this.state);
+		this.applyReasoningDisplayMode();
 		this.queueNativeTranscriptHistory(true);
 	}
 
 	private applyToolDetailMode(state: MycliShellState, transcriptUpdate?: TranscriptUpdateKind): MycliShellState {
 		return this.toolDetailProjector.project(state, this.toolDetailMode, transcriptUpdate);
+	}
+
+	/** Reasoning shares the details toggle; refresh only the rendered assistant messages. */
+	private applyReasoningDisplayMode(): void {
+		const hidden = this.reasoningHiddenForRender();
+		let changed = false;
+		for (const block of this.chatBlocks.values()) {
+			if (block.kind !== "message" || !(block.component instanceof AssistantMessageComponent)) continue;
+			block.component.setThinkingHidden(hidden);
+			changed = true;
+		}
+		if (changed) this.ui.invalidate();
+	}
+
+	private reasoningHiddenForRender(): boolean {
+		if (this.toolDetailMode === "expanded") return false;
+		if (this.toolDetailMode === "collapsed") return true;
+		return this.state.settings?.hideThinking ?? true;
 	}
 
 	clearTerminalView(): void {

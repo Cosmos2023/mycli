@@ -16,7 +16,7 @@ const SHORTCUTS: readonly [AppKeybinding, string][] = [
 	["app.commandPalette", "Commands"],
 	["app.help", "Help"],
 	["app.model.select", "Model"],
-	["app.tools.expand", "Tool details"],
+	["app.tools.expand", "Details"],
 	["app.transcript.open", "Transcript"],
 	["app.permissions.open", "Permissions"],
 	["app.interrupt", "Cancel / interrupt"],

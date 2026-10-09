@@ -15,7 +15,7 @@ export interface TuiKeymapActionDescriptor {
 export const TUI_KEYMAP_ACTIONS = [
 	action("app.interrupt", "app", "interrupt", "Interrupt or cancel the active operation", ["escape"], true, true),
 	action("app.exit", "app", "exit", "Exit when the input editor is empty", ["ctrl+d"], true),
-	action("app.tools.expand", "app", "tools_expand", "Expand or collapse tool details", ["ctrl+o"]),
+	action("app.tools.expand", "app", "tools_expand", "Expand or collapse tool and reasoning details", ["ctrl+o"]),
 	action("app.transcript.open", "app", "transcript_open", "Open the complete transcript", ["ctrl+t"]),
 	action("app.model.select", "app", "model_select", "Open model selection", ["ctrl+l"]),
 	action("app.commandPalette", "app", "command_palette", "Open the command palette", ["ctrl+p"]),

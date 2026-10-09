@@ -2,6 +2,7 @@ import { Markdown } from "../../tui-core/components/markdown.ts";
 import { Container, type TailRenderResult } from "../../tui-core/tui.ts";
 import { uiGlyphs } from "../../theme/terminal-style.ts";
 import { markdownTheme } from "../shared/markdown-theme.ts";
+import { formatKeyText, keyForAction } from "../shared/keybinding-hints.ts";
 import { theme } from "../../theme/theme.ts";
 import {
 	renderTranscriptMessageLines,
@@ -46,6 +47,12 @@ export class AssistantMessageComponent extends Container {
 		}
 	}
 
+	setThinkingHidden(thinkingHidden: boolean): void {
+		if (this.thinkingHidden === thinkingHidden) return;
+		this.thinkingHidden = thinkingHidden;
+		this.rebuild();
+	}
+
 	private rebuild(): void {
 		this.textMarkdown = undefined;
 		this.thinkingMarkdown = undefined;
@@ -68,7 +75,15 @@ export class AssistantMessageComponent extends Container {
 	}
 
 	private visibleThinking(): string {
-		return this.thinkingHidden ? "" : (this.thinking?.trim() ?? "");
+		const text = this.thinking?.trim() ?? "";
+		if (!text) return "";
+		if (!this.thinkingHidden) return text;
+		const firstLine = text
+			.split(/\r?\n/)
+			.map((part) => part.trim().replace(/^#+\s*/, ""))
+			.find((part) => part.length > 0) ?? "";
+		if (!firstLine) return "";
+		return `${firstLine} ${uiGlyphs().ellipsis} (${formatKeyText(keyForAction("app.tools.expand"))} expand)`;
 	}
 
 	holdsNativeScrollbackTail(): boolean {

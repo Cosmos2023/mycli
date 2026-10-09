@@ -566,7 +566,7 @@ test("mycli shell renders promoted shell surfaces", () => {
 	assert.match(output, /Read word\.txt/);
 	assert.match(output, /^› Read word\.txt and summarize it\./m);
 	assert.doesNotMatch(output, /Thinking\.\.\./);
-	assert.doesNotMatch(output, /I should inspect the file/);
+	assert.match(output, /^• I should inspect the file … \(ctrl\+o expand\)/m);
 	assert.match(output, /Summary: hello/);
 	assert.match(output, /^• Summary: hello\./m);
 	assert.match(output, /Read/);
@@ -4580,6 +4580,37 @@ test("ctrl o globally toggles tool details and survives gateway state refreshes"
 	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /└ Command:/);
 });
 
+test("ctrl o expands collapsed reasoning in the main transcript", async () => {
+	const terminal = new TestTerminal();
+	const assistant = {
+		id: "assistant-reasoning",
+		role: "assistant" as const,
+		text: "The answer.",
+		thinking: "Checking the parser.\nMore detail.",
+	};
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			messages: [assistant],
+			transcript: [{ id: assistant.id, kind: "message", message: assistant }],
+			settings: { ...sampleState().settings, hideThinking: true },
+		},
+		terminal,
+	});
+	runtime.start();
+
+	const collapsed = stripAnsi(runtime.chatContainer.render(80).join("\n"));
+	assert.match(collapsed, /^• Checking the parser\. … \(ctrl\+o expand\)/m);
+	assert.doesNotMatch(collapsed, /More detail/);
+
+	terminal.input?.("\x0f");
+
+	const expanded = stripAnsi(runtime.chatContainer.render(80).join("\n"));
+	assert.match(expanded, /More detail/);
+	assert.doesNotMatch(expanded, /ctrl\+o expand/);
+	await runtime.shutdown();
+});
+
 test("ctrl o detail projection updates transcript tails without scanning stable history", () => {
 	const tool = {
 		id: "detail-tool",
@@ -5755,7 +5786,7 @@ test("mycli shell applies runtime-backed visual settings to active rendering", a
 	assert.equal(theme.name(), "dark");
 	assert.equal(runtime.ui.getShowHardwareCursor(), false);
 	assert.equal(runtime.ui.getClearOnShrink(), true);
-	assert.doesNotMatch(stripAnsi(runtime.chatContainer.render(80).join("\n")), /Visible reasoning/);
+	assert.match(stripAnsi(runtime.chatContainer.render(80).join("\n")), /^• Visible reasoning … \(ctrl\+o expand\)/m);
 	assert.match(stripAnsi(runtime.statusContainer.render(80).join("\n")), /esc to interrupt/);
 	assert.doesNotMatch(stripAnsi(runtime.subagentTaskContainer.render(80).join("\n")), /Inspect auth bug/);
 	assert.equal(runtime.footerContainer.render(80).length, 1);

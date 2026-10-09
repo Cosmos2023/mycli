@@ -116,7 +116,7 @@ export const SHELL_SETTING_DESCRIPTORS: readonly ShellSettingDescriptor[] = Obje
 		settingKey: "hide_thinking",
 		clientKey: "hideThinking",
 		label: "Hide thinking",
-		description: "Hides reasoning blocks in the main transcript; the Ctrl+T transcript view still shows them",
+		description: "Collapses reasoning in the main transcript to a one-line preview; Ctrl+O expands it and Ctrl+T still shows the full text",
 		allowedValues: [true, false],
 		path: ["tui_hide_thinking"],
 		legacyPaths: [["hideThinking"], ["hide_thinking"]],

@@ -238,7 +238,7 @@ Default shortcuts:
 | Key | Action |
 | --- | --- |
 | `Ctrl+P` | Search commands and settings |
-| `Ctrl+O` | Expand or collapse tool details |
+| `Ctrl+O` | Expand or collapse tool and reasoning details |
 | `Ctrl+T` | Open the transcript viewer |
 | `Shift+Tab` | Cycle Default and Plan mode while idle |
 | `Tab` | Queue a follow-up while a turn runs |

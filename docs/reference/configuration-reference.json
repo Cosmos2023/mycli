@@ -540,7 +540,7 @@
     },
     {
       "key": "tui.hide_thinking",
-      "description": "Hides reasoning blocks in the main transcript; the Ctrl+T transcript view still shows them",
+      "description": "Collapses reasoning in the main transcript to a one-line preview; Ctrl+O expands it and Ctrl+T still shows the full text",
       "valueKind": "boolean",
       "writable": true,
       "canonicalPath": "tui_hide_thinking",

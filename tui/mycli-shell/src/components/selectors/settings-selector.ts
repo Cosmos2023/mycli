@@ -363,7 +363,7 @@ function fallbackSettingsCatalog(settings: MycliShellVisualSettings | undefined)
 		["statusbarMode", "tui.statusbar_mode", "Statusbar", "Compact shows model and context; full adds workspace and session", ["off", "compact", "full"]],
 		["viewMode", "tui.view_mode", "View mode", "Controls transcript detail density", ["default", "verbose", "focus"]],
 		["theme", "tui.theme", "Theme", "Selects the terminal color theme", ["dark", "light"]],
-		["hideThinking", "tui.hide_thinking", "Hide thinking", "Hides reasoning in the main transcript; Ctrl+T still shows it", ["true", "false"]],
+		["hideThinking", "tui.hide_thinking", "Hide thinking", "Collapses reasoning to a one-line preview; Ctrl+O expands it", ["true", "false"]],
 		["toolDetailsDefault", "tui.tool_details_default", "Tool details", "Controls completed tool detail expansion", ["collapsed", "expanded"]],
 		["hardwareCursor", "tui.hardware_cursor", "Hardware cursor", "Uses the terminal cursor for IME placement", ["true", "false"]],
 		["clearOnShrink", "tui.clear_on_shrink", "Clear on shrink", "Clears stale cells when the viewport shrinks", ["true", "false"]],

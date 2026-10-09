@@ -18,7 +18,7 @@
 # Allowed: true, false
 # tui_hardware_cursor = false
 
-# Hides reasoning blocks in the main transcript; the Ctrl+T transcript view still shows them
+# Collapses reasoning in the main transcript to a one-line preview; Ctrl+O expands it and Ctrl+T still shows the full text
 # Allowed: true, false
 # tui_hide_thinking = true
 

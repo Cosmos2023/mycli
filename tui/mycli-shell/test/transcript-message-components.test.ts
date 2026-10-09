@@ -108,31 +108,35 @@ test("assistant message updates retain the role prefix", () => {
 	assert.equal(lines[0]?.startsWith("• complete response"), true);
 });
 
-test("assistant reasoning is hidden by default and each visible section keeps its own prefix", () => {
-	const lines = visibleContentLines(
+test("collapsed reasoning keeps a one-line preview and the answer prefix", () => {
+	const collapsed = visibleContentLines(
+		new AssistantMessageComponent("The answer.", "Some reasoning.\nMore detail.", true).render(60),
+	);
+	assert.equal(collapsed[0]?.startsWith("• Some reasoning."), true);
+	assert.equal(collapsed[0]?.includes("expand"), true);
+	assert.equal(collapsed.some((line) => line.includes("More detail")), false);
+	assert.equal(collapsed[1]?.startsWith("• The answer."), true);
+
+	const expanded = visibleContentLines(
 		new AssistantMessageComponent("The answer.", "Some reasoning.", false).render(40),
 	);
-
-	assert.equal(lines[0]?.startsWith("• Some reasoning."), true);
-	assert.equal(lines[1]?.startsWith("• The answer."), true);
-
-	const byDefault = visibleContentLines(new AssistantMessageComponent("The answer.", "Some reasoning.").render(40));
-	assert.equal(byDefault.some((line) => line.includes("Some reasoning")), false);
-	assert.equal(byDefault[0]?.startsWith("• The answer."), true);
+	assert.equal(expanded[0]?.startsWith("• Some reasoning."), true);
+	assert.equal(expanded[1]?.startsWith("• The answer."), true);
 });
 
-test("the Ctrl+T transcript view keeps reasoning the main view hides", () => {
+test("the Ctrl+T transcript view shows full reasoning that the main view collapses", () => {
 	const block = {
 		id: "a1",
 		kind: "message" as const,
-		message: { id: "a1", role: "assistant" as const, text: "The answer.", thinking: "Some reasoning." },
+		message: { id: "a1", role: "assistant" as const, text: "The answer.", thinking: "Some reasoning.\nMore detail." },
 	};
 
-	const main = visibleContentLines(renderTranscriptBlocks([block], 40));
-	const viewer = visibleContentLines(renderTranscriptWithRanges([block], 40, { hideThinking: false }).lines);
+	const main = visibleContentLines(renderTranscriptBlocks([block], 60));
+	const viewer = visibleContentLines(renderTranscriptWithRanges([block], 60, { hideThinking: false }).lines);
 
-	assert.equal(main.some((line) => line.includes("Some reasoning")), false);
-	assert.equal(viewer.some((line) => line.includes("Some reasoning")), true);
+	assert.equal(main.some((line) => line.includes("More detail")), false);
+	assert.equal(main[0]?.includes("expand"), true);
+	assert.equal(viewer.some((line) => line.includes("More detail")), true);
 });
 
 test("assistant tail rendering matches slicing full visible and thinking output", () => {
