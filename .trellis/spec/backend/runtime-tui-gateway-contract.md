@@ -7100,6 +7100,11 @@ interface CommandDiscoveryRow {
   default palette, but they keep their own route and remain runnable when typed by name. Grouping is
   a discovery decision only: it must not remove a command, change its dispatch, or alter its
   availability. A missing scope field defaults to `top` so older payloads stay discoverable.
+- `/copy` reads stored source rather than rendered rows, so a copied table, code fence or emphasis
+  stays Markdown. No argument keeps the last assistant message; `<n>` copies the numbered transcript
+  block, where 1 is the newest copyable block; `--all` copies user and assistant turns as Markdown.
+  Indices and labels come from one projection (`transcriptCopyBlocks`); an unknown index reports the
+  available blocks instead of copying nothing. Tool blocks copy a bounded receipt, never raw state.
 - Catalog items contain stable id/category, kind, label, bounded description/value/source/scope,
   allowed values or action, lock state/reason, restart requirement, command path, and search terms.
   Credential values, raw policy/helper failures, absolute private paths, and unbounded extension text

@@ -294,8 +294,10 @@ const BUILTIN_SLASH_COMMANDS: readonly SlashCommandSpec[] = Object.freeze([
 		presentation: "none",
 		visible: false,
 	}),
-	spec("copy", "/copy", "Copy the last assistant response", {
-		tuiPolicy: tuiPolicy("copy_last_response"),
+	spec("copy", "/copy", "Copy the last assistant response, a numbered block, or the whole conversation", {
+		argumentHint: "[<n>|--all]",
+		argumentPolicy: "optional",
+		tuiPolicy: tuiPolicy("copy_last_response", "copy_last_response"),
 		surfaces: TUI_SURFACE,
 		presentation: "none",
 		visible: false,

@@ -2079,6 +2079,8 @@ test("built-in TUI slash commands resolve to their canonical client actions", as
 		["/view\tfocus", "view", "set_view_mode", "focus", "none"],
 		["/hotkeys", "hotkeys", "open_hotkeys", "", "none"],
 		["/copy", "copy", "copy_last_response", "", "none"],
+		["/copy 2", "copy", "copy_last_response", "2", "none"],
+		["/copy --all", "copy", "copy_last_response", "--all", "none"],
 		["/login", "login", "open_login", "", "none"],
 		["/trust", "trust", "open_trust", "", "none"],
 		["/quit", "quit", "quit", "", "none"],

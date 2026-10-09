@@ -327,7 +327,7 @@ also clears the temporary override so the saved choice takes effect.
 | `/details` | none | toggles compact tool details | yes | search-only |
 | `/view` | optional `[default\|verbose\|focus]` | changes transcript density; tools remain visible | yes | search-only |
 | `/hotkeys` | none | opens keyboard help | yes | search-only |
-| `/copy` | none | copies the last assistant response | yes | search-only |
+| `/copy` | optional `[<n>\|--all]` | copies the last assistant response; `<n>` copies the numbered transcript block and `--all` copies the whole conversation as Markdown | yes | search-only |
 | `/clear` | none | creates a fresh session, then clears the terminal | no | search-only |
 | `/login` | none | opens masked provider credential setup | yes | search-only |
 | `/trust` | none | opens workspace trust | yes | search-only |

@@ -87,6 +87,7 @@ import type {
 import { copyText } from "../platform/clipboard.ts";
 import { safeErrorMessage } from "../safe-ui-text.ts";
 import { setUiGlyphMode, uiGlyphs } from "../theme/terminal-style.ts";
+import { transcriptCopyBlocks, transcriptCopyIndexHint, transcriptCopyText } from "../state/transcript-copy.ts";
 import { getEditorTheme, theme } from "../theme/theme.ts";
 import { ToolDetailProjector, type ToolDetailMode } from "../transcript/tool-detail-projection.ts";
 import {
@@ -938,7 +939,7 @@ export class MycliShellRuntime {
 	}
 
 	async handleClientAction(action: string, args: string): Promise<void> {
-		const handlers: Record<string, () => void | Promise<void>> = {
+		const handlers: Record<string, (actionArgs: string) => void | Promise<void>> = {
 			open_command_palette: () => this.showCommandPalette(),
 			open_config: () => this.showConfigPalette(),
 			open_help: () => this.showHelp(),
@@ -958,7 +959,7 @@ export class MycliShellRuntime {
 			toggle_details: () => this.toggleToolDetails(),
 			set_view_mode: () => this.setViewMode(args),
 			open_hotkeys: () => this.showHelp(),
-			copy_last_response: () => this.copyLastAssistantMessage(),
+			copy_last_response: (actionArgs) => this.copyTranscript(actionArgs),
 			open_login: () => this.showLoginFlow(args || undefined),
 			open_trust: () => this.showTrustGate(),
 			quit: () => this.shutdown(),
@@ -968,7 +969,7 @@ export class MycliShellRuntime {
 			this.addSystemNotice(`Internal command configuration error: unknown action ${action}`);
 			return;
 		}
-		await handler();
+		await handler(args);
 	}
 
 	showModelSelector(initialSearchInput?: string): void {
@@ -2660,14 +2661,41 @@ export class MycliShellRuntime {
 		};
 	}
 
-	private copyLastAssistantMessage(): void {
-		const message = [...this.state.messages].reverse().find((candidate) => candidate.role === "assistant" && candidate.text.trim());
-		if (!message) {
-			this.addSystemNotice("No assistant message to copy yet.");
+	/** `/copy` keeps the last assistant message; `/copy <n>` takes a block and `/copy --all` the conversation. */
+	private copyTranscript(rawArguments: string): void {
+		const argument = rawArguments.trim();
+		if (argument === "" ) {
+			const message = [...this.state.messages].reverse().find((candidate) => candidate.role === "assistant" && candidate.text.trim());
+			if (!message) {
+				this.addSystemNotice("No assistant message to copy yet.");
+				return;
+			}
+			this.copyToClipboard(message.text, "Copied last assistant message.");
 			return;
 		}
-		const copied = copyText(message.text);
-		this.addSystemNotice(copied ? "Copied last assistant message." : "Clipboard unavailable. Last assistant message is still visible above.");
+		if (argument === "--all") {
+			const conversation = transcriptCopyText(this.state);
+			if (!conversation) {
+				this.addSystemNotice("No conversation to copy yet.");
+				return;
+			}
+			this.copyToClipboard(conversation, `Copied the whole conversation (${conversation.split("\n").length} lines).`);
+			return;
+		}
+		const blocks = transcriptCopyBlocks(this.state);
+		const index = /^\d+$/u.test(argument) ? Number.parseInt(argument, 10) : undefined;
+		const block = index === undefined ? undefined : blocks.find((candidate) => candidate.index === index);
+		if (!block) {
+			this.addSystemNotice(`No block ${argument} to copy. Available: ${transcriptCopyIndexHint(blocks)}. `
+				+ "Use /copy for the last response or /copy --all for the whole conversation.");
+			return;
+		}
+		this.copyToClipboard(block.text, `Copied ${block.label} (block ${block.index}).`);
+	}
+
+	private copyToClipboard(text: string, copiedNotice: string): void {
+		const copied = copyText(text);
+		this.addSystemNotice(copied ? copiedNotice : "Clipboard unavailable; the content is still visible above.");
 	}
 
 	private addSystemNotice(text: string, role: "system" | "warning" | "error" = "system"): void {
