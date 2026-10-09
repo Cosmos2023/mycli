@@ -59,6 +59,8 @@ test("built-in manifest exposes stable file interaction and terminal tool invent
 		"list_mcp_resources",
 		"list_mcp_resource_templates",
 		"read_mcp_resource",
+		"list_mcp_prompts",
+		"get_mcp_prompt",
 		"Shell",
 		"WriteStdin",
 		"Bash",
@@ -83,6 +85,8 @@ test("built-in manifest exposes stable file interaction and terminal tool invent
 		"builtin:list_mcp_resources",
 		"builtin:list_mcp_resource_templates",
 		"builtin:read_mcp_resource",
+		"builtin:list_mcp_prompts",
+		"builtin:get_mcp_prompt",
 		"builtin:Shell",
 		"builtin:WriteStdin",
 		"builtin:Bash",
@@ -265,6 +269,8 @@ test("exposure planner preserves manifest order and provider schemas", () => {
 		"list_mcp_resources",
 		"list_mcp_resource_templates",
 		"read_mcp_resource",
+		"list_mcp_prompts",
+		"get_mcp_prompt",
 		"Shell",
 		"WriteStdin",
 	]);
@@ -308,14 +314,14 @@ test("exposure planner preserves manifest order and provider schemas", () => {
 	}[];
 	assert.deepEqual(
 		fileExposure.map((tool) => tool.name),
-		["Read", "Edit", "Patch", "Write", "update_plan", "web_fetch", "tool_search", "view_image", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"],
+		["Read", "Edit", "Patch", "Write", "update_plan", "web_fetch", "tool_search", "view_image", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "list_mcp_prompts", "get_mcp_prompt"],
 	);
 	assert.deepEqual(
 		(planToolExposure(manifest, {
 			shell: false,
 			requestPermissionsTool: true,
 		}) as readonly { readonly name: string }[]).map((tool) => tool.name),
-		["Read", "Edit", "Patch", "Write", "request_permissions", "update_plan", "web_fetch", "tool_search", "view_image", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"],
+		["Read", "Edit", "Patch", "Write", "request_permissions", "update_plan", "web_fetch", "tool_search", "view_image", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "list_mcp_prompts", "get_mcp_prompt"],
 	);
 	assert.deepEqual(
 		(planToolExposure(manifest) as readonly { readonly name: string }[])

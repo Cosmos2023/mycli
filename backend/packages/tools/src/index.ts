@@ -399,6 +399,8 @@ export {
 	VIEW_IMAGE_TOOL_DEFINITION,
 	LIST_MCP_RESOURCES_TOOL_DEFINITION,
 	LIST_MCP_RESOURCE_TEMPLATES_TOOL_DEFINITION,
+	LIST_MCP_PROMPTS_TOOL_DEFINITION,
+	GET_MCP_PROMPT_TOOL_DEFINITION,
 	READ_MCP_RESOURCE_TOOL_DEFINITION,
 } from "./registry/context-manifest.ts";
 export { startNetworkProxy, type NetworkProxyLease, type NetworkProxyInteraction, type NetworkProxyOwner } from "./network/network-proxy.ts";

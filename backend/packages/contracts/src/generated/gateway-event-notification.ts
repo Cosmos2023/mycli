@@ -1016,6 +1016,8 @@ export interface IntegrationErrorDetails {
     | "resources/list"
     | "resources/templates/list"
     | "resources/read"
+    | "prompts/list"
+    | "prompts/get"
     | "hooks/run"
     | "commands/run"
     | "shutdown";

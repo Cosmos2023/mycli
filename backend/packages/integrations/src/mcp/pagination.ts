@@ -7,7 +7,7 @@ interface McpDiscoveryPage<Item> {
 export async function collectMcpPages<Item>(
 	signal: AbortSignal,
 	fetchPage: (cursor?: string) => Promise<McpDiscoveryPage<Item>>,
-	errorCode: "invalid_mcp_tool_pagination" | "invalid_mcp_resource_pagination",
+	errorCode: "invalid_mcp_tool_pagination" | "invalid_mcp_resource_pagination" | "invalid_mcp_prompt_pagination",
 ): Promise<readonly Item[]> {
 	const items: Item[] = [];
 	const seen = new Set<string>();

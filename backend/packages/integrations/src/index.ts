@@ -89,6 +89,7 @@ export {
 	ListMcpResourceTemplatesTool,
 	ReadMcpResourceTool,
 } from "./mcp/lazy-resource-tools.ts";
+export { GetMcpPromptTool, ListMcpPromptsTool } from "./mcp/lazy-prompt-tools.ts";
 export type {
 	McpClientContract,
 	McpConfigDiagnostic,
@@ -265,7 +266,7 @@ export {
 	boundSubagentReport,
 	type BoundSubagentReportOptions,
 } from "./subagents/report-bounding.ts";
-export type { McpResourceService, McpResourceListing, McpResourcePage, McpResourceTemplateDescriptor,
+export type { McpPromptService, McpResourceService, McpResourceListing, McpResourcePage, McpResourceTemplateDescriptor,
 	McpResourceTemplatePage, McpResourceTemplateListing } from "./mcp/types.ts";
 export type { McpElicitationPrompt, McpElicitationHandler, McpInvocationContext } from "./mcp/elicitation.ts";
 

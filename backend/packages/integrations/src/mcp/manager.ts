@@ -9,6 +9,10 @@ import { mcpToolEnabled } from "./config-options.ts";
 import type {
 	McpManagedClient,
 	McpDiscoveryFailure,
+	McpPromptDescriptor,
+	McpPromptListing,
+	McpPromptPage,
+	McpPromptResult,
 	McpResourceContent,
 	McpResourceDescriptor,
 	McpResourceFailure,
@@ -194,6 +198,53 @@ export class McpManager {
 					diagnostic: describeMcpFailure(result.reason, { operation: "resources/templates/list" }) });
 			});
 			return { resourceTemplates, failures, ...(nextCursor === undefined ? {} : { nextCursor }) };
+		});
+	}
+
+	listPrompts(signal: AbortSignal, serverId?: string): Promise<McpPromptListing> {
+		return this.#runResource(signal, async (activeSignal) => {
+			const configs = this.#configs.filter((config) => config.enabled && (serverId === undefined || config.id === serverId));
+			if (serverId && configs.length === 0) throw new Error("unknown_mcp_server");
+			const prompts: McpPromptDescriptor[] = [];
+			const failures: McpResourceFailure[] = [];
+			const settled = await Promise.allSettled(configs.map(async (config) => {
+				const client = this.#clients.get(config.id);
+				if (!client?.listPrompts) return [] as readonly McpPromptDescriptor[];
+				return collectMcpPages<McpPromptDescriptor>(activeSignal, async (cursor) => {
+					const page = await client.listPrompts!(activeSignal, cursor);
+					return { items: page.prompts, ...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }) };
+				}, "invalid_mcp_prompt_pagination");
+			}));
+			activeSignal.throwIfAborted();
+			settled.forEach((result, index) => {
+				if (result.status === "fulfilled") prompts.push(...result.value);
+				else failures.push({ server: configs[index]!.id, errorKind: classifyMcpFailure(result.reason),
+					diagnostic: describeMcpFailure(result.reason, { operation: "prompts/list" }) });
+			});
+			return Object.freeze({ prompts: Object.freeze(prompts), failures: Object.freeze(failures) });
+		});
+	}
+
+	listPromptsPage(serverId: string, signal: AbortSignal, cursor?: string): Promise<McpPromptPage> {
+		return this.#runResource(signal, async (activeSignal) => {
+			const client = this.#clients.get(serverId);
+			if (!client) throw new Error("unknown_mcp_server");
+			if (!client.listPrompts) throw new Error("mcp_prompts_unsupported");
+			return client.listPrompts(activeSignal, cursor);
+		});
+	}
+
+	getPrompt(
+		serverId: string,
+		name: string,
+		argumentsValue: Readonly<Record<string, string>>,
+		signal: AbortSignal,
+	): Promise<McpPromptResult> {
+		return this.#runResource(signal, async (activeSignal) => {
+			const client = this.#clients.get(serverId);
+			if (!client) throw new Error("unknown_mcp_server");
+			if (!client.getPrompt) throw new Error("mcp_prompts_unsupported");
+			return client.getPrompt(name, argumentsValue, activeSignal);
 		});
 	}
 

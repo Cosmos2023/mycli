@@ -75,6 +75,8 @@ import {
 	ListMcpResourcesTool,
 	ReadMcpResourceTool,
 	ListMcpResourceTemplatesTool,
+	ListMcpPromptsTool,
+	GetMcpPromptTool,
 	type IntegrationRegistration,
 	type ChildRuntimeCreateInput,
 	type ChildRuntimeEvent,
@@ -1060,6 +1062,8 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				new ListMcpResourcesTool(integrationComposition.mcpResourceService),
 				new ListMcpResourceTemplatesTool(integrationComposition.mcpResourceService),
 				new ReadMcpResourceTool(integrationComposition.mcpResourceService),
+				new ListMcpPromptsTool(integrationComposition.mcpPromptService),
+				new GetMcpPromptTool(integrationComposition.mcpPromptService),
 				reviewMode && reviewRevision
 					? new GitReviewReadTool(readRoot, reviewRevision)
 					: new ReadTool({ workspaceRoot: readRoot, snapshots: fileSnapshots }),

@@ -11,6 +11,10 @@ import type {
 	McpClientContract,
 	McpContentItem,
 	McpProtocolClient,
+	McpPromptArgument,
+	McpPromptMessage,
+	McpPromptPage,
+	McpPromptResult,
 	McpResourceContent,
 	McpResourceDescriptor,
 	McpResourcePage,
@@ -157,6 +161,36 @@ export class McpClient implements McpClientContract {
 		});
 	}
 
+	async listPrompts(signal: AbortSignal, cursor?: string): Promise<McpPromptPage> {
+		return this.#connection.run("prompts/list", signal, async (protocol, activeSignal) => {
+			validateCursor(cursor, undefined, "invalid_mcp_prompt_pagination");
+			const page = await protocol.listPrompts?.(activeSignal, cursor) ?? { prompts: [] };
+			validateCursor(page.nextCursor, cursor, "invalid_mcp_prompt_pagination");
+			if (page.prompts.length > 10_000) throw new Error("invalid_mcp_prompt_pagination");
+			return { prompts: page.prompts.flatMap((item) => {
+				const name = stringValue(item.name);
+				return name ? [Object.freeze({ serverId: this.config.id, name,
+					description: stringValue(item.description) ?? "", arguments: promptArguments(item.arguments) })] : [];
+			}), ...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }) };
+		});
+	}
+
+	async getPrompt(
+		name: string,
+		argumentsValue: Readonly<Record<string, string>>,
+		signal: AbortSignal,
+	): Promise<McpPromptResult> {
+		return this.#connection.run("prompts/get", signal, async (protocol, activeSignal) => {
+			if (!protocol.getPrompt) throw new Error("mcp_prompts_unsupported");
+			const result = await protocol.getPrompt(name, argumentsValue, activeSignal);
+			const description = stringValue(result.description);
+			return Object.freeze({
+				...(description === undefined ? {} : { description }),
+				messages: promptMessages(result.messages),
+			});
+		});
+	}
+
 	close(): Promise<void> {
 		return this.#connection.close();
 	}
@@ -252,6 +286,26 @@ class SdkProtocolClient implements McpProtocolClient {
 			...(result.nextCursor === undefined ? {} : { nextCursor: result.nextCursor }) };
 	}
 
+	async listPrompts(signal: AbortSignal, cursor?: string): Promise<{
+		readonly prompts: readonly Readonly<Record<string, unknown>>[];
+		readonly nextCursor?: string;
+	}> {
+		if (!this.#client.getServerCapabilities()?.prompts) return { prompts: [] };
+		const result = await this.#client.listPrompts(cursor === undefined ? {} : { cursor }, this.#requestOptions(signal));
+		return { prompts: result.prompts as readonly Readonly<Record<string, unknown>>[],
+			...(result.nextCursor === undefined ? {} : { nextCursor: result.nextCursor }) };
+	}
+
+	async getPrompt(
+		name: string,
+		argumentsValue: Readonly<Record<string, string>>,
+		signal: AbortSignal,
+	): Promise<Readonly<Record<string, unknown>>> {
+		const result = await this.#client.getPrompt({ name, arguments: { ...argumentsValue } },
+			this.#requestOptions(signal, true));
+		return result as Readonly<Record<string, unknown>>;
+	}
+
 	close(): Promise<void> {
 		this.#elicitation?.close();
 		return this.#closing ??= (async () => {
@@ -265,10 +319,38 @@ class SdkProtocolClient implements McpProtocolClient {
 	}
 }
 
-function validateCursor(cursor: string | undefined, previous?: string): void {
+function validateCursor(cursor: string | undefined, previous?: string, code = "invalid_mcp_resource_pagination"): void {
 	if (cursor !== undefined && (typeof cursor !== "string" || !cursor || cursor.length > 4_096 || cursor === previous)) {
-		throw new Error("invalid_mcp_resource_pagination");
+		throw new Error(code);
 	}
+}
+
+/** Prompt arguments and messages stay bounded; non-text message content is not projected. */
+function promptArguments(value: unknown): readonly McpPromptArgument[] {
+	if (!Array.isArray(value)) return Object.freeze([]);
+	return Object.freeze(value.slice(0, 64).flatMap((item) => {
+		if (typeof item !== "object" || item === null) return [];
+		const record = item as Readonly<Record<string, unknown>>;
+		const name = stringValue(record.name);
+		if (name === undefined) return [];
+		const description = stringValue(record.description);
+		return [Object.freeze({ name, ...(description === undefined ? {} : { description }),
+			required: record.required === true })];
+	}));
+}
+
+function promptMessages(value: unknown): readonly McpPromptMessage[] {
+	if (!Array.isArray(value)) return Object.freeze([]);
+	return Object.freeze(value.slice(0, 128).flatMap((item) => {
+		if (typeof item !== "object" || item === null) return [];
+		const record = item as Readonly<Record<string, unknown>>;
+		const role = record.role === "assistant" ? "assistant" : record.role === "user" ? "user" : undefined;
+		const content = record.content;
+		const text = typeof content === "object" && content !== null
+			? stringValue((content as Readonly<Record<string, unknown>>).text)
+			: undefined;
+		return role === undefined || text === undefined ? [] : [Object.freeze({ role, text })];
+	}));
 }
 
 function normalizeContent(value: unknown): readonly McpContentItem[] {

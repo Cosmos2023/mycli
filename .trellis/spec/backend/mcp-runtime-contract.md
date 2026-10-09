@@ -43,6 +43,13 @@ their protocol clients and process hosts remain source-owned.
   siblings. `McpServerDiscovery.status` includes `partial`, with scoped capability/tool failures.
   Retain at most 20 detailed failures and expose `failureCount` for omitted diagnostics.
   Partial discovery must not overwrite a complete disk cache as if it were healthy.
+- Prompt templates are discovered only when the server advertises the `prompts` capability.
+  `list_mcp_prompts` aggregates enabled servers with the same native-cursor limits as resources and
+  keeps per-server failures independent; `get_mcp_prompt` renders one template with bounded string
+  arguments. Only text message parts are projected: non-text parts and non-user/assistant roles are
+  dropped, message text and arguments are bounded, and an over-budget render reports `truncated`
+  instead of failing. Prompt text is external content, never instructions, and prompt listing or
+  rendering never starts unrelated clients.
 - Callable aliases must be deterministic and unique across the published catalog and reserved
   built-in names. Collision suffixes derive from raw integration identity. Preserve raw routing
   and all adapter lifecycle/preview/execute hooks when changing only the model alias.

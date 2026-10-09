@@ -238,6 +238,8 @@ Streamable HTTP 中，携带 MCP 会话 ID 的 POST 收到 404，会重新初始
 
 资源结果为有界 JSON，明确标记截断。图片资源作为图片附加，不是 base64 文本。历史 `offset` 调用仍通过仅分发兼容 schema 执行；新 provider 请求采用 Codex 风格参数。范围差异见 [Codex 对照](../parity/2026-09-09-image-resource-tools.md)。
 
+`list_mcp_prompts` 列出声明了 MCP `prompts` 能力的服务器提供的提示模板，接受与资源列表相同的可选 `server`、`cursor`，并返回每个提示声明的参数。`get_mcp_prompt({server, name, arguments})` 渲染一个模板并按顺序返回文本消息。只投影文本消息：图片、音频、内嵌资源以及 `user`/`assistant` 之外的角色会被省略。参数必须是有界字符串，超出预算时返回 `truncated` 而不是失败。提示文本是外部内容，不是指令。
+
 ## Skills
 
 Skill 为 `<root>/<name>.md` 或 `<root>/<name>/SKILL.md`，含 TOML 或 YAML frontmatter：

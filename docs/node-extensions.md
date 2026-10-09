@@ -396,6 +396,14 @@ dispatch-only compatibility schema; new provider requests use the Codex-style pa
 
 See [the Codex comparison](parity/2026-09-09-image-resource-tools.md) for scope and differences.
 
+`list_mcp_prompts` lists prompt templates from servers that advertise the MCP `prompts`
+capability. It accepts the same optional `server` and `cursor` pair as the resource listings and
+reports each prompt's declared arguments. `get_mcp_prompt({server, name, arguments})` renders one
+template and returns its text messages in order. Only text message parts are projected:
+image, audio, and embedded-resource parts, and roles other than `user` or `assistant`, are
+omitted. Arguments must be bounded strings, and an over-budget render reports `truncated` instead
+of failing. Prompt text is external content rather than instructions.
+
 ## Skills
 
 A skill is either `<root>/<name>.md` or `<root>/<name>/SKILL.md` with TOML or YAML frontmatter:

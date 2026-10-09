@@ -31,7 +31,7 @@ test("Responses reads then edits a file with durable mutation metadata", async (
 	assert.deepEqual(toolNames(fixture.requestBodies[0]?.tools, "responses"), [
 		"Read", "Edit", "Patch", "Write", "update_plan", "web_fetch",
 		"create_goal", "get_goal", "update_goal",
-		"list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "Shell", "WriteStdin", "Skill",
+		"list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "list_mcp_prompts", "get_mcp_prompt", "Shell", "WriteStdin", "Skill",
 		"spawn_agent", "send_message", "followup_task", "interrupt_agent", "list_agents",
 		"wait_agent",
 	]);
@@ -95,7 +95,7 @@ test("Chat writes a file and replays the matching tool call id", async (t) => {
 	assert.deepEqual(toolNames(fixture.requestBodies[0]?.tools, "chat_completions"), [
 		"Read", "Edit", "Patch", "Write", "update_plan", "web_fetch",
 		"create_goal", "get_goal", "update_goal",
-		"list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "Shell", "WriteStdin", "Skill",
+		"list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "list_mcp_prompts", "get_mcp_prompt", "Shell", "WriteStdin", "Skill",
 		"spawn_agent", "send_message", "followup_task", "interrupt_agent", "list_agents",
 		"wait_agent",
 	]);

@@ -13,6 +13,7 @@ import {
 	normalizeIntegrationToolNames,
 	type McpManagerDiscovery,
 	type McpResourceService,
+	type McpPromptService,
 	type McpServerConfig,
 	type McpElicitationHandler,
 	PluginRuntime,
@@ -142,6 +143,7 @@ export interface RuntimeIntegrationComposition extends IntegrationComposition {
 	readonly hookManagement?: HookBrowserService;
 	readonly configuration?: RuntimeIntegrationConfiguration;
 	readonly mcpResourceService: McpResourceService;
+	readonly mcpPromptService: McpPromptService;
 	readonly version: number;
 	readonly hookRunner: HookRunnerContract;
 	readonly skillCatalog: string;
@@ -285,6 +287,11 @@ export async function createRuntimeIntegrationComposition(
 					return { resourceTemplates: [], failures: [] };
 				},
 				readResource: async () => { throw new Error("unknown_mcp_server"); },
+			},
+			mcpPromptService: {
+				listPrompts: async (signal: AbortSignal) => { signal.throwIfAborted(); return { prompts: [], failures: [] }; },
+				listPromptsPage: async () => { throw new Error("unknown_mcp_server"); },
+				getPrompt: async () => { throw new Error("unknown_mcp_server"); },
 			},
 			hookRunner: { run: async () => Object.freeze([]) },
 			subscribeSubagents: () => () => undefined,
@@ -490,6 +497,13 @@ export async function createRuntimeIntegrationComposition(
 				content.mcpResourceService.listResourceTemplates?.(signal, serverId, cursor) ?? { resourceTemplates: [], failures: [] },
 			readResource: (serverId: string, uri: string, signal: AbortSignal) => content.mcpResourceService.readResource(serverId, uri, signal),
 		},
+		mcpPromptService: {
+			listPrompts: (signal: AbortSignal, serverId?: string) => content.mcpPromptService.listPrompts(signal, serverId),
+			listPromptsPage: (serverId: string, signal: AbortSignal, cursor?: string) =>
+				content.mcpPromptService.listPromptsPage?.(serverId, signal, cursor) ?? Promise.reject(new Error("mcp_prompts_unsupported")),
+			getPrompt: (serverId: string, name: string, argumentsValue: Readonly<Record<string, string>>, signal: AbortSignal) =>
+				content.mcpPromptService.getPrompt(serverId, name, argumentsValue, signal),
+		},
 		get configuration() { return content.configuration; },
 		get version() { return snapshot.version; },
 		get registrations() { return snapshot.registrations; },
@@ -551,6 +565,7 @@ interface RuntimeIntegrationContent {
 	readonly configuration: RuntimeIntegrationConfiguration;
 	readonly configurationFingerprint: string;
 	readonly mcpResourceService: McpResourceService;
+	readonly mcpPromptService: McpPromptService;
 	readonly workspaceRoot: string;
 	readonly composition: IntegrationComposition;
 	readonly hookDiscovery: Awaited<ReturnType<typeof discoverHookConfig>>;
@@ -577,6 +592,7 @@ async function createRuntimeIntegrationContent(input: {
 	const mcpRefreshController = new AbortController();
 	let skillRegistry: SkillRegistry | undefined;
 	let mcpResourceService: McpResourceService | undefined;
+	let mcpPromptService: McpPromptService | undefined;
 	let pluginRuntime: PluginRuntime | undefined;
 	let unsubscribePlugins: (() => void) | undefined;
 	let startMcpRefresh: ((
@@ -619,6 +635,7 @@ async function createRuntimeIntegrationContent(input: {
 						if (servers.length === 0 && invalidRequired.length === 0) {
 							// Nothing to discover: keep the MCP SDK out of the startup path.
 							mcpResourceService = emptyMcpResourceService();
+							mcpPromptService = emptyMcpPromptService();
 							if (input.reportStartup) options.onStartupStage?.("mcp_cache_ready");
 							return mcpContribution(servers, config.diagnostics, emptyMcpDiscovery(),
 								input.waitForMcpDiscovery ? "ready" : "cached");
@@ -639,6 +656,7 @@ async function createRuntimeIntegrationContent(input: {
 							}),
 						});
 						mcpResourceService = manager;
+						mcpPromptService = manager;
 						let cached: McpManagerDiscovery | undefined;
 						try {
 							cached = await manager.loadCached(discoverySignal);
@@ -722,7 +740,7 @@ async function createRuntimeIntegrationContent(input: {
 		mcpRefreshController.abort();
 		throw error;
 	}
-	if (!skillRegistry || !mcpResourceService || !pluginRuntime) {
+	if (!skillRegistry || !mcpResourceService || !mcpPromptService || !pluginRuntime) {
 		mcpRefreshController.abort();
 		await composition.close().catch(() => undefined);
 		throw new Error("integration_start_failed");
@@ -732,6 +750,7 @@ async function createRuntimeIntegrationContent(input: {
 		configuration,
 		configurationFingerprint: configuration.fingerprint,
 		mcpResourceService,
+		mcpPromptService,
 		composition,
 		projectConfigurationEnabled: input.projectConfigurationEnabled,
 		hookDiscovery,
@@ -867,6 +886,14 @@ function emptyMcpResourceService(): McpResourceService {
 			return { resourceTemplates: [], failures: [] };
 		},
 		readResource: async () => { throw new Error("unknown_mcp_server"); },
+	});
+}
+
+function emptyMcpPromptService(): McpPromptService {
+	return Object.freeze({
+		listPrompts: async (signal: AbortSignal) => { signal.throwIfAborted(); return { prompts: [], failures: [] }; },
+		listPromptsPage: async () => { throw new Error("unknown_mcp_server"); },
+		getPrompt: async () => { throw new Error("unknown_mcp_server"); },
 	});
 }
 

@@ -144,6 +144,50 @@ export interface McpResourceService {
 	readResource(serverId: string, uri: string, signal: AbortSignal): Promise<readonly McpResourceContent[]>;
 }
 
+export interface McpPromptArgument {
+	readonly name: string;
+	readonly description?: string;
+	readonly required: boolean;
+}
+
+export interface McpPromptDescriptor {
+	readonly serverId: string;
+	readonly name: string;
+	readonly description: string;
+	readonly arguments: readonly McpPromptArgument[];
+}
+
+export interface McpPromptListing {
+	readonly prompts: readonly McpPromptDescriptor[];
+	readonly failures: readonly McpResourceFailure[];
+}
+
+export interface McpPromptPage {
+	readonly prompts: readonly McpPromptDescriptor[];
+	readonly nextCursor?: string;
+}
+
+export interface McpPromptMessage {
+	readonly role: "user" | "assistant";
+	readonly text: string;
+}
+
+export interface McpPromptResult {
+	readonly description?: string;
+	readonly messages: readonly McpPromptMessage[];
+}
+
+export interface McpPromptService {
+	listPrompts(signal: AbortSignal, serverId?: string): Promise<McpPromptListing>;
+	listPromptsPage?(serverId: string, signal: AbortSignal, cursor?: string): Promise<McpPromptPage>;
+	getPrompt(
+		serverId: string,
+		name: string,
+		argumentsValue: Readonly<Record<string, string>>,
+		signal: AbortSignal,
+	): Promise<McpPromptResult>;
+}
+
 export interface McpProtocolClient {
 	connect(signal: AbortSignal): Promise<void>;
 	isConnected?(): boolean;
@@ -169,6 +213,11 @@ export interface McpProtocolClient {
 		readonly resourceTemplates: readonly Readonly<Record<string, unknown>>[];
 		readonly nextCursor?: string;
 	}>;
+	listPrompts?(signal: AbortSignal, cursor?: string): Promise<{
+		readonly prompts: readonly Readonly<Record<string, unknown>>[];
+		readonly nextCursor?: string;
+	}>;
+	getPrompt?(name: string, argumentsValue: Readonly<Record<string, string>>, signal: AbortSignal): Promise<Readonly<Record<string, unknown>>>;
 	close(): Promise<void>;
 }
 
@@ -190,6 +239,8 @@ export interface McpResourceClientContract {
 
 export interface McpManagedClient extends McpClientContract, McpResourceClientContract {
 	listTools(signal: AbortSignal): Promise<readonly McpToolDescriptor[]>;
+	listPrompts?(signal: AbortSignal, cursor?: string): Promise<McpPromptPage>;
+	getPrompt?(name: string, argumentsValue: Readonly<Record<string, string>>, signal: AbortSignal): Promise<McpPromptResult>;
 	close(): Promise<void>;
 }
 
