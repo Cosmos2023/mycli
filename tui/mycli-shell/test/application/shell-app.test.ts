@@ -566,7 +566,7 @@ test("mycli shell renders promoted shell surfaces", () => {
 	assert.match(output, /Read word\.txt/);
 	assert.match(output, /^› Read word\.txt and summarize it\./m);
 	assert.doesNotMatch(output, /Thinking\.\.\./);
-	assert.match(output, /^• I should inspect the file … \(ctrl\+o expand\)/m);
+	assert.match(output, /^• I should inspect the file … \+ show detail \(ctrl\+o\)/m);
 	assert.match(output, /Summary: hello/);
 	assert.match(output, /^• Summary: hello\./m);
 	assert.match(output, /Read/);
@@ -4600,14 +4600,44 @@ test("ctrl o expands collapsed reasoning in the main transcript", async () => {
 	runtime.start();
 
 	const collapsed = stripAnsi(runtime.chatContainer.render(80).join("\n"));
-	assert.match(collapsed, /^• Checking the parser\. … \(ctrl\+o expand\)/m);
+	assert.match(collapsed, /^• Checking the parser\. … \+ show detail \(ctrl\+o\)/m);
 	assert.doesNotMatch(collapsed, /More detail/);
 
 	terminal.input?.("\x0f");
 
 	const expanded = stripAnsi(runtime.chatContainer.render(80).join("\n"));
 	assert.match(expanded, /More detail/);
-	assert.doesNotMatch(expanded, /ctrl\+o expand/);
+	assert.doesNotMatch(expanded, /\+ show detail/);
+	await runtime.shutdown();
+});
+
+test("clicking the collapsed reasoning preview expands it", async () => {
+	const terminal = new TestTerminal();
+	const assistant = {
+		id: "assistant-click",
+		role: "assistant" as const,
+		text: "The answer.",
+		thinking: "Checking the parser.\nMore detail.",
+	};
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			messages: [assistant],
+			transcript: [{ id: assistant.id, kind: "message", message: assistant }],
+			settings: { ...sampleState().settings, hideThinking: true },
+		},
+		terminal,
+	});
+	runtime.start();
+
+	const rows = stripAnsi(runtime.ui.render(80).join("\n")).split("\n");
+	const previewRow = rows.findIndex((line) => line.includes("+ show detail"));
+	assert.ok(previewRow >= 0, "expected a collapsed reasoning preview row");
+	assert.doesNotMatch(stripAnsi(runtime.chatContainer.render(80).join("\n")), /More detail/);
+
+	terminal.input?.(`\x1b[<0;5;${previewRow + 1}M`);
+
+	assert.match(stripAnsi(runtime.chatContainer.render(80).join("\n")), /More detail/);
 	await runtime.shutdown();
 });
 
@@ -5786,7 +5816,7 @@ test("mycli shell applies runtime-backed visual settings to active rendering", a
 	assert.equal(theme.name(), "dark");
 	assert.equal(runtime.ui.getShowHardwareCursor(), false);
 	assert.equal(runtime.ui.getClearOnShrink(), true);
-	assert.match(stripAnsi(runtime.chatContainer.render(80).join("\n")), /^• Visible reasoning … \(ctrl\+o expand\)/m);
+	assert.match(stripAnsi(runtime.chatContainer.render(80).join("\n")), /^• Visible reasoning … \+ show detail \(ctrl\+o\)/m);
 	assert.match(stripAnsi(runtime.statusContainer.render(80).join("\n")), /esc to interrupt/);
 	assert.doesNotMatch(stripAnsi(runtime.subagentTaskContainer.render(80).join("\n")), /Inspect auth bug/);
 	assert.equal(runtime.footerContainer.render(80).length, 1);

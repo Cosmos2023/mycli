@@ -545,7 +545,7 @@ export class MycliShellRuntime {
 			this.scrollTranscript(-3);
 			return { consume: true };
 		}
-		const mouse = data.match(/^\x1b\[<(\d+);\d+;\d+M$/);
+		const mouse = data.match(/^\x1b\[<(\d+);(\d+);(\d+)M$/);
 		if (mouse) {
 			const button = Number.parseInt(mouse[1] ?? "", 10);
 			if (button === 64) {
@@ -556,8 +556,23 @@ export class MycliShellRuntime {
 				this.scrollTranscript(-3);
 				return { consume: true };
 			}
+			if (button === 0 && this.handleTranscriptClick(Number.parseInt(mouse[3] ?? "", 10))) {
+				return { consume: true };
+			}
 		}
 		return undefined;
+	}
+
+	/** Left-clicking a collapsed reasoning preview expands the details. */
+	private handleTranscriptClick(screenRow: number): boolean {
+		const row = screenRow - 1;
+		const width = this.ui.terminal.columns;
+		if (row < 0 || row >= this.transcriptHeight(width)) return false;
+		const hit = this.transcriptViewport.hitTest(row);
+		if (!hit || !(hit.component instanceof AssistantMessageComponent)) return false;
+		if (!hit.component.isReasoningPreviewRow(hit.lineInComponent, width)) return false;
+		this.toggleToolDetails();
+		return true;
 	}
 
 	private scrollTranscript(deltaLines: number): void {

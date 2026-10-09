@@ -11,6 +11,7 @@ type TranscriptRenderedChunk = {
 	start: number;
 	sourceStart: number;
 	totalLines: number;
+	visibleLines: number;
 };
 
 type TranscriptChunkRender = {
@@ -75,6 +76,7 @@ export class TranscriptViewportComponent implements Component {
 	private pendingContentChange: TranscriptContentChange | undefined;
 	private lastRenderedLineOrigin = 0;
 	private lastRenderedContentLineage: number | undefined;
+	private lastVisibleStart = 0;
 
 	/**
 	 * `contentRevision` must change before the owner mutates any transcript-visible content.
@@ -260,9 +262,26 @@ export class TranscriptViewportComponent implements Component {
 		this.scrollOffset = Math.min(this.scrollOffset, Math.max(0, lines.length - height));
 
 		const start = this.visibleStart(lines, height, this.committedStart(lines, width));
+		this.lastVisibleStart = start;
 		// The enclosing transcript area adds spare rows after live activity so
 		// activity follows output while the input stays at the bottom.
 		return lines.slice(start, start + height);
+	}
+
+	/** Component and its row rendered at the given row of the visible transcript window. */
+	hitTest(row: number): { component: Component; lineInComponent: number } | undefined {
+		const target = this.lastVisibleStart + row;
+		if (target < 0) return undefined;
+		let cursor = 0;
+		for (const chunk of this.retainedContentChunks) {
+			const end = cursor + chunk.visibleLines;
+			if (target < end) {
+				const component = chunk.section.children[chunk.componentIndex];
+				return component ? { component, lineInComponent: target - cursor } : undefined;
+			}
+			cursor = end;
+		}
+		return undefined;
 	}
 
 	private committedStart(lines: string[], width: number): number {
@@ -544,6 +563,7 @@ export class TranscriptViewportComponent implements Component {
 				start,
 				sourceStart: cursor,
 				totalLines: chunk.totalLines,
+				visibleLines: chunk.lines.length,
 			};
 			cursor += chunk.totalLines;
 			return result;

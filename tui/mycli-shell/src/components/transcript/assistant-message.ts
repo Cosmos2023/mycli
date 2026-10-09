@@ -13,12 +13,20 @@ const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
 const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
 
+function reasoningPreviewLine(text: string): string {
+	return text
+		.split(/\r?\n/)
+		.map((part) => part.trim().replace(/^#+\s*/, ""))
+		.find((part) => part.length > 0) ?? "";
+}
+
 export class AssistantMessageComponent extends Container {
 	private text: string;
 	private thinking?: string;
 	private thinkingHidden: boolean;
 	private textMarkdown?: Markdown;
 	private thinkingMarkdown?: Markdown;
+	private thinkingPreview?: string;
 
 	constructor(text: string, thinking?: string, thinkingHidden = true) {
 		super();
@@ -57,6 +65,7 @@ export class AssistantMessageComponent extends Container {
 		this.textMarkdown = undefined;
 		this.thinkingMarkdown = undefined;
 		const thinking = this.visibleThinking();
+		this.thinkingPreview = thinking && this.thinkingHidden ? reasoningPreviewLine(thinking) : undefined;
 		const text = this.visibleText();
 		if (thinking) {
 			this.thinkingMarkdown = new Markdown(thinking, 0, 0, markdownTheme(), {
@@ -78,12 +87,16 @@ export class AssistantMessageComponent extends Container {
 		const text = this.thinking?.trim() ?? "";
 		if (!text) return "";
 		if (!this.thinkingHidden) return text;
-		const firstLine = text
-			.split(/\r?\n/)
-			.map((part) => part.trim().replace(/^#+\s*/, ""))
-			.find((part) => part.length > 0) ?? "";
+		const firstLine = reasoningPreviewLine(text);
 		if (!firstLine) return "";
-		return `${firstLine} ${uiGlyphs().ellipsis} (${formatKeyText(keyForAction("app.tools.expand"))} expand)`;
+		return `${firstLine} ${uiGlyphs().ellipsis} + show detail (${formatKeyText(keyForAction("app.tools.expand"))})`;
+	}
+
+	/** True when the given rendered row is the collapsed reasoning preview line. */
+	isReasoningPreviewRow(row: number, width: number): boolean {
+		if (!this.thinkingPreview || row < 0) return false;
+		const line = this.render(width)[row];
+		return line !== undefined && line.includes(this.thinkingPreview);
 	}
 
 	holdsNativeScrollbackTail(): boolean {
