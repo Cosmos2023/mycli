@@ -107,6 +107,18 @@ test("assistant message updates retain the role prefix", () => {
 	assert.equal(lines[0]?.startsWith("• complete response"), true);
 });
 
+test("assistant reasoning is visible by default and each section keeps its own prefix", () => {
+	const lines = visibleContentLines(
+		new AssistantMessageComponent("The answer.", "Some reasoning.", false).render(40),
+	);
+
+	assert.equal(lines[0]?.startsWith("• Some reasoning."), true);
+	assert.equal(lines[1]?.startsWith("• The answer."), true);
+
+	const byDefault = visibleContentLines(new AssistantMessageComponent("The answer.", "Some reasoning.").render(40));
+	assert.equal(byDefault.some((line) => line.includes("Some reasoning")), true);
+});
+
 test("assistant tail rendering matches slicing full visible and thinking output", () => {
 	for (const component of [
 		new AssistantMessageComponent("First paragraph.\n\nSecond paragraph with enough text to wrap across rows."),

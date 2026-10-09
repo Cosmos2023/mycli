@@ -1,5 +1,4 @@
 import { Markdown } from "../../tui-core/components/markdown.ts";
-import { Spacer } from "../../tui-core/components/spacer.ts";
 import { Container, type TailRenderResult } from "../../tui-core/tui.ts";
 import { uiGlyphs } from "../../theme/terminal-style.ts";
 import { markdownTheme } from "../shared/markdown-theme.ts";
@@ -20,7 +19,7 @@ export class AssistantMessageComponent extends Container {
 	private textMarkdown?: Markdown;
 	private thinkingMarkdown?: Markdown;
 
-	constructor(text: string, thinking?: string, thinkingHidden = true) {
+	constructor(text: string, thinking?: string, thinkingHidden = false) {
 		super();
 		this.text = text;
 		this.thinking = thinking;
@@ -28,7 +27,7 @@ export class AssistantMessageComponent extends Container {
 		this.rebuild();
 	}
 
-	updateMessage(text: string, thinking?: string, thinkingHidden = true): void {
+	updateMessage(text: string, thinking?: string, thinkingHidden = false): void {
 		const previousText = this.visibleText();
 		const previousThinking = this.visibleThinking();
 		this.text = text;
@@ -48,7 +47,6 @@ export class AssistantMessageComponent extends Container {
 	}
 
 	private rebuild(): void {
-		this.clear();
 		this.textMarkdown = undefined;
 		this.thinkingMarkdown = undefined;
 		const thinking = this.visibleThinking();
@@ -58,13 +56,11 @@ export class AssistantMessageComponent extends Container {
 				color: (content) => theme.fg("thinkingText", content),
 				italic: true,
 			});
-			this.addChild(this.thinkingMarkdown);
-			if (text) this.addChild(new Spacer(1));
 		}
 		if (text) {
 			this.textMarkdown = new Markdown(text, 0, 0, markdownTheme());
-			this.addChild(this.textMarkdown);
 		}
+		this.markRenderDirty();
 	}
 
 	private visibleText(): string {
@@ -79,58 +75,79 @@ export class AssistantMessageComponent extends Container {
 		return (this.textMarkdown ?? this.thinkingMarkdown)?.holdsStreamingTableTail() ?? false;
 	}
 
+	private bulletPrefix(): string {
+		return theme.fg("text", `${uiGlyphs().bullet} `);
+	}
+
+	private bodyParts(): Array<Markdown | "separator"> {
+		const parts: Array<Markdown | "separator"> = [];
+		if (this.thinkingMarkdown) parts.push(this.thinkingMarkdown);
+		if (this.thinkingMarkdown && this.textMarkdown) parts.push("separator");
+		if (this.textMarkdown) parts.push(this.textMarkdown);
+		return parts;
+	}
+
+	private bodyLines(contentWidth: number, safeWidth: number): string[] {
+		const lines: string[] = [];
+		for (const part of this.bodyParts()) {
+			if (part === "separator") {
+				lines.push(" ".repeat(safeWidth));
+				continue;
+			}
+			lines.push(...renderTranscriptMessageLines(part.render(contentWidth), safeWidth, this.bulletPrefix()));
+		}
+		return lines;
+	}
+
 	renderTail(width: number, maxRows: number): TailRenderResult {
 		const safeWidth = Math.max(1, Math.floor(width));
 		const rowLimit = Math.max(0, Math.floor(maxRows));
-		const content = this.renderContentTail(transcriptMessageContentWidth(safeWidth), rowLimit);
+		const content = this.renderContentTail(transcriptMessageContentWidth(safeWidth), safeWidth, rowLimit);
 		const totalLines = content.totalLines > 0 ? content.totalLines + 1 : 0;
 		if (rowLimit === 0 || totalLines === 0) return { lines: [], totalLines };
 
 		const includesLeadingBlank = totalLines <= rowLimit;
-		const contentTruncated = content.totalLines > content.lines.length;
-		const lines = renderTranscriptMessageLines(
-			content.lines,
-			safeWidth,
-			contentTruncated ? "  " : theme.fg("text", `${uiGlyphs().bullet} `),
-		);
+		const lines = [...content.lines];
 		if (includesLeadingBlank) lines.unshift(" ".repeat(safeWidth));
 		if (includesLeadingBlank) lines[0] = OSC133_ZONE_START + lines[0];
 		lines[lines.length - 1] = OSC133_ZONE_END + OSC133_ZONE_FINAL + lines[lines.length - 1];
 		return { lines: lines.slice(-rowLimit), totalLines };
 	}
 
-	private renderContentTail(width: number, maxRows: number): TailRenderResult {
-		const sections: Array<Markdown | string[]> = [];
-		if (this.thinkingMarkdown) sections.push(this.thinkingMarkdown);
-		if (this.thinkingMarkdown && this.textMarkdown) sections.push([""]);
-		if (this.textMarkdown) sections.push(this.textMarkdown);
-
+	private renderContentTail(width: number, safeWidth: number, maxRows: number): TailRenderResult {
 		let remaining = maxRows;
 		let totalLines = 0;
-		const lines: string[] = [];
-		for (let index = sections.length - 1; index >= 0; index -= 1) {
-			const section = sections[index]!;
-			const rendered = section instanceof Markdown
-				? section.renderTail(width, remaining)
-				: { lines: remaining > 0 ? section.slice(-remaining) : [], totalLines: section.length };
+		const chunks: string[][] = [];
+		const parts = this.bodyParts();
+		for (let index = parts.length - 1; index >= 0; index -= 1) {
+			const part = parts[index]!;
+			if (part === "separator") {
+				totalLines += 1;
+				if (remaining > 0) {
+					chunks.unshift([" ".repeat(safeWidth)]);
+					remaining -= 1;
+				}
+				continue;
+			}
+			const rendered = part.renderTail(width, remaining);
 			totalLines += rendered.totalLines;
-			if (remaining > 0) {
-				lines.unshift(...rendered.lines);
+			if (remaining > 0 && rendered.lines.length > 0) {
+				const topShown = rendered.lines.length === rendered.totalLines;
+				chunks.unshift(renderTranscriptMessageLines(
+					rendered.lines,
+					safeWidth,
+					topShown ? this.bulletPrefix() : "  ",
+				));
 				remaining -= rendered.lines.length;
 			}
 		}
-		return { lines, totalLines };
+		return { lines: chunks.flat(), totalLines };
 	}
 
 	override render(width: number): string[] {
 		const safeWidth = Math.max(1, Math.floor(width));
-		const content = super.render(transcriptMessageContentWidth(safeWidth));
-		const lines = content.length === 0
-			? []
-			: [
-				" ".repeat(safeWidth),
-				...renderTranscriptMessageLines(content, safeWidth, theme.fg("text", `${uiGlyphs().bullet} `)),
-			];
+		const body = this.bodyLines(transcriptMessageContentWidth(safeWidth), safeWidth);
+		const lines = body.length === 0 ? [] : [" ".repeat(safeWidth), ...body];
 		if (lines.length === 0) {
 			return lines;
 		}
