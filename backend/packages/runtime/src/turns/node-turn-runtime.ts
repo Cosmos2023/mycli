@@ -1450,6 +1450,7 @@ export class NodeTurnRuntime {
 			const stepResult = providerStepWithReplayTokenEstimate(rawStepResult);
 			try {
 				this.#persistWebSearchCalls(turnId, stepResult.webSearchCalls);
+				this.#persistStepReasoning(turnId, this.#agentBudget.providerStepCount(), stepResult);
 				if (!usageObserved) {
 					this.#options.goal?.observeUsage(turnId, `${usageId}:final`, stepResult.usage);
 					this.#options.goalUsage?.observe(turnId, `${usageId}:final`, stepResult.usage);
@@ -1563,6 +1564,23 @@ export class NodeTurnRuntime {
 				...(stepResult.responseId ? { responseId: stepResult.responseId } : {}),
 			};
 		}
+	}
+
+	#persistStepReasoning(turnId: string, stepIndex: number, stepResult: ProviderStepResult): void {
+		const append = this.#options.store.appendDisplayActivity;
+		if (!append) return;
+		const text = plaintextReasoningText(stepResult.providerState);
+		if (!text) return;
+		append.call(this.#options.store, {
+			sessionId: this.#options.sessionId,
+			eventId: `reasoning:${modelInputSha256([this.#options.sessionId, turnId, String(stepIndex)])}`,
+			turnId,
+			activityType: "reasoning",
+			text,
+			status: "completed",
+			metadata: {},
+			createdAt: this.#options.clock(),
+		});
 	}
 
 	#persistWebSearchCalls(turnId: string, calls: readonly WebSearchCall[]): void {
@@ -2231,6 +2249,38 @@ function webSearchPresentation(action: WebSearchAction): Readonly<{
 				metadata: Object.freeze({ action_type: action.type }),
 			});
 	}
+}
+
+function plaintextReasoningText(state: ProviderReplayState | undefined): string | undefined {
+	if (!state) return undefined;
+	const value = state.value;
+	const parts: string[] = [];
+	if (Array.isArray(value.thinkingBlocks)) {
+		for (const block of value.thinkingBlocks) {
+			if (typeof block !== "object" || block === null) continue;
+			const record = block as Record<string, unknown>;
+			if (record.redacted === true || record.type === "redacted_thinking") continue;
+			if (typeof record.thinking === "string") parts.push(record.thinking);
+		}
+	} else if (typeof value.reasoningContent === "string") {
+		parts.push(value.reasoningContent);
+	} else {
+		const native = value.responsesNativeItems ?? value.responsesReasoningItems;
+		if (Array.isArray(native)) {
+			for (const item of native) {
+				if (typeof item !== "object" || item === null) continue;
+				const record = item as Record<string, unknown>;
+				if (record.type !== "reasoning" || !Array.isArray(record.summary)) continue;
+				for (const part of record.summary) {
+					if (typeof part !== "object" || part === null) continue;
+					const summary = part as Record<string, unknown>;
+					if (summary.type === "summary_text" && typeof summary.text === "string") parts.push(summary.text);
+				}
+			}
+		}
+	}
+	const text = parts.map((part) => part.trim()).filter((part) => part.length > 0).join("\n\n");
+	return text.length > 0 ? text : undefined;
 }
 
 function boundedDurationMs(startedAt: number, finishedAt: number): number {
