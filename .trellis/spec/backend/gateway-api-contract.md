@@ -34,6 +34,10 @@ or backend/TUI dependency direction must follow this contract.
   select the TUI. Shared transport code must not contain TUI configuration state.
 - Server stdout contains JSON-RPC only. Startup failures are value-free stderr
   diagnostics. EOF/signals close the backend; startup cancellation reaches Workers.
+- Node exposes no `rlimit` API, so a POSIX `app-server` inheriting a soft descriptor limit below
+  8192 replaces its image once through `/bin/sh` before the runtime starts, keeping the same stdio,
+  process group and exit code. `MYCLI_FD_LIMIT_RAISED=1` marks the replacement and prevents loops;
+  Windows, already-sufficient limits and probe failures continue in place unchanged.
 - Typed transcript records preserve version 1 metadata. Add presentation variants
   deliberately; do not narrow legacy metadata silently.
 - `gateway-tool-record.schema.json` is the shared closed schema for optional

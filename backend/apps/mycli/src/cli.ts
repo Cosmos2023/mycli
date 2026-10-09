@@ -426,9 +426,23 @@ function removeLifecycleHooks(
 
 const entryPath = process.argv[1];
 if (entryPath && isEntrypoint(entryPath)) {
-	void runCli().then((exitCode) => {
+	void runEntrypoint(entryPath).then((exitCode) => {
 		process.exitCode = exitCode;
 	});
+}
+
+/** Only the long-lived app-server replaces itself to raise a low soft descriptor limit. */
+async function runEntrypoint(entryPath: string): Promise<number> {
+	if (process.argv[2] === "app-server") {
+		const { raiseFdSoftLimit } = await import("./app-server/fd-limit.ts");
+		const replaced = await raiseFdSoftLimit({
+			platform: process.platform,
+			env: process.env,
+			command: [process.execPath, ...process.execArgv, entryPath, ...process.argv.slice(2)],
+		});
+		if (replaced !== undefined) return replaced;
+	}
+	return await runCli();
 }
 
 function isEntrypoint(entryPath: string): boolean {

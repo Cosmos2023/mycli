@@ -9,6 +9,14 @@ use the same durable session coordinator as the TUI. Stdio serves one external
 connection. Embedded hosts can attach multiple clients to one backend service;
 there is no TCP listener, remote authentication, or cross-process discovery.
 
+Node exposes no `rlimit` API, so on POSIX an `app-server` that inherits a soft
+descriptor limit below 8192 replaces its own process image once through
+`/bin/sh`, raising the limit before the runtime starts. The replacement keeps the
+same stdio, process group, and exit code. Node already raises the macOS limit
+through libuv, so the extra step only takes effect where the inherited limit is
+low, such as a minimal Linux login. `MYCLI_FD_LIMIT_RAISED=1` marks the second
+pass and disables the replacement.
+
 ## Connect
 
 The installed application exposes `@cosmos2023/mycli/gateway`. Its Node client
