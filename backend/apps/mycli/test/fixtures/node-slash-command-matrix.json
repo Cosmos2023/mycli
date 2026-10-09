@@ -1,6 +1,6 @@
 {
-  "schema_version": 3,
-  "command_count": 44,
+  "schema_version": 4,
+  "command_count": 45,
   "retired_command_count": 39,
-  "sha256": "4655da16c262aa5ee0ce336eda45ecee4fd00121efcdb8131a091d23c9c09238"
+  "sha256": "da48690dee702dafc2fa7502d520853b0d93327c0bbc04dfea81cfc438d30950"
 }

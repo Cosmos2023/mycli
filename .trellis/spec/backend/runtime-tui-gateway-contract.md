@@ -7085,6 +7085,7 @@ interface CommandDiscoveryRow {
 	readonly aliases: readonly string[];
 	readonly category: string;
 	readonly search_only: boolean;
+	readonly scope: "top" | "config";
 	readonly available: boolean;
 	readonly unavailable_reason?: string;
 }
@@ -7094,6 +7095,11 @@ interface CommandDiscoveryRow {
 
 - `settings.load` and successful `settings.save` return the same versioned snapshot shape. The seven
   categories are model, providers, permissions, appearance, sessions, integrations, and diagnostics.
+- Command discovery carries a `scope`. `config` commands (model, mode, plan, permissions, sandbox,
+  trust, goal, settings, skills, mcp, plugins, hooks) are listed behind `/config` and hidden from the
+  default palette, but they keep their own route and remain runnable when typed by name. Grouping is
+  a discovery decision only: it must not remove a command, change its dispatch, or alter its
+  availability. A missing scope field defaults to `top` so older payloads stay discoverable.
 - Catalog items contain stable id/category, kind, label, bounded description/value/source/scope,
   allowed values or action, lock state/reason, restart requirement, command path, and search terms.
   Credential values, raw policy/helper failures, absolute private paths, and unbounded extension text

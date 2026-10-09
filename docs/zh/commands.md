@@ -190,6 +190,7 @@ Node 运行时统一管理解析、发现、分发和错误的标准注册表。
 | `/permissions` | 可选 `[allow\|revoke\|clear]` | 无参数打开弹层；行内参数由后端处理 | 是 | 常用 |
 | `/sandbox` | 可选 `[read-only\|workspace-write\|danger-full-access\|next]` | 由后端处理 | 否 | 仅搜索时显示 |
 | `/settings` | 无 | 打开分类设置中心 | 是 | 常用 |
+| `/config` | 无 | 把配置类命令收在一个入口下；这些命令直接输入仍然可用 | 是 | 常用 |
 | `/new` | 无 | 创建并切换到新后端会话 | 否 | 常用 |
 | `/resume` | 可选 `[session-id]` | 无参数打开选择器；行内参数由后端处理 | 否 | 常用 |
 | `/fork` | 可选 `[source] [new-session] [message-index]` | 由后端处理 | 否 | 常用 |

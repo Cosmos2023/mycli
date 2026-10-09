@@ -852,11 +852,21 @@ export class MycliShellRuntime {
 	}
 
 	showCommandPalette(): void {
+		this.openCommandPalette("top");
+	}
+
+	/** Configuration commands stay reachable by name but are listed behind `/config`. */
+	showConfigPalette(): void {
+		this.openCommandPalette("config");
+	}
+
+	private openCommandPalette(scope: "top" | "config"): void {
 		const commands = this.commands();
 		this.showSelector((done) => {
 			const palette = new CommandPaletteComponent({
 				tui: this.ui,
 				commands,
+				scope,
 				turnRunning: () => this.isTurnRunning(),
 				settingsCatalog: this.state.settingsCatalog,
 				onSelect: (command) => {
@@ -930,6 +940,7 @@ export class MycliShellRuntime {
 	async handleClientAction(action: string, args: string): Promise<void> {
 		const handlers: Record<string, () => void | Promise<void>> = {
 			open_command_palette: () => this.showCommandPalette(),
+			open_config: () => this.showConfigPalette(),
 			open_help: () => this.showHelp(),
 			open_model_selector: () => this.showModelSelector(args || undefined),
 			open_permissions: () => this.showPermissionSelector(),
