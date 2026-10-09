@@ -1,3 +1,12 @@
+> **Archived 2026-10-09 without implementation.** This change was written for the retired Python
+> runtime: every task references `src/mycli/...` modules that no longer exist, so none of them map
+> onto the current repository. Its intent is now owned by the Node contracts —
+> `tool-manifest-contract.md` (tool identity, sources, aliases, availability, conflicts) and
+> `mcp-runtime-contract.md` (extension catalog publication, discovery fingerprints, session
+> persistence). Turn/thread-scoped dynamic tools and per-tool lifecycle events were not carried
+> forward: the provider, MCP and plugin tool bridges were built on the extension tool catalog
+> instead. Reopen this as a new change against the current architecture if that need appears.
+
 ## Why
 
 `mycli` 的目标是成为通用性的 general agent，而不是只承载少量固定工具的 coding runtime。当前虽然已经有了 `tool exposure / router` 骨架，但 dynamic tools 仍然停留在“本轮可以临时接入”的阶段：缺少稳定 descriptor、缺少 turn/thread scoped lifecycle、缺少 conflict handling，也没有统一进入 trace / session / surface 的正式协议。接下来如果继续推进 provider tools、MCP bridge 与多任务 capability，而不先把 dynamic tools 从 hook 升级成正式 runtime 对象，能力面会再次发散，主链也会重新退化成多条旁路。
