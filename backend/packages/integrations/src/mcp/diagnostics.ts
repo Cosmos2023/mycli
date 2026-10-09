@@ -117,6 +117,9 @@ export function mcpFailureText(failure: McpFailure): string {
 		...(details.transport_code ? [`Transport code: ${details.transport_code}.`] : []),
 		...(details.transport_code === "mcp_oauth_required" || details.http_status === 401
 			? ["Authentication is required. Run mycli mcp login <server-id>, then refresh the session."] : []),
+		...(details.transport_code === "network_proxy_unavailable"
+			? ["Domain-constrained networking is unavailable for this process on this platform. Disable the domain "
+				+ "restriction for this server, or run it where the managed proxy is supported (macOS or Windows)."] : []),
 		...(details.recovery_attempts ? [`Session recovery attempts: ${details.recovery_attempts}.`] : []),
 		...(failure.outcome.state === "unknown" && failure.outcome.effects === "possible"
 			? ["Execution outcome is unknown; check the remote state before retrying this operation."] : []),

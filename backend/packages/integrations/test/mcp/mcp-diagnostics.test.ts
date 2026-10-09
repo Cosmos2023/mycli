@@ -3,6 +3,7 @@ import test from "node:test";
 import { StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { errorPublicDetails, parseErrorContext } from "@mycli/contracts";
+import { ProcessSandboxError } from "@mycli/tools";
 import { describeMcpFailure, McpHttpError, McpRequestError, mcpFailureContext, mcpFailureText } from "../../src/mcp/diagnostics.ts";
 
 test("MCP diagnostics retain structured HTTP and RPC evidence without upstream text or data", () => {
@@ -55,4 +56,19 @@ test("MCP code allowlists reject arbitrary code strings and bound circular cause
 	assert.equal(wrapped.cause, undefined);
 	assert.doesNotMatch(wrapped.message + JSON.stringify(wrapped), /private|secret|404|32602/u);
 	assert.equal(describeMcpFailure(wrapped, { operation: "tools/call" }), wrapped.failure);
+});
+
+test("a sandbox that cannot route the managed proxy explains the platform limitation", () => {
+	const failure = describeMcpFailure(
+		new ProcessSandboxError("network_proxy_unavailable",
+			"Domain-constrained networking needs the managed process proxy, and this platform's sandbox cannot route to it."),
+		{ operation: "initialize", phase: "connect" },
+	);
+	assert.equal(failure.category, "server_startup");
+	assert.equal(failure.details.transport_code, "network_proxy_unavailable");
+	assert.deepEqual(failure.outcome, { state: "not_started", effects: "none" });
+	const text = mcpFailureText(failure);
+	assert.match(text, /Transport code: network_proxy_unavailable/u);
+	assert.match(text, /Disable the domain restriction/u);
+	assert.match(text, /macOS or Windows/u);
 });

@@ -186,6 +186,12 @@ Changes to managed proxy authorization, Shell process callbacks, gateway approva
   initial URL and every redirect target and returns `network_approval_unavailable` with a corrective
   message. Remote HTTP MCP, hooks and plugin networking keep their existing allowlist behavior and
   are not implied to support per-request approval.
+- A managed process proxy is accepted only on macOS and Windows. Linux bubblewrap unshares the
+  network namespace, so the sandboxed process cannot reach the host proxy; `prepareSandboxedProcess`
+  rejects the combination with `network_proxy_unavailable` and a message that names the platform
+  limitation and the workaround. MCP startup failures surface the same code as
+  `Transport code: network_proxy_unavailable` plus a corrective sentence. Do not describe Linux as
+  silently downgrading: it fails before the process starts.
 - Broker retains at most 32 requests; existing interactive controller queues them with ordinary
   approvals/clarifications. Hidden cancellation never clears the visible request. Live replay uses
   bootstrap of the same process; cold restart restores no responders.

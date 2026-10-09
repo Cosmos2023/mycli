@@ -30,6 +30,13 @@ const PROTECTED_METADATA = [
 	[".codex", "PROTECTED_ROOT_CODEX"],
 ] as const;
 
+/**
+ * Bubblewrap unshares the network namespace, so a Linux sandboxed process cannot reach the
+ * host-side proxy at all. Domain-constrained networking therefore needs macOS or Windows.
+ */
+const PROXY_PLATFORM_MESSAGE = "Domain-constrained networking needs the managed process proxy, and this platform's sandbox "
+	+ "cannot route to it. Supported on macOS and Windows; on Linux run this process with networking disabled or unrestricted.";
+
 export type ProcessIsolation =
 	| "host_subprocess"
 	| "macos_seatbelt"
@@ -72,7 +79,10 @@ export function prepareSandboxedProcess(
 		|| profile.allowLocalBinding !== undefined || profile.loopbackPorts !== undefined || profile.writableTemp !== undefined)) {
 		throw new ProcessSandboxError("sandbox_unavailable", "This platform cannot enforce the requested Windows policy features.");
 	}
-	if (networkProxy && ((platform !== "darwin" && platform !== "win32") || profile.network !== "enabled"
+	if (networkProxy && platform !== "darwin" && platform !== "win32") {
+		throw new ProcessSandboxError("network_proxy_unavailable", PROXY_PLATFORM_MESSAGE);
+	}
+	if (networkProxy && (profile.network !== "enabled"
 		|| profile.networkDomains === undefined || profile.networkDomains.length === 0
 		|| !Number.isSafeInteger(networkProxy.port) || networkProxy.port < 1 || networkProxy.port > 65_535)) {
 		throw new ProcessSandboxError("network_proxy_unavailable", "The process network proxy cannot enforce this policy.");

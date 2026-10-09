@@ -290,11 +290,14 @@ remain separate. Per-server `[servers.<id>.sandbox]` can set `mode = "workspace-
 and fail closed if enforcement is unavailable. A configured `cwd` does not add writable roots to
 a restricted profile. Read-only controls filesystem writes; networking is an independent setting.
 
-Domain-restricted stdio networking uses the existing owned proxy on macOS. Linux and Windows reject
-a nonempty enabled domain restriction before starting the process because the proxy enforcement is
-not implemented there. An empty domain list runs offline. Arbitrary managed read-root restrictions
-also fail before process launch: current process sandbox backends cannot enforce them. See
-[network policy](network-policy.md) for proxy traffic and platform limits.
+Domain-restricted stdio networking uses the existing owned proxy on macOS and Windows. Linux rejects
+a nonempty enabled domain restriction before starting the process, because bubblewrap unshares the
+network namespace and the sandboxed process cannot reach the host proxy at all; the failure names the
+platform limitation and suggests disabling the restriction or moving the server. Windows proxy
+enforcement is implemented but still needs real-host acceptance. An empty domain list runs offline.
+Arbitrary managed read-root restrictions also fail before process launch: current process sandbox
+backends cannot enforce them. See [network policy](network-policy.md) for proxy traffic and platform
+limits.
 
 Both HTTP transports check disabled/domain network bounds before each request. Configured loopback
 endpoints are permitted when networking is unrestricted. Redirects are rejected, so a different

@@ -160,7 +160,9 @@ test("macOS admits only the host-owned proxy port for a constrained policy", asy
 	}
 	for (const platform of ["linux"] as const) {
 		assert.throws(() => prepareSandboxedProcess(["command"], profile,
-			probes(platform, []), { port: 40_000 }), { kind: "network_proxy_unavailable" });
+			probes(platform, []), { port: 40_000 }), (error: unknown) => (
+			error instanceof ProcessSandboxError && error.kind === "network_proxy_unavailable"
+			&& /Linux/u.test(error.message) && /macOS and Windows/u.test(error.message)));
 	}
 	for (const policy of [{ ...profile, network: "disabled" as const }, { ...profile, networkDomains: [] },
 		{ ...profile, networkDomains: undefined }]) {
