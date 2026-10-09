@@ -7909,15 +7909,37 @@ test("mycli shell commits displaced live assistant rows into native scrollback",
 	assert.equal(new Set(historyMarkers).size, historyMarkers.length);
 });
 
-test("mycli shell holds mutable tables until source-backed native scrollback completion", {
-	// The Windows runner reflows the last two table rows into native scrollback
-	// (see the reported leaked rows). Linux and macOS cover this path in the
-	// daily gate, and Windows keeps running it locally until the reflow leak is
-	// fixed.
-	skip: process.platform === "win32" && process.env.GITHUB_ACTIONS === "true"
-		? "known Windows runner reflow difference"
-		: false,
-}, async (t) => {
+/**
+ * Wait until native scrollback stops changing.
+ *
+ * A resize first lets the terminal reflow, then the runtime replaces scrollback
+ * after its debounce and on the following frame. A fixed delay asserted mid-pass
+ * on loaded runners, so observe the terminal until it settles.
+ */
+async function settleNativeScrollback(
+	terminal: HeadlessTerminal,
+	stableMs = 250,
+	timeoutMs = 5_000,
+): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	let previous = "";
+	let stableSince = Date.now();
+	for (;;) {
+		await terminal.flush();
+		// The running footer animates, so only scrollback content is a stable signal.
+		const snapshot = terminal.historyLines().join("\n");
+		if (snapshot !== previous) {
+			previous = snapshot;
+			stableSince = Date.now();
+		} else if (Date.now() - stableSince >= stableMs) {
+			return;
+		}
+		if (Date.now() > deadline) return;
+		await setTimeout(16);
+	}
+}
+
+test("mycli shell holds mutable tables until source-backed native scrollback completion", async (t) => {
 	const terminal = new HeadlessTerminal({
 		columns: 72,
 		rows: 16,
@@ -7987,8 +8009,7 @@ test("mycli shell holds mutable tables until source-backed native scrollback com
 		0,
 	);
 	terminal.resize(64, 18);
-	await setTimeout(100);
-	await terminal.flush();
+	await settleNativeScrollback(terminal);
 	// Keep the leaked rows in the failure message: this only reproduces on
 	// shared Windows runners, where the runner log is the only evidence.
 	const leakedTableHistory = terminal.historyLines().filter((line) => line.includes("table-history-"));

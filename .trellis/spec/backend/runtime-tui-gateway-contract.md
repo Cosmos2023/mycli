@@ -5486,6 +5486,10 @@ const environment = Object.fromEntries(keys.flatMap((key) => {
 | Appended table boundary ends the table or changes header/alignment semantics | Reject the boundary token and run a full lex/render |
 | Active assistant ends in a Markdown table | Hold that assistant out of native scrollback while continuing to render its live viewport tail |
 | Terminal resizes while the table tail is held | Replace history from the bounded component prefix before the assistant, excluding provisional table rows |
+- The terminal reflows its viewport synchronously on resize, so the held tail's last rows can
+  appear in scrollback until the debounced replacement frame clears and rewrites history. That
+  window is inherent to the reflow debounce; assertions must observe the settled terminal instead
+  of sampling a fixed delay after `resize()`.
 | Held table ends or the turn becomes terminal | Replace history once from the complete bounded transcript source, then resume ordinary delta collection |
 | Appended reference definition resolves an earlier token | Reject that token's cached context and match a fresh render |
 | Incremental token raw lengths do not cover the source | Reject retained lexer state and run a full lex |
