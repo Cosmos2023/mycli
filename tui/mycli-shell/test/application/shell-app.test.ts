@@ -5238,7 +5238,7 @@ test("mycli shell model selector opens from slash command and selects model", as
 	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /deepseek-v4-flash/);
 
 	terminal.input?.("\x1b[B");
-	terminal.input?.("\r");
+	terminal.input?.("\t");
 	await setTimeout(25);
 	assert.equal(runtime.editorContainer.children[0], runtime.editor);
 	assert.equal(runtime.getState().footer.model, "gpt-5.4");
@@ -5287,7 +5287,7 @@ test("mycli shell loads a provider before its model catalog", async () => {
 	await setTimeout(25);
 	assert.deepEqual(requests, ["deepseek"]);
 	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /deepseek-v4-flash/);
-	terminal.input?.("\r");
+	terminal.input?.("\t");
 	await setTimeout(25);
 	assert.equal(selected, "deepseek/deepseek-v4-flash");
 });
@@ -5762,7 +5762,7 @@ test("mycli shell model selector can change thinking effort with model selection
 	await setTimeout(25);
 	await runtime.handleClientAction("open_model_selector", "");
 	terminal.input?.("\x1b[B");
-	terminal.input?.("\t");
+	terminal.input?.("\r");
 	let output = stripAnsi(runtime.ui.render(100).join("\n"));
 	assert.match(output, /Select Reasoning Level for/);
 	assert.match(output, /Medium/);
@@ -5792,7 +5792,7 @@ test("mycli shell keeps model selector open until backend selection succeeds", a
 	await setTimeout(25);
 	await runtime.handleClientAction("open_model_selector", "");
 
-	terminal.input?.("\r");
+	terminal.input?.("\t");
 	await setTimeout(10);
 	assert.notEqual(runtime.editorContainer.children[0], runtime.editor);
 
@@ -5814,7 +5814,7 @@ test("mycli shell keeps model selector open and shows backend selection errors",
 	await setTimeout(25);
 	await runtime.handleClientAction("open_model_selector", "");
 
-	terminal.input?.("\r");
+	terminal.input?.("\t");
 	await setTimeout(25);
 
 	assert.notEqual(runtime.editorContainer.children[0], runtime.editor);

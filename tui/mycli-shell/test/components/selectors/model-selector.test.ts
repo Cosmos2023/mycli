@@ -83,11 +83,11 @@ function selector(
 	});
 }
 
-test("model selector applies the catalog default reasoning to the session on Enter", () => {
+test("model selector applies the catalog default reasoning to the session on Tab", () => {
 	const selected: Array<{ model: MycliShellModel; scope: ModelSelectionScope }> = [];
 	const component = selector((model, scope) => selected.push({ model, scope }));
 
-	component.handleInput("\r");
+	component.handleInput("\t");
 
 	assert.equal(selected[0]?.model.model, "gpt-5.4");
 	assert.equal(selected[0]?.model.thinkingLevel, "medium");
@@ -100,13 +100,13 @@ test("model selector respects the height budget with errors and blocks hidden co
 	const component = new ModelSelectorComponent({
 		tui, models, maxHeight: () => height, onSelect: () => { selections += 1; }, onCancel() {},
 	});
-	component.handleInput("\r");
+	component.handleInput("\t");
 	assert.equal(selections, 0);
 	for (height of [1, 7, 8, 9, 12]) {
 		component.setError("Provider rejected the selection.");
 		assert.ok(component.render(80).length <= height);
 	}
-	component.handleInput("\r");
+	component.handleInput("\t");
 	assert.equal(selections, 1);
 });
 
@@ -123,7 +123,7 @@ test("model selector fast path falls back to the first supported reasoning effor
 		onCancel() {},
 	});
 
-	component.handleInput("\r");
+	component.handleInput("\t");
 	assert.equal(selected?.thinkingLevel, "high");
 });
 
@@ -131,19 +131,19 @@ test("model selector fast path fences duplicate input and permits retry after fa
 	const selected: string[] = [];
 	const component = selector((model) => selected.push(model.model));
 
-	component.handleInput("\r");
-	component.handleInput("\r");
+	component.handleInput("\t");
+	component.handleInput("\t");
 	assert.deepEqual(selected, ["gpt-5.4"]);
 
 	component.setError("Selection failed.");
-	component.handleInput("\r");
+	component.handleInput("\t");
 	assert.deepEqual(selected, ["gpt-5.4", "gpt-5.4"]);
 });
 
-test("model selector opens reasoning options with Tab for models with multiple efforts", () => {
+test("model selector opens reasoning options with Enter for models with multiple efforts", () => {
 	const component = selector();
 
-	component.handleInput("\t");
+	component.handleInput("\r");
 
 	const output = stripAnsi(component.render(100).join("\n"));
 	assert.match(output, /Select Reasoning Level for/);
@@ -155,7 +155,7 @@ test("model selector opens reasoning options with Tab for models with multiple e
 test("model selector escape restores the model query and selection", () => {
 	const component = selector();
 	component.handleInput("g");
-	component.handleInput("\t");
+	component.handleInput("\r");
 
 	component.handleInput("\x1b");
 
@@ -165,15 +165,15 @@ test("model selector escape restores the model query and selection", () => {
 	assert.equal(component.getSearchInput().getValue(), "g");
 });
 
-test("model selector fast-selects fixed efforts while Tab retains scope options", () => {
+test("model selector fast-selects fixed efforts while Enter asks for the level", () => {
 	const selected: Array<{ model: MycliShellModel; scope: ModelSelectionScope }> = [];
 	const noEffort = selector((model, scope) => selected.push({ model, scope }));
 	noEffort.handleInput("deepseek-chat");
-	noEffort.handleInput("\r");
+	noEffort.handleInput("\t");
 
 	const fixedEffort = selector((model, scope) => selected.push({ model, scope }));
 	fixedEffort.handleInput("deepseek-reasoner");
-	fixedEffort.handleInput("\r");
+	fixedEffort.handleInput("\t");
 
 	assert.equal(selected[0]?.model.model, "deepseek-chat");
 	assert.equal(selected[0]?.model.thinkingLevel, undefined);
@@ -184,7 +184,7 @@ test("model selector fast-selects fixed efforts while Tab retains scope options"
 
 	const advanced = selector((model, scope) => selected.push({ model, scope }));
 	advanced.handleInput("deepseek-chat");
-	advanced.handleInput("\t");
+	advanced.handleInput("\r");
 	assert.match(stripAnsi(advanced.render(100).join("\n")), /Choose where to apply/);
 	advanced.handleInput("\x1b[B");
 	advanced.handleInput("\r");
@@ -195,7 +195,7 @@ test("model selector defaults to session scope and can select user scope", () =>
 	const selected: Array<{ model: string; scope: ModelSelectionScope }> = [];
 	const component = selector((model, scope) => selected.push({ model: model.model, scope }));
 
-	component.handleInput("\t");
+	component.handleInput("\r");
 	component.handleInput("\r");
 	let output = stripAnsi(component.render(100).join("\n"));
 	assert.match(output, /Choose where to apply/);
@@ -208,7 +208,7 @@ test("model selector defaults to session scope and can select user scope", () =>
 
 	const sessionComponent = selector((model, scope) => selected.push({ model: model.model, scope }));
 	sessionComponent.handleInput("deepseek-chat");
-	sessionComponent.handleInput("\r");
+	sessionComponent.handleInput("\t");
 	assert.equal(selected.at(-1)?.scope, "session");
 });
 
@@ -216,7 +216,7 @@ test("model selector submits one scope request at a time and allows retry after 
 	const selected: ModelSelectionScope[] = [];
 	const component = selector((_model, scope) => selected.push(scope));
 	component.handleInput("deepseek-chat");
-	component.handleInput("\t");
+	component.handleInput("\r");
 
 	component.handleInput("\r");
 	component.handleInput("\x1b[B");
@@ -231,14 +231,14 @@ test("model selector submits one scope request at a time and allows retry after 
 
 test("model selector escape returns from scope to the preceding stage", () => {
 	const reasoning = selector();
-	reasoning.handleInput("\t");
+	reasoning.handleInput("\r");
 	reasoning.handleInput("\r");
 	reasoning.handleInput("\x1b");
 	assert.match(stripAnsi(reasoning.render(100).join("\n")), /Select Reasoning Level for/);
 
 	const noReasoning = selector();
 	noReasoning.handleInput("deepseek-chat");
-	noReasoning.handleInput("\t");
+	noReasoning.handleInput("\r");
 	noReasoning.handleInput("\x1b");
 	assert.match(stripAnsi(noReasoning.render(100).join("\n")), /Select model/);
 	assert.equal(noReasoning.getSearchInput().getValue(), "deepseek-chat");

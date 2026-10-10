@@ -323,7 +323,7 @@ for (const nativeScrollback of [false, true]) {
 			assert.ok(after.includes(logicalSelection.trimEnd()), after);
 			assert.match(after, /TRUSTED USER MESSAGE/u);
 		}
-		terminal.sendInput("\r");
+		terminal.sendInput("\t");
 		await delay(0);
 		assert.equal(selected, "model-05");
 		runtime.showModelSelector();

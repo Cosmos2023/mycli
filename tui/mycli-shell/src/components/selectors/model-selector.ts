@@ -240,8 +240,8 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			lines.push(...this.modelRows(safeWidth, listBudget(2)));
 			lines.push(...gap);
 			lines.push(this.line(listPanelFooter([
-				keyHint("tui.select.confirm", "use"),
-				keyHint("tui.select.options", "options"),
+				keyHint("tui.select.confirm", "choose effort"),
+				keyHint("tui.select.options", "use default"),
 				...(this.providerCycleHint() ? [this.providerCycleHint()] : []),
 				this.modelBackHint(),
 			], safeWidth), safeWidth));
@@ -346,9 +346,10 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		} else if (kb.matches(keyData, "tui.select.nextGroup")) {
 			this.cycleProvider(1);
 		} else if (kb.matches(keyData, "tui.select.confirm")) {
-			this.quickSelectModel();
-		} else if (kb.matches(keyData, "tui.select.options")) {
+			// Codex asks for the reasoning level as soon as a model is picked.
 			this.confirmModel();
+		} else if (kb.matches(keyData, "tui.select.options")) {
+			this.quickSelectModel();
 		} else if (kb.matches(keyData, "tui.select.cancel")) {
 			this.backFromModels();
 		} else {
@@ -394,7 +395,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 
 	private confirmCurrentStage(): void {
 		if (this.stage === "provider") this.confirmProvider();
-		else if (this.stage === "model") this.quickSelectModel();
+		else if (this.stage === "model") this.confirmModel();
 	}
 
 	private confirmProvider(): void {

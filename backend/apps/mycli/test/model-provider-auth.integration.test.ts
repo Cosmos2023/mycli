@@ -179,7 +179,8 @@ test("TUI logs into pi-ai Qwen routes and selects the full SDK catalog without m
 	await terminal.flush();
 	assert.match(terminal.visibleLines().join("\n"), /qwen3\.8-max/);
 	assert.doesNotMatch(screen(), /No matching models/);
-	terminal.sendInput("\r");
+	// Enter opens the reasoning picker; Tab applies the model with its default effort.
+	terminal.sendInput("\t");
 	await waitFor(() => runtime.editorContainer.children[0] === runtime.editor);
 	assert.equal(runtime.getState().currentModel?.model, "qwen3.8-max");
 	assert.equal(runtime.getState().currentModel?.provider, providerId);
