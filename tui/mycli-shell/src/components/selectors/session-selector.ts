@@ -5,6 +5,12 @@ import { theme } from "../../theme/theme.ts";
 import { DynamicBorder } from "../shared/dynamic-border.ts";
 import { keyHint, rawKeyHint } from "../shared/keybinding-hints.ts";
 import { filterSessions, sessionDisplayTitle, type SessionNameFilter, type SessionScope, type SessionSortMode } from "./session-selector-search.ts";
+import {
+	listPanelFooter,
+	listPanelHeader,
+	listPanelPrompt,
+	listPanelRule,
+} from "./list-panel.ts";
 
 export type SessionSelectorOptions = {
 	tui: TUI;
@@ -46,16 +52,22 @@ export class SessionSelectorComponent extends Container {
 		this.onCancelCallback = options.onCancel;
 
 		this.addChild(new DynamicBorder());
-		this.addChild(new Spacer(1));
 		this.addChild({
 			render: (width) => this.headerLines(width),
 			invalidate: () => {},
 		});
-		this.addChild(new Spacer(1));
-		this.addChild(this.searchInput);
+		this.searchInput.focused = true;
+		this.addChild({
+			render: (width) => this.searchLines(width),
+			invalidate: () => {},
+		});
 		this.addChild(new Spacer(1));
 		this.addChild(this.listContainer);
 		this.addChild(new Spacer(1));
+		this.addChild({
+			render: (width) => this.footerLines(width),
+			invalidate: () => {},
+		});
 		this.addChild(new DynamicBorder());
 		this.updateList();
 	}
@@ -141,27 +153,32 @@ export class SessionSelectorComponent extends Container {
 	}
 
 	private headerLines(width: number): string[] {
-		const title = theme.bold("Resume Session");
-		const scope = `${theme.fg("muted", "Scope: ")}${theme.fg("accent", this.scope)}`;
-		const sort = `${theme.fg("muted", "Sort: ")}${theme.fg("accent", this.sortMode)}`;
-		const name = `${theme.fg("muted", "Name: ")}${theme.fg("accent", this.nameFilter)}`;
-		const right = `${scope}  ${name}  ${sort}`;
-		const titleWidth = visibleWidth(title);
-		const rightWidth = visibleWidth(right);
-		const gap = Math.max(1, width - titleWidth - rightWidth);
-		const first = truncateToWidth(`${title}${" ".repeat(gap)}${right}`, width, "");
-		const pathState = this.showPath ? "on" : "off";
-		const second = truncateToWidth(
-			[
-				keyHint("tui.input.tab", "scope"),
-				...(this.options.onPreview ? [rawKeyHint("ctrl+p", "preview")] : []),
-				theme.fg("muted", `type to search ${uiGlyphs().separator} re:<pattern> regex ${uiGlyphs().separator} "phrase" exact`),
-				theme.fg("muted", `path ${pathState}`),
-			].join(theme.fg("muted", ` ${uiGlyphs().separator} `)),
+		const meta = [
+			`${this.filteredSessions.length}/${this.sessions.length} sessions`,
+			`scope ${this.scope}`,
+			`name ${this.nameFilter}`,
+			`sort ${this.sortMode}`,
+		].join(` ${uiGlyphs().separator} `);
+		return [listPanelHeader("Resume Session", meta, width), listPanelRule(width)];
+	}
+
+	/** The filter prompt keeps the search syntax visible before anything is typed. */
+	private searchLines(width: number): string[] {
+		return [listPanelPrompt(
+			this.searchInput.render(width)[0] ?? "",
+			this.searchInput.getValue().length > 0,
+			`type to search ${uiGlyphs().separator} re:<pattern> ${uiGlyphs().separator} "phrase"`,
 			width,
-			"...",
-		);
-		return [first, second];
+		)];
+	}
+
+	private footerLines(width: number): string[] {
+		return [listPanelFooter([
+			keyHint("tui.input.tab", "scope"),
+			...(this.options.onPreview ? [rawKeyHint("ctrl+p", "preview")] : []),
+			keyHint("tui.select.confirm", "resume"),
+			keyHint("tui.select.cancel", "close"),
+		], width)];
 	}
 
 	private updateList(): void {
@@ -200,8 +217,17 @@ export class SessionSelectorComponent extends Container {
 			const count = session.messageCount === undefined ? undefined : `${session.messageCount} msg`;
 			const activity = session.modified ?? session.lastActive;
 			const primaryMeta = [current, sessionStatusLabel(session), activity, count].filter(Boolean).join(` ${uiGlyphs().separator} `);
-			const primary = primaryMeta ? `${prefix}${title} ${theme.fg("muted", primaryMeta)}` : `${prefix}${title}`;
-			this.listContainer.addChild(new TruncatedText(primary, 0, 0));
+			this.listContainer.addChild({
+				invalidate: () => {},
+				render: (width: number) => {
+					const gap = Math.max(2, width - visibleWidth(prefix) - visibleWidth(titleText) - visibleWidth(primaryMeta));
+					return [truncateToWidth(
+						`${prefix}${title}${primaryMeta ? `${" ".repeat(gap)}${theme.fg("muted", primaryMeta)}` : ""}`,
+						width,
+						"...",
+					)];
+				},
+			});
 			const id = session.title || session.firstMessage ? session.id : undefined;
 			const path = this.showPath ? (session.cwd ?? session.workspace) : undefined;
 			const model = session.model

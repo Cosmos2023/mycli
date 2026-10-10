@@ -4,6 +4,12 @@ import { uiGlyphs } from "../../theme/terminal-style.ts";
 import { theme } from "../../theme/theme.ts";
 import { DynamicBorder } from "../shared/dynamic-border.ts";
 import { keyHint } from "../shared/keybinding-hints.ts";
+import {
+	listPanelFooter,
+	listPanelHeader,
+	listPanelPrompt,
+	listPanelRule,
+} from "./list-panel.ts";
 
 type ResourceFilter = "all" | MycliShellResource["type"];
 
@@ -29,13 +35,13 @@ export class ResourceSelectorComponent extends Container {
 		this.resources = [...options.resources];
 		this.filteredResources = this.applyFilters("");
 		this.addChild(new DynamicBorder());
-		this.addChild(new Spacer(1));
 		this.addChild({ render: (width) => this.headerLines(width), invalidate: () => {} });
-		this.addChild(new Spacer(1));
-		this.addChild(this.searchInput);
+		this.searchInput.focused = true;
+		this.addChild({ render: (width) => this.searchLines(width), invalidate: () => {} });
 		this.addChild(new Spacer(1));
 		this.addChild(this.listContainer);
 		this.addChild(new Spacer(1));
+		this.addChild({ render: (width) => this.footerLines(width), invalidate: () => {} });
 		this.addChild(new DynamicBorder());
 		this.updateList();
 	}
@@ -94,15 +100,27 @@ export class ResourceSelectorComponent extends Container {
 	}
 
 	private headerLines(width: number): string[] {
-		const title = theme.fg("selectorTitle", theme.bold("Resources"));
-		const filter = `${theme.fg("selectorMeta", "Type: ")}${theme.fg("selectorMatch", this.filter)}`;
-		const total = `${this.filteredResources.length}/${this.resources.length}`;
-		const right = `${filter}  ${theme.fg("selectorMeta", total)}`;
-		const gap = Math.max(1, width - visibleWidth(title) - visibleWidth(right));
 		return [
-			truncateToWidth(`${title}${" ".repeat(gap)}${right}`, width, ""),
-			truncateToWidth(`${keyHint("tui.input.tab", "type")} ${uiGlyphs().separator} type to search ${uiGlyphs().separator} Enter opens runtime inspect output`, width, "..."),
+			listPanelHeader("Resources", `${this.filteredResources.length}/${this.resources.length} ${uiGlyphs().separator} type ${this.filter}`, width),
+			listPanelRule(width),
 		];
+	}
+
+	private searchLines(width: number): string[] {
+		return [listPanelPrompt(
+			this.searchInput.render(width)[0] ?? "",
+			this.searchInput.getValue().length > 0,
+			"type to filter",
+			width,
+		)];
+	}
+
+	private footerLines(width: number): string[] {
+		return [listPanelFooter([
+			keyHint("tui.input.tab", "type"),
+			keyHint("tui.select.confirm", "inspect"),
+			keyHint("tui.select.cancel", "close"),
+		], width)];
 	}
 
 	private updateList(): void {
@@ -118,10 +136,13 @@ export class ResourceSelectorComponent extends Container {
 		const maxVisible = 11;
 		const startIndex = Math.max(0, Math.min(this.selectedIndex - Math.floor(maxVisible / 2), this.filteredResources.length - maxVisible));
 		const endIndex = Math.min(startIndex + maxVisible, this.filteredResources.length);
-		for (let index = startIndex; index < endIndex; index += 1) {
-			const resource = this.filteredResources[index];
-			if (!resource) continue;
-			this.listContainer.addChild(new Text(this.resourceLine(resource, index === this.selectedIndex), 0, 0));
+		const visible = this.filteredResources.slice(startIndex, endIndex);
+		const nameWidth = Math.min(
+			Math.max(0, ...visible.map((resource) => visibleWidth(resource.name))),
+			32,
+		);
+		for (const [offset, resource] of visible.entries()) {
+			this.listContainer.addChild(new Text(this.resourceLine(resource, startIndex + offset === this.selectedIndex, nameWidth), 0, 0));
 		}
 		if (this.filteredResources.length > maxVisible) {
 			this.listContainer.addChild(new Text(theme.fg("selectorMeta", `  (${this.selectedIndex + 1}/${this.filteredResources.length})`), 0, 0));
@@ -133,13 +154,16 @@ export class ResourceSelectorComponent extends Container {
 		}
 	}
 
-	private resourceLine(resource: MycliShellResource, selected: boolean): string {
+	private resourceLine(resource: MycliShellResource, selected: boolean, nameWidth: number): string {
 		const prefix = selected ? theme.fg("selectorMatch", `${uiGlyphs().arrow} `) : "  ";
 		const marker = (resource.type === "plugin" || resource.type === "mcp") && resource.status && !["enabled", "loaded", "disabled"].includes(resource.status)
 			? resource.status.replaceAll("_", " ")
 			: resource.enabled === false ? "off" : resource.enabled === true ? "on" : resource.status ?? "info";
 		const labelColor = resourceTypeColor(resource.type);
-		const label = selected ? theme.fg("selectorMatch", resource.name) : theme.fg(labelColor, resource.name);
+		const name = resource.name.length >= nameWidth
+			? resource.name
+			: `${resource.name}${" ".repeat(nameWidth - visibleWidth(resource.name))}`;
+		const label = selected ? theme.fg("selectorMatch", name) : theme.fg(labelColor, name);
 		const statusColor = resourceStatusColor(resource);
 		const source = resource.source ? theme.fg("selectorMeta", resource.source) : undefined;
 		const meta = [theme.fg(labelColor, resource.type), source, theme.fg(statusColor, marker)].filter(Boolean).join(theme.fg("selectorMeta", ` ${uiGlyphs().separator} `));

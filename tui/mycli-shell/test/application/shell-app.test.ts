@@ -6335,7 +6335,7 @@ test("mycli shell session selector handles empty state and selection", async () 
 	await setTimeout(25);
 	await runtime.handleClientAction("open_session_selector", "");
 	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Session A/);
-	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /Scope: current/);
+	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /scope current/);
 	terminal.input?.("cache");
 	await setTimeout(25);
 	assert.match(stripAnsi(runtime.ui.render(100).join("\n")), /No matching sessions/);
