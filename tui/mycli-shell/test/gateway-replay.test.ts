@@ -64,9 +64,10 @@ test("historical Shell transcript uses the compact completed output summary", ()
 
 	const output = stripAnsi(renderMycliShell(projectRuntimeState(state), 100).join("\n"));
 
-	assert.match(output, /history output 1/);
-	assert.doesNotMatch(output, /history output 3/);
-	assert.match(output, /\+ 3 lines \(ctrl\+o to expand\)/);
+	assert.doesNotMatch(output, /history output 1/);
+	assert.doesNotMatch(output, /history output 4/);
+	assert.match(output, /└ history output 5/);
+	assert.match(output, /\+ 4 lines \(ctrl\+o to expand\)/);
 	assert.match(output, /history output 7/);
 });
 

@@ -19,6 +19,9 @@ import { AgentInteractionComponent } from "./agent-interaction.ts";
 import { toolContextActivity } from "../../transcript/context-activity.ts";
 import { ExplorationSummaryComponent } from "./exploration-summary.ts";
 
+/** Codex keeps a three-line tail preview for collapsed command output. */
+const DETAIL_PREVIEW_LINES = 3;
+
 function formatDuration(ms: number | undefined): string | undefined {
 	if (ms === undefined) return undefined;
 	if (ms < 1000) return `${Math.round(ms)}ms`;
@@ -195,7 +198,10 @@ export class ToolExecutionComponent extends Container {
 
 	private previewLineLimit(): number {
 		const presentation = presentationForTool(this.tool.name, this.tool.status, this.tool.mutating, this.tool.presentation);
-		return this.tool.contentPreview ? presentation.writePreviewLines : presentation.previewLines;
+		if (this.tool.contentPreview) return presentation.writePreviewLines;
+		// Codex keeps command output to a three-line tail preview.
+		if (!this.tool.diffPreview) return DETAIL_PREVIEW_LINES;
+		return presentation.previewLines;
 	}
 
 	private hiddenLineCount(): number {

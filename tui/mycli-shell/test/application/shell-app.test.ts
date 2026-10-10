@@ -2238,7 +2238,7 @@ test("Shell command continuations and result branches share one Codex gutter", (
 	assert.ok(resultBranches.every((line) => line.indexOf("└") === continuation.indexOf("│")));
 });
 
-test("running Shell output keeps only the newest five visual rows", () => {
+test("running Shell output keeps only the newest three visual rows", () => {
 	const rendered = new BashExecutionComponent({
 		id: "shell-running-output",
 		command: `generate output ${"x".repeat(100)}`,
@@ -2249,18 +2249,20 @@ test("running Shell output keeps only the newest five visual rows", () => {
 	const lines = rendered.render(100).map((line) => stripAnsi(line));
 	const output = lines.join("\n");
 	const continuation = lines.find((line) => line.includes("│"));
-	const retainedOutputStart = lines.find((line) => line.includes("└ output 3"));
+	const retainedOutputStart = lines.find((line) => line.includes("└ output 5"));
 
 	assert.doesNotMatch(output, /output 1/);
 	assert.doesNotMatch(output, /output 2/);
-	assert.match(output, /└ output 3/);
+	assert.doesNotMatch(output, /output 3/);
+	assert.doesNotMatch(output, /output 4/);
+	assert.match(output, /└ output 5/);
 	assert.match(output, /output 7/);
 	assert.ok(continuation);
 	assert.ok(retainedOutputStart);
 	assert.equal(retainedOutputStart.indexOf("└"), continuation.indexOf("│"));
 });
 
-test("completed Shell output keeps a five-row head and tail summary", () => {
+test("completed Shell output keeps a three-row tail summary", () => {
 	const rendered = new BashExecutionComponent({
 		id: "shell-completed-output",
 		command: "generate output",
@@ -2270,25 +2272,21 @@ test("completed Shell output keeps a five-row head and tail summary", () => {
 
 	const lines = rendered.render(100).map((line) => stripAnsi(line));
 	const output = lines.join("\n");
-	const firstOutput = lines.find((line) => line.includes("└ output 1"));
-	const omission = lines.find((line) => line.includes("+ 3 lines"));
-	const tailOutput = lines.find((line) => line.includes("output 6"));
+	const tailOutput = lines.find((line) => line.includes("└ output 5"));
+	const omission = lines.find((line) => line.includes("+ 4 lines"));
 
-	assert.match(output, /output 1/);
-	assert.match(output, /output 2/);
-	assert.doesNotMatch(output, /output 3/);
-	assert.doesNotMatch(output, /output 5/);
-	assert.match(output, /\+ 3 lines \(ctrl\+o to expand\)/);
+	assert.doesNotMatch(output, /output 1/);
+	assert.doesNotMatch(output, /output 4/);
+	assert.match(output, /└ output 5/);
 	assert.match(output, /output 6/);
 	assert.match(output, /output 7/);
-	assert.ok(firstOutput);
-	assert.ok(omission);
+	assert.match(output, /\+ 4 lines \(ctrl\+o to expand\)/);
 	assert.ok(tailOutput);
-	assert.equal(omission.indexOf("+ 3 lines"), firstOutput.indexOf("└") + 2);
-	assert.equal(tailOutput.indexOf("output 6"), omission.indexOf("+ 3 lines"));
+	assert.ok(omission);
+	assert.ok(lines.indexOf(omission) > lines.indexOf(tailOutput));
 });
 
-test("completed Shell keeps a backend omission between retained head and tail", () => {
+test("completed Shell keeps the backend omission count in the expand label", () => {
 	const rendered = new BashExecutionComponent({
 		id: "shell-backend-omission",
 		command: "curl -s 'https://wttr.in/Beijing?1&lang=zh'",
@@ -2298,16 +2296,13 @@ test("completed Shell keeps a backend omission between retained head and tail", 
 	});
 
 	const lines = rendered.render(100).map((line) => stripAnsi(line));
-	const headIndex = lines.findIndex((line) => line.includes("└ 天气预报"));
-	const omissionIndex = lines.findIndex((line) => line.includes("+ 17 lines"));
-	const tailIndex = lines.findIndex((line) => line.includes("关注 @igor_chubin"));
+	const firstIndex = lines.findIndex((line) => line.includes("└ 天气预报"));
+	const labelIndex = lines.findIndex((line) => line.includes("+ 17 lines"));
 
-	assert.ok(headIndex >= 0);
-	assert.ok(omissionIndex > headIndex);
-	assert.ok(tailIndex > omissionIndex);
-	assert.equal(lines[omissionIndex]?.indexOf("+ 17 lines"), lines[headIndex]?.indexOf("└") + 2);
-	assert.equal(lines[tailIndex]?.indexOf("关注"), lines[omissionIndex]?.indexOf("+ 17 lines"));
-	assert.match(lines[omissionIndex] ?? "", /\+ 17 lines \(ctrl\+o to expand\)/);
+	assert.ok(firstIndex >= 0);
+	assert.ok(labelIndex > firstIndex);
+	assert.match(lines[labelIndex] ?? "", /\+ 17 lines \(ctrl\+o to expand\)/);
+	assert.equal(lines.some((line) => line.includes("关注 @igor_chubin")), true);
 });
 
 test("Codex-style foreground Bash shows elapsed interrupt hint", () => {

@@ -11,13 +11,14 @@ import { cachedShellSearchPreview, shellSearchHasNoMatches } from "../../transcr
 import { shellContextActivity } from "../../transcript/context-activity.ts";
 import { ExplorationSummaryComponent } from "./exploration-summary.ts";
 import { keyHint } from "../shared/keybinding-hints.ts";
-import { presentationForBash } from "../../transcript/tool-presentation.ts";
 import { TRANSCRIPT_HEADER_INDENT } from "./transcript-gutter.ts";
-import { truncateToVisualLines, truncateVisualLinesBalanced } from "../shared/visual-truncate.ts";
+import { truncateToVisualLines } from "../shared/visual-truncate.ts";
 
 const COMMAND_CONTINUATION_MAX_LINES = 2;
 const COMMAND_OUTPUT_SUBSEQUENT_PREFIX = "    ";
 const SHELL_CELL_PADDING_X = TRANSCRIPT_HEADER_INDENT;
+/** Codex keeps a three-line tail preview for collapsed command output. */
+const DETAIL_PREVIEW_LINES = 3;
 
 export class BashExecutionComponent extends Container {
 	private bash: MycliShellBash;
@@ -114,35 +115,22 @@ export class BashExecutionComponent extends Container {
 		return {
 			render: (width: number) => {
 				if (cachedWidth !== width || !cachedLines) {
-					const maxLines = presentationForBash().terminalPreviewLines;
 					const output = theme.fg("muted", this.connectedOutput(width));
-					const result = this.bash.status === "running"
-						? truncateToVisualLines(output, maxLines, width, SHELL_CELL_PADDING_X)
-						: truncateVisualLinesBalanced(output, maxLines, width, SHELL_CELL_PADDING_X, (skippedCount) =>
-								theme.fg("muted", this.indentedHiddenLinesText(Math.max(this.bash.hiddenLineCount ?? 0, skippedCount))),
-						);
+					const result = truncateToVisualLines(output, DETAIL_PREVIEW_LINES, width, SHELL_CELL_PADDING_X);
 					cachedLines = result.visualLines;
 					const outputPrefix = `${" ".repeat(SHELL_CELL_PADDING_X)}${commandOutputInitialPrefix()}`;
 					const outputPrefixWidth = visibleWidth(outputPrefix);
-					if (this.bash.status === "running" && result.skippedCount > 0 && cachedLines.length > 0 && width > outputPrefixWidth) {
+					if (result.skippedCount > 0 && cachedLines.length > 0 && width > outputPrefixWidth) {
 						cachedLines = [
 							`${theme.fg("muted", outputPrefix)}${sliceByColumn(cachedLines[0] ?? "", outputPrefixWidth, width - outputPrefixWidth)}`,
 							...cachedLines.slice(1),
 						];
 					}
-					const hiddenCount = this.bash.hiddenLineCount ?? 0;
-					if (this.bash.status !== "running" && result.skippedCount === 0 && hiddenCount > 0) {
-						const marker = new Text(
-							theme.fg("muted", this.indentedHiddenLinesText(hiddenCount)),
-							SHELL_CELL_PADDING_X,
-							0,
-						).render(width);
-						const retainedLines = cachedLines.slice(0, Math.max(0, maxLines - marker.length));
-						const headLineCount = Math.ceil(retainedLines.length / 2);
+					const hiddenCount = Math.max(this.bash.hiddenLineCount ?? 0, result.skippedCount);
+					if (this.bash.status !== "running" && hiddenCount > 0) {
 						cachedLines = [
-							...retainedLines.slice(0, headLineCount),
-							...marker.slice(0, maxLines - retainedLines.length),
-							...retainedLines.slice(headLineCount),
+							...cachedLines,
+							...new Text(theme.fg("muted", this.indentedHiddenLinesText(hiddenCount)), SHELL_CELL_PADDING_X, 0).render(width),
 						];
 					}
 					cachedWidth = width;
