@@ -228,7 +228,10 @@ test("file change backgrounds stay continuous through TUI updates and resize", a
 					const visibleLines = terminal.visibleLines();
 					const frameStart = visibleLines.findLastIndex((line) => line.includes("Edited")) - 1;
 					assert.ok(frameStart >= 0);
-					for (let row = 2; row < expected.length; row++) {
+					// Disclosure rows are dim labels without a diff background, so stop at the first one.
+					const disclosureRow = expected.findIndex((line) =>
+						/^\s*[+−-]\s+\d+\s+line|Show less/u.test(stripAnsi(line)));
+					for (let row = 2; row < (disclosureRow >= 0 ? disclosureRow : expected.length); row++) {
 						assertFullRowBackground(terminal, frameStart + row, true);
 					}
 					assert.deepEqual(
@@ -379,6 +382,43 @@ test("file change component aggregates multiple files and renders operation labe
 	assert.match(added, /• Added src\/new\.py/);
 	assert.match(deleted, /• Deleted src\/old\.py/);
 	assert.match(renamed, /• Renamed src\/a\.py -> src\/b\.py/);
+});
+
+
+test("file change component collapses a long diff to a three-line head preview", () => {
+	const change = editedFileChange({
+		files: [{
+			...editedFileChange().files[0]!,
+			diff: "@@ -1,6 +1,6 @@\n-a1\n-b2\n-c3\n-d4\n+a1\n+b2\n+c3\n+d4\n",
+			addedLines: 4,
+			removedLines: 4,
+		}],
+	});
+	const component = new FileChangeComponent(change);
+	const collapsed = component.render(80).map(stripAnsi);
+
+	assert.match(collapsed[2] ?? "", /1 - a1/);
+	assert.match(collapsed.join("\n"), /\+ 6 lines \(ctrl\+o to expand\)/);
+	assert.doesNotMatch(collapsed.join("\n"), /d4/);
+	assert.equal(component.isDetailsToggleRow(collapsed.length - 1, 80), true);
+	assert.equal(component.isDetailsToggleRow(1, 80), false);
+
+	component.updateFileChange({ ...change, expanded: true });
+	const expanded = component.render(80).map(stripAnsi);
+
+	assert.match(expanded.join("\n"), /d4/);
+	assert.match(expanded.join("\n"), /Show less \(ctrl\+o collapse\)/);
+	assert.equal(component.isDetailsToggleRow(expanded.length - 1, 80), true);
+});
+
+
+test("file change component leaves a short diff without a disclosure row", () => {
+	const component = new FileChangeComponent(editedFileChange());
+	const lines = component.render(80).map(stripAnsi);
+
+	assert.match(lines.join("\n"), /24 \+ new/);
+	assert.doesNotMatch(lines.join("\n"), /to expand|Show less/);
+	assert.equal(component.isDetailsToggleRow(lines.length - 1, 80), false);
 });
 
 

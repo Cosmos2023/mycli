@@ -2693,9 +2693,10 @@ export class MycliShellRuntime {
 					? block.tool.expanded !== true
 					: block.kind === "provider_attempt" ? !block.providerAttempt.expanded
 						: block.kind === "bash" ? block.bash.expanded !== true
-							: block.kind === "message" && block.message.role === "assistant"
-								? Boolean(block.message.thinking) && this.reasoningHiddenForRender()
-								: false,
+							: block.kind === "file_change" ? block.fileChange.expanded !== true
+								: block.kind === "message" && block.message.role === "assistant"
+									? Boolean(block.message.thinking) && this.reasoningHiddenForRender()
+									: false,
 			);
 			this.toolDetailMode = hasCollapsed ? "expanded" : "collapsed";
 		}
@@ -2751,6 +2752,7 @@ export class MycliShellRuntime {
 		const projected = this.state.transcript?.find((item) => item.id === id);
 		if (projected?.kind === "tool") return projected.tool.expanded === true;
 		if (projected?.kind === "bash") return projected.bash.expanded === true;
+		if (projected?.kind === "file_change") return projected.fileChange.expanded === true;
 		if (projected?.kind === "provider_attempt") return projected.providerAttempt.expanded;
 		return false;
 	}

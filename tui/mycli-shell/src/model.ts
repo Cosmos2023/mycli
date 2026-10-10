@@ -133,6 +133,7 @@ export type MycliShellFileChange = {
 	id: string;
 	callId?: string;
 	status: "success" | "error" | "unchanged";
+	expanded?: boolean;
 	summary: string;
 	target?: string;
 	files: MycliShellFileChangeEntry[];

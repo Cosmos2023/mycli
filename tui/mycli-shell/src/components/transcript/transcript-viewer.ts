@@ -167,6 +167,7 @@ export class TranscriptViewerComponent implements Component {
 			}
 			if (block.kind === "provider_attempt") return { ...block, providerAttempt: { ...block.providerAttempt, expanded: true } };
 			if (block.kind === "tool") return { ...block, tool: { ...block.tool, expanded: true } };
+			if (block.kind === "file_change") return { ...block, fileChange: { ...block.fileChange, expanded: true } };
 			if (block.kind !== "bash") return block;
 			return { ...block, bash: this.expandedBash(block.bash) };
 		});

@@ -5,6 +5,7 @@ import { truncateToWidth, visibleWidth } from "../../tui-core/utils.ts";
 import type { MycliShellFileChange, MycliShellFileChangeEntry } from "../../model.ts";
 import { uiGlyphs } from "../../theme/terminal-style.ts";
 import { theme } from "../../theme/theme.ts";
+import { keyHint } from "../shared/keybinding-hints.ts";
 import { renderUnifiedDiff } from "./diff-renderer.ts";
 import {
 	TRANSCRIPT_BRANCH_INDENT,
@@ -12,6 +13,9 @@ import {
 	TRANSCRIPT_HEADER_INDENT,
 } from "./transcript-gutter.ts";
 
+
+/** Codex bounds a collapsed patch preview to a three-line head per file. */
+const DETAIL_PREVIEW_LINES = 3;
 
 const VERBS = {
 	add: "Added",
@@ -63,6 +67,7 @@ export class FileChangeComponent extends Container {
 			));
 			return;
 		}
+		const expanded = this.fileChange.expanded === true;
 		if (this.fileChange.files.length === 1) {
 			const file = this.fileChange.files[0]!;
 			this.addChild(new FileChangeHeaderComponent(
@@ -71,7 +76,8 @@ export class FileChangeComponent extends Container {
 				formatCounts(file.addedLines, file.removedLines),
 				TRANSCRIPT_HEADER_INDENT,
 			));
-			this.addChild(new FileDiffComponent(file, TRANSCRIPT_DETAIL_INDENT));
+			this.addChild(this.diffComponent(file, expanded));
+			this.addDisclosure(expanded);
 			return;
 		}
 
@@ -89,13 +95,54 @@ export class FileChangeComponent extends Container {
 				formatCounts(file.addedLines, file.removedLines),
 				TRANSCRIPT_BRANCH_INDENT,
 			));
-			this.addChild(new FileDiffComponent(file, TRANSCRIPT_DETAIL_INDENT));
+			this.addChild(this.diffComponent(file, expanded));
 			if (index < this.fileChange.files.length - 1) {
 				this.addChild(new Spacer(1));
 			}
 		});
+		this.addDisclosure(expanded);
 	}
 
+	private diffComponent(file: MycliShellFileChangeEntry, expanded: boolean): FileDiffComponent {
+		return new FileDiffComponent(file, TRANSCRIPT_DETAIL_INDENT, expanded ? undefined : DETAIL_PREVIEW_LINES);
+	}
+
+	private addDisclosure(expanded: boolean): void {
+		if (!this.hasDiff()) return;
+		this.addChild(new FileChangeDisclosureComponent(
+			TRANSCRIPT_DETAIL_INDENT,
+			expanded
+				? () => theme.fg("muted", `${uiGlyphs().minus} Show less (${keyHint("app.tools.expand", "collapse")})`)
+				: (width) => {
+					const hidden = this.hiddenDiffLines(width);
+					if (hidden === 0) return undefined;
+					const noun = hidden === 1 ? "line" : "lines";
+					return theme.fg("muted", `+ ${hidden} ${noun} (${keyHint("app.tools.expand", "to expand")})`);
+				},
+		));
+	}
+
+	private hasDiff(): boolean {
+		return this.fileChange.files.some((file) => file.diff.trim().length > 0);
+	}
+
+	private hiddenDiffLines(width: number): number {
+		let hidden = 0;
+		for (const file of this.fileChange.files) {
+			const rendered = renderFileDiff(file, width, TRANSCRIPT_DETAIL_INDENT);
+			hidden += Math.max(0, rendered.length - DETAIL_PREVIEW_LINES);
+		}
+		return hidden;
+	}
+
+	/** True when the given rendered row is this block's expand/collapse affordance. */
+	isDetailsToggleRow(row: number, width: number): boolean {
+		if (this.fileChange.status !== "success" || !this.hasDiff()) return false;
+		const rows = this.render(width).length;
+		if (rows === 0) return false;
+		if (this.fileChange.expanded === true) return row === rows - 1;
+		return this.hiddenDiffLines(width) > 0 && row === rows - 1;
+	}
 }
 
 
@@ -124,17 +171,54 @@ class FileDiffComponent implements Component {
 	constructor(
 		private readonly file: MycliShellFileChangeEntry,
 		private readonly indent: number,
+		private readonly previewLines?: number,
 	) {}
 
 	invalidate(): void {}
 
 	render(width: number): string[] {
-		if (!this.file.diff.trim()) return [];
-		return renderUnifiedDiff(this.file.diff, {
-			width,
-			indent: this.indent,
-			language: this.file.language,
-		});
+		return renderFileDiff(this.file, width, this.indent, this.previewLines);
+	}
+}
+
+/** Codex bounds a collapsed preview to the head of each file's diff, not the tail. */
+function renderFileDiff(
+	file: MycliShellFileChangeEntry,
+	width: number,
+	indent: number,
+	previewLines?: number,
+): string[] {
+	if (!file.diff.trim()) return [];
+	const lines = renderUnifiedDiff(file.diff, {
+		width,
+		indent,
+		language: file.language,
+	});
+	return previewLines === undefined ? lines : lines.slice(0, previewLines);
+}
+
+/** Width-dependent disclosure row; renders nothing when the preview hides no lines. */
+class FileChangeDisclosureComponent implements Component {
+	private cachedWidth: number | undefined;
+	private cachedLines: string[] | undefined;
+
+	constructor(
+		private readonly indent: number,
+		private readonly label: (width: number) => string | undefined,
+	) {}
+
+	invalidate(): void {
+		this.cachedWidth = undefined;
+		this.cachedLines = undefined;
+	}
+
+	render(width: number): string[] {
+		if (this.cachedWidth !== width || !this.cachedLines) {
+			const label = this.label(width);
+			this.cachedLines = label ? new Text(label, this.indent, 0).render(width) : [];
+			this.cachedWidth = width;
+		}
+		return this.cachedLines;
 	}
 }
 

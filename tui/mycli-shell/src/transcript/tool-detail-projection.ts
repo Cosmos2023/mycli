@@ -172,6 +172,11 @@ export class ToolDetailProjector {
 						);
 						return bash === block.bash ? block : { ...block, bash };
 					}
+					if (block.kind === "file_change") {
+						const next = expandedFor(block.id, block.fileChange.expanded === true);
+						return block.fileChange.expanded === next ? block
+							: { ...block, fileChange: { ...block.fileChange, expanded: next } };
+					}
 					return block;
 				},
 			).values

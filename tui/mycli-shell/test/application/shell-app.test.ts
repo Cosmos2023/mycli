@@ -4793,6 +4793,60 @@ test("clicking show details then show less toggles the same tool back", async ()
 	await runtime.shutdown();
 });
 
+test("clicking a collapsed file change expands only that diff", async () => {
+	const terminal = new TestTerminal();
+	const fileChange = {
+		id: "change-1",
+		status: "success" as const,
+		summary: "Updated",
+		files: [{
+			version: 1 as const,
+			kind: "update" as const,
+			path: "src/app.py",
+			diff: "@@ -1,6 +1,6 @@\n-a1\n-b2\n-c3\n-d4\n+a1\n+b2\n+c3\n+d4\n",
+			addedLines: 4,
+			removedLines: 4,
+			truncated: false,
+			omittedChars: 0,
+			language: "py",
+		}],
+	};
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			messages: [],
+			tools: [],
+			bash: [],
+			transcript: [{
+				id: fileChange.id,
+				kind: "file_change",
+				fileChange,
+				message: { id: fileChange.id, role: "system", text: "Updated src/app.py" },
+			}],
+			settings: { ...sampleState().settings, toolDetailsDefault: "collapsed" },
+		},
+		terminal,
+	});
+	runtime.start();
+
+	const rows = stripAnsi(runtime.ui.render(80).join("\n")).split("\n");
+	assert.match(rows.join("\n"), /\+ 6 lines \(ctrl\+o to expand\)/);
+	assert.doesNotMatch(rows.join("\n"), /d4/);
+
+	const hintRow = rows.findIndex((line) => line.includes("to expand"));
+	assert.ok(hintRow >= 0, "expected a collapsed file change hint row");
+	terminal.input?.(`\x1b[<0;5;${hintRow + 1}M`);
+	terminal.input?.(`\x1b[<0;5;${hintRow + 1}m`);
+
+	const expandedRows = stripAnsi(runtime.ui.render(80).join("\n"));
+	assert.match(expandedRows, /d4/);
+	assert.match(expandedRows, /Show less \(ctrl\+o collapse\)/);
+	const block = (runtime.getState().transcript ?? []).find((item) => item.id === fileChange.id);
+	assert.equal(block?.kind === "file_change" ? block.fileChange.expanded : undefined, true);
+	await runtime.shutdown();
+});
+
+
 test("dragging across transcript rows copies the selection", async () => {
 	const terminal = new TestTerminal();
 	const runtime = new MycliShellRuntime({
