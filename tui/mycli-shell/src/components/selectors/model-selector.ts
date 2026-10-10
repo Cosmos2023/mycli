@@ -206,19 +206,26 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			lines.push(...gap);
 			lines.push(this.line(theme.fg("muted", `Enter retry ${uiGlyphs().separator} ${this.modelBackHint()}`), safeWidth));
 		} else if (this.stage === "scope") {
-			lines.push(this.line(theme.bold("Choose where to apply"), safeWidth));
-			lines.push(this.line(theme.fg("muted", this.selectedModel?.model ?? ""), safeWidth));
-			lines.push(...gap);
+			lines.push(this.line(listPanelHeader("Choose where to apply",
+				`${SCOPE_OPTIONS.length} scopes ${uiGlyphs().separator} ${modelLabel(this.selectedModel)}`, safeWidth), safeWidth));
+			lines.push(this.line(listPanelRule(safeWidth), safeWidth));
 			lines.push(...this.choiceRows(this.scopeRows(safeWidth), this.selectedScopeIndex, listBudget(gap.length + 1)));
 			lines.push(...gap);
-			lines.push(this.line(theme.fg("muted", `Enter select ${uiGlyphs().separator} Esc back`), safeWidth));
+			lines.push(this.line(listPanelFooter([
+				keyHint("tui.select.confirm", "select"),
+				keyHint("tui.select.cancel", "back"),
+			], safeWidth), safeWidth));
 		} else if (this.stage === "reasoning") {
-			lines.push(this.line(theme.bold("Select reasoning effort"), safeWidth));
-			lines.push(this.line(theme.fg("muted", this.selectedModel?.model ?? ""), safeWidth));
+			lines.push(this.line(listPanelHeader(`Select Reasoning Level for ${modelLabel(this.selectedModel)}`,
+				`${(this.selectedModel?.supportedReasoningEfforts ?? []).length} levels`, safeWidth), safeWidth));
+			lines.push(this.line(listPanelRule(safeWidth), safeWidth));
 			lines.push(...gap);
 			lines.push(...this.choiceRows(this.reasoningRows(safeWidth), this.selectedEffortIndex, listBudget(gap.length + 1)));
 			lines.push(...gap);
-			lines.push(this.line(theme.fg("muted", `Enter select ${uiGlyphs().separator} Esc back`), safeWidth));
+			lines.push(this.line(listPanelFooter([
+				keyHint("tui.select.confirm", "select"),
+				keyHint("tui.select.cancel", "back"),
+			], safeWidth), safeWidth));
 		} else {
 			lines.push(this.line(listPanelHeader("Select model",
 				`${this.filteredModels.length} models ${uiGlyphs().separator} ${this.selectedProvider?.name ?? ""}`, safeWidth), safeWidth));
@@ -622,7 +629,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			const current = model.current === true || modelsAreEqual(this.currentModel, model);
 			const markers = [current ? "current" : "", model.default ? "default" : ""].filter(Boolean).join(", ");
 			return {
-				label: model.model,
+				label: modelLabel(model),
 				values: [...(showProvider ? [model.provider] : []), ...(markers ? [markers] : [])],
 			};
 		});
@@ -636,7 +643,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 				label: cell.label,
 				values: cell.values,
 				widths,
-				...(width >= 80 && model.description ? { detail: model.description } : {}),
+				...(modelLabel(model) === model.model ? {} : { detail: model.model }),
 				width,
 			}), width);
 		});
@@ -654,13 +661,20 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	private reasoningRows(width: number): string[] {
 		const model = this.selectedModel;
 		const efforts = model?.supportedReasoningEfforts ?? [];
-		return efforts.map((effort, index) => {
-			const selected = index === this.selectedEffortIndex;
-			const defaultMarker = effort === model?.defaultReasoningEffort ? theme.fg("muted", "  (default)") : "";
-			const prefix = selected ? theme.fg("accent", `${uiGlyphs().selector} `) : "  ";
-			const label = selected ? theme.fg("accent", effort) : effort;
-			return this.line(`${prefix}${label}${defaultMarker}`, width);
-		});
+		const labels = efforts.map((effort) =>
+			`${effortLabel(effort)}${effort === model?.defaultReasoningEffort ? " (default)" : ""}`);
+		const widths = listPanelWidths(
+			labels.map((label) => ({ label, values: [] })),
+			Math.max(8, Math.floor(width / 3)),
+		);
+		return efforts.map((effort, index) => this.line(listPanelRow({
+			selected: index === this.selectedEffortIndex,
+			label: labels[index] ?? effort,
+			values: [],
+			widths,
+			detail: effortDescription(effort),
+			width,
+		}), width));
 	}
 
 	private scopeRows(width: number): string[] {
@@ -684,4 +698,38 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	private line(text: string, width: number): string {
 		return truncateToWidth(text, width, theme.fg("dim", "..."));
 	}
+}
+
+/** Codex shows the model's display name and keeps the id for the argument form. */
+function modelLabel(model: MycliShellModel | undefined): string {
+	return model?.name?.trim() || model?.model || "";
+}
+
+/** Codex labels reasoning levels in words instead of the raw config value. */
+function effortLabel(effort: string): string {
+	const labels: Record<string, string> = {
+		none: "None",
+		minimal: "Minimal",
+		low: "Low",
+		medium: "Medium",
+		high: "High",
+		xhigh: "Extra high",
+		max: "Max",
+		ultra: "Ultra",
+	};
+	return labels[effort] ?? effort;
+}
+
+function effortDescription(effort: string): string | undefined {
+	const descriptions: Record<string, string> = {
+		none: "No extra reasoning; fastest replies.",
+		minimal: "A little reasoning for simple work.",
+		low: "Light reasoning for straightforward changes.",
+		medium: "Balanced reasoning for everyday work.",
+		high: "More thorough reasoning before acting.",
+		xhigh: "Deep reasoning; slower and costlier.",
+		max: "Maximum reasoning; consumes usage limits quickly.",
+		ultra: "Highest reasoning budget; consumes usage limits quickly.",
+	};
+	return descriptions[effort];
 }

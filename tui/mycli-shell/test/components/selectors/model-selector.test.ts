@@ -146,9 +146,9 @@ test("model selector opens reasoning options with Tab for models with multiple e
 	component.handleInput("\t");
 
 	const output = stripAnsi(component.render(100).join("\n"));
-	assert.match(output, /Select reasoning effort/);
+	assert.match(output, /Select Reasoning Level for/);
 	assert.match(output, /low/);
-	assert.match(output, /medium/);
+	assert.match(output, /Medium/);
 	assert.doesNotMatch(output, /deepseek-chat/);
 });
 
@@ -234,7 +234,7 @@ test("model selector escape returns from scope to the preceding stage", () => {
 	reasoning.handleInput("\t");
 	reasoning.handleInput("\r");
 	reasoning.handleInput("\x1b");
-	assert.match(stripAnsi(reasoning.render(100).join("\n")), /Select reasoning effort/);
+	assert.match(stripAnsi(reasoning.render(100).join("\n")), /Select Reasoning Level for/);
 
 	const noReasoning = selector();
 	noReasoning.handleInput("deepseek-chat");

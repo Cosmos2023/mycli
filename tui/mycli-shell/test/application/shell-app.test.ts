@@ -5497,7 +5497,8 @@ test("mycli shell login flow replaces editor with auth selectors", async () => {
 	assert.deepEqual(saved, [["deepseek", "sk-deepseek"]]);
 	output = stripAnsi(runtime.ui.render(100).join("\n"));
 	assert.notEqual(runtime.editorContainer.children[0], runtime.editor);
-	assert.match(output, /deepseek-v4-flash\s+deepseek/);
+	assert.match(output, /DeepSeek V4 Flash/);
+	assert.match(output, /deepseek-v4-flash/);
 	assert.doesNotMatch(output, /gpt-5.4\s+openai/);
 	assert.match(output, /Saved API key for deepseek/);
 
@@ -5607,7 +5608,7 @@ test("fresh startup completes the ordered keyboard journey without requiring con
 	await setTimeout(25);
 	let output = stripAnsi(runtime.ui.render(100).join("\n"));
 	assert.match(output, /Select model/);
-	assert.match(output, /gpt-5\.4\s+openai/);
+	assert.match(output, /openai\s+gpt-5\.4/);
 	assert.doesNotMatch(output, /deepseek-v4-flash\s+deepseek/);
 
 	terminal.input?.("\r");
@@ -5763,8 +5764,8 @@ test("mycli shell model selector can change thinking effort with model selection
 	terminal.input?.("\x1b[B");
 	terminal.input?.("\t");
 	let output = stripAnsi(runtime.ui.render(100).join("\n"));
-	assert.match(output, /Select reasoning effort/);
-	assert.match(output, /medium/);
+	assert.match(output, /Select Reasoning Level for/);
+	assert.match(output, /Medium/);
 
 	terminal.input?.("\x1b[B");
 	terminal.input?.("\x1b[B");
