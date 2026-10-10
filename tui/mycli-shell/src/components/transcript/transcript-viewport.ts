@@ -293,7 +293,10 @@ export class TranscriptViewportComponent implements Component {
 			const end = cursor + chunk.visibleLines;
 			if (target < end) {
 				const component = chunk.section.children[chunk.componentIndex];
-				return component ? { component, lineInComponent: target - cursor } : undefined;
+				// Tall components render only their tail, so shift the row back to the
+				// component's own line numbering.
+				const offset = Math.max(0, chunk.totalLines - chunk.visibleLines);
+				return component ? { component, lineInComponent: offset + (target - cursor) } : undefined;
 			}
 			cursor = end;
 		}

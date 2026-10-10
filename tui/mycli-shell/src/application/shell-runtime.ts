@@ -89,7 +89,7 @@ import { safeErrorMessage } from "../safe-ui-text.ts";
 import { setUiGlyphMode, uiGlyphs } from "../theme/terminal-style.ts";
 import { transcriptCopyBlocks, transcriptCopyIndexHint, transcriptCopyText } from "../state/transcript-copy.ts";
 import { getEditorTheme, theme } from "../theme/theme.ts";
-import { ToolDetailProjector, type ToolDetailMode } from "../transcript/tool-detail-projection.ts";
+import { ToolDetailProjector, type DetailOverrides, type ToolDetailMode } from "../transcript/tool-detail-projection.ts";
 import {
 	createTranscriptProjection,
 	projectTranscriptTail,
@@ -211,7 +211,7 @@ export class MycliShellRuntime {
 	private pendingLocalImages: MycliShellLocalImageAttachment[] = [];
 	private readonly composerSnapshots = new Map<string, ComposerSessionSnapshot>();
 	private toolDetailMode: ToolDetailMode = "default";
-	private readonly detailOverrides = new Map<string, boolean>();
+	private detailOverrides: DetailOverrides = new Map();
 	private readonly toolDetailProjector = new ToolDetailProjector();
 	private transcriptPointer: { targetId: string | undefined; dragged: boolean } | null = null;
 	private nativeResizeTimer: ReturnType<typeof setTimeout> | undefined;
@@ -2656,7 +2656,7 @@ export class MycliShellRuntime {
 
 	private toggleToolDetails(): void {
 		// Ctrl+O is the global switch, so it drops any per-item overrides.
-		this.detailOverrides.clear();
+		this.detailOverrides = new Map();
 		if (this.toolDetailMode === "expanded") {
 			this.toolDetailMode = "collapsed";
 		} else if (this.toolDetailMode === "collapsed") {
@@ -2685,7 +2685,9 @@ export class MycliShellRuntime {
 	private toggleDetailsAt(id: string): void {
 		const targets = this.detailToggleTargets(id);
 		const expanded = targets.every((target) => this.isDetailsExpanded(target));
-		for (const target of targets) this.detailOverrides.set(target, !expanded);
+		const overrides = new Map(this.detailOverrides);
+		for (const target of targets) overrides.set(target, !expanded);
+		this.detailOverrides = overrides;
 		this.setState(this.state);
 		this.applyReasoningDisplayMode();
 		this.queueNativeTranscriptHistory(true);

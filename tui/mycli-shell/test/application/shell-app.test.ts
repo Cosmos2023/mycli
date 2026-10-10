@@ -4751,6 +4751,48 @@ test("clicking a collapsed tool hint expands only that tool", async () => {
 	await runtime.shutdown();
 });
 
+test("clicking show details then show less toggles the same tool back", async () => {
+	const terminal = new TestTerminal();
+	const tool = {
+		id: "tool-toggle",
+		name: "Shell",
+		args: "ls -la",
+		status: "success" as const,
+		outputPreview: Array.from({ length: 30 }, (_, index) => `line ${index}`).join("\n"),
+		expanded: false,
+	};
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			messages: [],
+			tools: [tool],
+			bash: [],
+			transcript: [{ id: tool.id, kind: "tool", tool }],
+			settings: { ...sampleState().settings, toolDetailsDefault: "collapsed" },
+		},
+		terminal,
+	});
+	runtime.start();
+
+	const click = (rows: string[], match: (line: string) => boolean): void => {
+		const row = rows.findIndex(match);
+		assert.ok(row >= 0, "expected a details toggle row");
+		terminal.input?.(`\x1b[<0;5;${row + 1}M`);
+		terminal.input?.(`\x1b[<0;5;${row + 1}m`);
+	};
+	const expandedOf = (): boolean | undefined => {
+		const block = (runtime.getState().transcript ?? []).find((item) => item.id === tool.id);
+		return block?.kind === "tool" ? block.tool.expanded : undefined;
+	};
+
+	click(stripAnsi(runtime.ui.render(80).join("\n")).split("\n"), (line) => line.includes("to expand"));
+	assert.equal(expandedOf(), true);
+
+	click(stripAnsi(runtime.ui.render(80).join("\n")).split("\n"), (line) => line.includes("Show less"));
+	assert.equal(expandedOf(), false);
+	await runtime.shutdown();
+});
+
 test("dragging across transcript rows copies the selection", async () => {
 	const terminal = new TestTerminal();
 	const runtime = new MycliShellRuntime({
