@@ -259,6 +259,7 @@ export class MycliShellRuntime {
 			this.transcriptViewport,
 			this.statusContainer,
 			(width) => this.transcriptHeight(width) + this.statusContainer.render(width).length,
+			() => this.followControlLabel(),
 		);
 		this.keybindings = installMycliKeybindings(this.state.keymap?.bindings);
 		this.editor = new CustomEditor(this.ui, getEditorTheme(), this.keybindings, {
@@ -548,6 +549,16 @@ export class MycliShellRuntime {
 			this.scrollTranscript(-3);
 			return { consume: true };
 		}
+		if (this.editor.getText().length === 0 && (data === "\x1b[F" || data === "\x1b[4~")) {
+			this.transcriptViewport.scrollToBottom();
+			this.ui.requestRender();
+			return { consume: true };
+		}
+		if (this.editor.getText().length === 0 && (data === "\x1b[H" || data === "\x1b[1~")) {
+			this.transcriptViewport.scrollToTop();
+			this.ui.requestRender();
+			return { consume: true };
+		}
 		const mouse = data.match(/^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/);
 		if (mouse) {
 			const button = Number.parseInt(mouse[1] ?? "", 10);
@@ -587,6 +598,15 @@ export class MycliShellRuntime {
 		if (row < 0 || row >= height) return false;
 		const isLeft = button === 0;
 		const isDrag = button === 32;
+		const follow = this.transcriptArea.followControl;
+		if (
+			pressed && isLeft && follow
+			&& row === follow.row && column >= follow.startColumn && column < follow.endColumn
+		) {
+			this.transcriptViewport.scrollToBottom();
+			this.ui.requestRender();
+			return true;
+		}
 		if (pressed && isLeft) {
 			const hit = this.transcriptViewport.hitTest(row);
 			const targetId = hit
@@ -2759,6 +2779,13 @@ export class MycliShellRuntime {
 		if (this.toolDetailMode === "expanded") return false;
 		if (this.toolDetailMode === "collapsed") return true;
 		return this.state.settings?.hideThinking ?? true;
+	}
+
+	/** Codex-style return-to-bottom affordance shown while scrolled up. */
+	private followControlLabel(): string | undefined {
+		if (this.ui.terminal.nativeScrollback) return undefined;
+		if (this.transcriptViewport.getScrollOffset() === 0) return undefined;
+		return theme.fg("muted", `${uiGlyphs().down} Back to bottom ${uiGlyphs().separator} End`);
 	}
 
 	clearTerminalView(): void {

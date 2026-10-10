@@ -148,6 +148,10 @@ export class TranscriptViewportComponent implements Component {
 		this.scrollOffset = 0;
 	}
 
+	scrollToTop(): void {
+		this.scrollOffset = Number.MAX_SAFE_INTEGER;
+	}
+
 	scrollToLine(lineIndex: number, width: number): void {
 		const lines = this.renderContent(width);
 		const height = Math.max(1, this.heightForWidth(width));
