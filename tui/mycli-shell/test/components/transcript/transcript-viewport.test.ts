@@ -142,24 +142,36 @@ test("transcript viewport highlights and extracts a dragged mouse selection", ()
 	}
 });
 
-test("transcript viewport holds its scroll anchor through a content growth", () => {
+test("transcript viewport keeps its window through a content growth below it", () => {
 	const component = new MutableLinesComponent(Array.from({ length: 40 }, (_, index) => `line ${index}`));
 	const { viewport } = viewportHarness([component], 200, undefined, 10);
 	viewport.render(80);
 	viewport.scrollBy(5);
-	viewport.render(80);
-	const before = viewport.getScrollOffset();
-	assert.ok(before > 0, "expected a scrolled-up viewport");
+	const before = viewport.render(80);
+	assert.ok(viewport.getScrollOffset() > 0, "expected a scrolled-up viewport");
 
-	viewport.holdScrollOffsetForNextGrowth();
 	component.setLines(Array.from({ length: 60 }, (_, index) => `line ${index}`));
-	viewport.render(80);
+	const after = viewport.render(80);
 
-	assert.equal(viewport.getScrollOffset(), before);
+	// Appended output lands below the window, so the reader keeps the same rows.
+	assert.deepEqual(after, before);
+	assert.equal(viewport.getScrollOffset(), 25);
 
 	component.setLines(Array.from({ length: 80 }, (_, index) => `line ${index}`));
 	viewport.render(80);
+	assert.deepEqual(viewport.render(80), before);
+});
+
+test("transcript viewport still follows the tail while it sits at the bottom", () => {
+	const component = new MutableLinesComponent(Array.from({ length: 40 }, (_, index) => `line ${index}`));
+	const { viewport } = viewportHarness([component], 200, undefined, 10);
+	viewport.render(80);
+
+	component.setLines(Array.from({ length: 60 }, (_, index) => `line ${index}`));
+	const lines = viewport.render(80);
+
 	assert.equal(viewport.getScrollOffset(), 0);
+	assert.equal(lines.at(-1), "line 59");
 });
 
 test("transcript viewport pins the owning prompt in its own top row", () => {

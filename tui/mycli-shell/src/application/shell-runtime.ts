@@ -212,7 +212,6 @@ export class MycliShellRuntime {
 	private readonly composerSnapshots = new Map<string, ComposerSessionSnapshot>();
 	private toolDetailMode: ToolDetailMode = "default";
 	private detailOverrides: DetailOverrides = new Map();
-	private holdTranscriptScroll = false;
 	private readonly toolDetailProjector = new ToolDetailProjector();
 	private transcriptPointer: { targetId: string | undefined; dragged: boolean } | null = null;
 	private nativeResizeTimer: ReturnType<typeof setTimeout> | undefined;
@@ -406,7 +405,8 @@ export class MycliShellRuntime {
 			else if (options.eventType === "turn.completed" && this.isCompletedLiveState(effectiveState)
 				&& !this.isCompletedLiveState(previousState)) this.attention.notify("Turn completed", 0);
 		}
-		this.maybeResetTranscriptScroll(previousState, effectiveState);
+		// New output keeps the reader's position; only a session swap re-anchors the tail.
+		if (sessionChanged) this.resetTranscriptScroll();
 		this.queueNativeTranscriptDelta(transcriptAppended);
 		this.ui.requestRender();
 	}
@@ -700,24 +700,6 @@ export class MycliShellRuntime {
 			return;
 		}
 		this.transcriptViewport.scrollToBottom();
-	}
-
-	private isTranscriptGrowth(previousState: MycliShellState, nextState: MycliShellState): boolean {
-		return this.transcriptLineageLength(nextState) > this.transcriptLineageLength(previousState);
-	}
-
-	private transcriptLineageLength(state: MycliShellState): number {
-		if (state.transcript?.length) {
-			return state.transcript.length;
-		}
-		return state.messages.length + state.tools.length + state.bash.length;
-	}
-
-	private maybeResetTranscriptScroll(previousState: MycliShellState, nextState: MycliShellState): void {
-		if (this.holdTranscriptScroll) return;
-		if (this.isTranscriptGrowth(previousState, nextState)) {
-			this.resetTranscriptScroll();
-		}
 	}
 
 	showTrustGate(): void {
@@ -2312,6 +2294,8 @@ export class MycliShellRuntime {
 			this.userTurnPendingStart = true;
 		}
 		this.lastCtrlCAtMs = null;
+		// The reader's own prompt starts a new turn, so follow its output from the start.
+		this.transcriptViewport.scrollToBottom();
 		try {
 			await this.dispatchAction({
 				type: "submit",
@@ -2700,13 +2684,7 @@ export class MycliShellRuntime {
 			);
 			this.toolDetailMode = hasCollapsed ? "expanded" : "collapsed";
 		}
-		this.transcriptViewport.holdScrollOffsetForNextGrowth();
-		this.holdTranscriptScroll = true;
-		try {
-			this.setState(this.state);
-		} finally {
-			this.holdTranscriptScroll = false;
-		}
+		this.setState(this.state);
 		this.applyReasoningDisplayMode();
 		this.queueNativeTranscriptHistory(true);
 	}
@@ -2718,13 +2696,7 @@ export class MycliShellRuntime {
 		const overrides = new Map(this.detailOverrides);
 		for (const target of targets) overrides.set(target, !expanded);
 		this.detailOverrides = overrides;
-		this.transcriptViewport.holdScrollOffsetForNextGrowth();
-		this.holdTranscriptScroll = true;
-		try {
-			this.setState(this.state);
-		} finally {
-			this.holdTranscriptScroll = false;
-		}
+		this.setState(this.state);
 		this.applyReasoningDisplayMode();
 		this.queueNativeTranscriptHistory(true);
 	}

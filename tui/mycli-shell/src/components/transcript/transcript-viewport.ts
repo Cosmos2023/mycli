@@ -90,12 +90,13 @@ export class TranscriptViewportComponent implements Component {
 	private pendingContentChange: TranscriptContentChange | undefined;
 	private lastRenderedLineOrigin = 0;
 	private lastRenderedContentLineage: number | undefined;
+	/** First transcript line of the previous frame's window, for growth anchoring. */
+	private lastWindowStart = 0;
 	/** Rows the pinned prompt header takes from the top of the visible window. */
 	private headerRows = 0;
 	/** First transcript line rendered below the header, for row-to-line mapping. */
 	private lastContentStart = 0;
 	private selection: { anchor: TranscriptSelectionPoint; focus: TranscriptSelectionPoint } | undefined;
-	private heldScrollOffset = 0;
 
 	/**
 	 * `contentRevision` must change before the owner mutates any transcript-visible content.
@@ -138,11 +139,6 @@ export class TranscriptViewportComponent implements Component {
 
 	getScrollOffset(): number {
 		return this.scrollOffset;
-	}
-
-	/** Keep the current scroll anchor through the next content growth. */
-	holdScrollOffsetForNextGrowth(): void {
-		this.heldScrollOffset += 1;
 	}
 
 	scrollBy(deltaLines: number): void {
@@ -286,15 +282,13 @@ export class TranscriptViewportComponent implements Component {
 		const widthChanged = this.lastRenderedWidth !== undefined && this.lastRenderedWidth !== width;
 		const lines = this.renderContent(width);
 		if (!widthChanged && lines.length > this.lastLineCount) {
-			// An expand/collapse toggle grows the transcript without producing new
-			// output, so keep the reader's anchor instead of snapping to the bottom.
-			if (this.heldScrollOffset > 0) this.heldScrollOffset -= 1;
-			else this.scrollOffset = 0;
+			this.keepAnchorThroughGrowth(lines, lines.length - this.lastLineCount);
 		}
 		this.lastLineCount = lines.length;
 		this.scrollOffset = Math.min(this.scrollOffset, Math.max(0, lines.length - height));
 
 		const start = this.visibleStart(lines, height, this.committedStart(lines, width));
+		this.lastWindowStart = start;
 		this.lastRenderedLines = lines;
 		const window = lines.slice(start, start + height);
 		const header = this.promptHeader(start, width, window.length);
@@ -438,6 +432,21 @@ export class TranscriptViewportComponent implements Component {
 			lines[this.committedPrefixLength - 1] === this.committedPrefixBoundary
 			? this.committedPrefixLength
 			: 0;
+	}
+
+	/**
+	 * Rows appended below the reader's window must not yank the view to the bottom; Codex keeps
+	 * the position and offers "back to bottom" instead. Rows inserted above the window (an
+	 * expand above it, a replayed page) move the window down with the content.
+	 */
+	private keepAnchorThroughGrowth(lines: string[], delta: number): void {
+		if (this.scrollOffset === 0) return;
+		const previous = this.lastRenderedLines;
+		const above = Math.min(previous.length, this.lastWindowStart);
+		for (let index = 0; index < above; index += 1) {
+			if (previous[index] !== lines[index]) return;
+		}
+		this.scrollOffset += delta;
 	}
 
 	private visibleStart(lines: string[], height: number, committedStart: number = 0): number {

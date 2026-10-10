@@ -114,6 +114,44 @@ test("a scrolled transcript pins the owning prompt in its own top row", async (c
 	assert.equal(top.filter((line) => line.includes("explain the runtime architecture")).length, 1);
 });
 
+test("new transcript output keeps the reader's position while scrolled up", async (context) => {
+	const terminal = new HeadlessTerminal({ columns: 80, rows: 24 });
+	let transcript = shellBlocks(30);
+	const runtime = new MycliShellRuntime({ initialState: stateFor(transcript), terminal, now: () => 10_000 });
+	context.after(async () => { await runtime.shutdown(); terminal.dispose(); });
+	runtime.editor.setText("composer-marker");
+	runtime.transcriptViewport.scrollBy(6);
+	const before = runtime.transcriptViewport.render(80).map(stripAnsi);
+	assert.ok(runtime.transcriptViewport.getScrollOffset() > 0, "expected a scrolled-up viewport");
+
+	transcript = [...transcript, ...shellBlocks(4, transcript.length)];
+	runtime.setState(stateFor(transcript), { transcriptUpdate: "tail" });
+	const after = runtime.transcriptViewport.render(80).map(stripAnsi);
+
+	assert.ok(runtime.transcriptViewport.getScrollOffset() > 0, "new output yanked the view to the bottom");
+	assert.deepEqual(after, before);
+});
+
+
+test("submitting a prompt returns the reader to the bottom", async (context) => {
+	const terminal = new HeadlessTerminal({ columns: 80, rows: 24 });
+	const runtime = new MycliShellRuntime({
+		initialState: stateFor(shellBlocks(30)),
+		terminal,
+		now: () => 10_000,
+		onSubmit: async () => {},
+	});
+	context.after(async () => { await runtime.shutdown(); terminal.dispose(); });
+	runtime.editor.setText("composer-marker");
+	runtime.transcriptViewport.scrollBy(6);
+	assert.ok(runtime.transcriptViewport.getScrollOffset() > 0, "expected a scrolled-up viewport");
+
+	await runtime.editor.onSubmit?.("keep reading this later");
+
+	assert.equal(runtime.transcriptViewport.getScrollOffset(), 0);
+});
+
+
 test("native terminal keeps one activity row out of history through Shell output, queue changes and resize", async (context) => {
 	const terminal = new HeadlessTerminal({ columns: 80, rows: 24, nativeScrollback: true, scrollback: 500 });
 	let transcript = shellBlocks(30);
