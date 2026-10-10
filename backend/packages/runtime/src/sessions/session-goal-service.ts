@@ -3,7 +3,8 @@ import { randomUUID } from "node:crypto";
 import { GOAL_RESTORED_STOP_REASON, type SessionGoal } from "@mycli/contracts";
 import {
 	GoalStateError, addGoalCount, changeGoalStatus, createSessionGoal, goalObjective,
-	goalReference, goalTokenBudget, goalUsageTokens, matchesGoal,
+	goalObjectiveFileReference, goalReference, goalTokenBudget, goalUsageTokens, isGoalObjectiveFileReference, matchesGoal,
+	GOAL_OBJECTIVE_INLINE_CHARS,
 	type GoalRef, type GoalStatus, type ProviderUsage,
 } from "@mycli/core";
 import type { GoalCommit, SessionGoalStore } from "@mycli/storage";
@@ -28,6 +29,11 @@ export interface SessionGoalServiceOptions {
 	readonly workspaceRoot: string;
 	readonly threadId: string;
 	readonly store: SessionGoalStore;
+	/**
+	 * Files an oversized objective and returns the reference the model should read. Without it,
+	 * or when it fails, the objective stays inline so the goal always remains usable.
+	 */
+	readonly materializeObjective?: (input: { readonly goalId: string; readonly objective: string }) => string;
 	readonly clock?: () => string;
 	readonly monotonicClock?: () => number;
 	readonly createId?: () => string;
@@ -54,6 +60,25 @@ export class SessionGoalService {
 	inspect(): SessionGoal | null {
 		this.#flushElapsed();
 		return this.get();
+	}
+
+	/**
+	 * Goal as the model should see it: an oversized objective becomes a file reference so the
+	 * per-step context and the continuation turn stay small. The stored goal keeps the full text.
+	 */
+	modelView(): SessionGoal | null {
+		const goal = this.get();
+		if (!goal || goal.objective.length <= GOAL_OBJECTIVE_INLINE_CHARS
+			|| isGoalObjectiveFileReference(goal.objective) || !this.options.materializeObjective) {
+			return goal;
+		}
+		try {
+			const path = this.options.materializeObjective({ goalId: goal.goal_id, objective: goal.objective });
+			return Object.freeze({ ...goal, objective: goalObjectiveFileReference(path) });
+		} catch {
+			// A file that cannot be written must not hide the objective from the model.
+			return goal;
+		}
 	}
 
 	subscribe(listener: () => void): () => void {

@@ -2,6 +2,22 @@ import type { SessionGoal } from "@mycli/contracts";
 import type { ProviderUsage } from "../types.ts";
 
 export type GoalStatus = SessionGoal["status"];
+
+/** Objectives longer than this are handed to the model as a file reference instead of context. */
+export const GOAL_OBJECTIVE_INLINE_CHARS = 4_000;
+export const MAX_GOAL_OBJECTIVE_CHARS = 16_384;
+export const GOAL_OBJECTIVE_FILE_PREFIX = "Read the goal objective file at ";
+export const GOAL_OBJECTIVE_FILE_SUFFIX = " before continuing.";
+
+/** The exact sentence the model receives for an objective that lives in a file. */
+export function goalObjectiveFileReference(path: string): string {
+	return `${GOAL_OBJECTIVE_FILE_PREFIX}${path}${GOAL_OBJECTIVE_FILE_SUFFIX}`;
+}
+
+export function isGoalObjectiveFileReference(text: string): boolean {
+	return text.startsWith(GOAL_OBJECTIVE_FILE_PREFIX) && text.endsWith(GOAL_OBJECTIVE_FILE_SUFFIX);
+}
+
 export interface GoalRef {
 	readonly goalId: string;
 	readonly revision: number;
@@ -24,7 +40,7 @@ export function matchesGoal(goal: SessionGoal | null, ref: GoalRef): goal is Ses
 
 export function goalObjective(value: string): string {
 	const objective = value.trim();
-	if (!objective || objective.length > 16_384 || objective.includes("\0")) {
+	if (!objective || objective.length > MAX_GOAL_OBJECTIVE_CHARS || objective.includes("\0")) {
 		throw new GoalStateError("goal_invalid_objective", "Goal objective must contain between 1 and 16384 characters.");
 	}
 	return objective;

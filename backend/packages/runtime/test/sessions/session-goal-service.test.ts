@@ -8,13 +8,19 @@ import { openRuntimeSessionStore } from "@mycli/storage";
 import { SessionGoalService } from "../../src/sessions/session-goal-service.ts";
 import { SessionGoalUsageTracker } from "../../src/sessions/session-goal-usage.ts";
 
-function fixture(t: { after(fn: () => void): void }): {
+function fixture(
+	t: { after(fn: () => void): void },
+	options: { materializeObjective?: (input: { goalId: string; objective: string }) => string } = {},
+): {
 	service: SessionGoalService; store: ReturnType<typeof openRuntimeSessionStore>; advance(ms: number): void;
 } {
 	const directory = mkdtempSync(join(tmpdir(), "mycli-goal-test-"));
 	const store = openRuntimeSessionStore({ dbPath: join(directory, "sessions.db") });
 	let now = 0;
-	const service = new SessionGoalService({ store: store.goals, sessionId: "session", workspaceRoot: directory, threadId: "session", monotonicClock: () => now });
+	const service = new SessionGoalService({
+		store: store.goals, sessionId: "session", workspaceRoot: directory, threadId: "session",
+		monotonicClock: () => now, ...options,
+	});
 	t.after(() => { service.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
 	return { service, store, advance: (ms) => { now += ms; } };
 }
@@ -102,6 +108,30 @@ test("blocked audit restarts after resume and completion remains terminal", (t) 
 	assert.throws(() => service.setStatus("active"), /complete/);
 	assert.equal(service.continuation(), undefined);
 });
+
+test("only an oversized objective becomes a file reference for the model", (t) => {
+	const long = "Keep every requirement intact. ".repeat(200).trim();
+	const { service } = fixture(t, { materializeObjective: ({ goalId }) => `/home/.mycli/attachments/goals/${goalId}.md` });
+	const goal = service.create({ objective: long });
+
+	const view = service.modelView()!;
+
+	assert.equal(view.objective, `Read the goal objective file at /home/.mycli/attachments/goals/${goal.goal_id}.md before continuing.`);
+	assert.equal(service.get()?.objective, long);
+	assert.equal(service.inspect()?.objective, long);
+
+	service.edit({ objective: "Short objective" });
+	assert.equal(service.modelView()?.objective, "Short objective");
+});
+
+test("an objective stays inline when it cannot be filed", (t) => {
+	const long = "Keep every requirement intact. ".repeat(200).trim();
+	const { service } = fixture(t, { materializeObjective: () => { throw new Error("disk full"); } });
+	service.create({ objective: long });
+
+	assert.equal(service.modelView()?.objective, long);
+});
+
 
 test("an objective edit steers the running turn instead of stopping it", (t) => {
 	const { service } = fixture(t);

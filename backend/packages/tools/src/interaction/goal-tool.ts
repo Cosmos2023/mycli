@@ -7,6 +7,8 @@ import type { ToolAdapter, ToolAdapterResult, ToolExecutionOptions } from "../ty
 
 export interface GoalToolService {
 	inspect(): SessionGoal | null;
+	/** Goal as the model should read it, with an oversized objective replaced by a file reference. */
+	modelView?(): SessionGoal | null;
 	create(input: { readonly objective: string; readonly tokenBudget?: number }, turnId: string): SessionGoal;
 	updateFromTool(status: "complete" | "blocked" | "paused", turnId: string): SessionGoal;
 }
@@ -37,6 +39,7 @@ export class GoalTool implements ToolAdapter {
 				if (args.status !== "complete" && args.status !== "blocked" && args.status !== "paused") throw invalidArguments();
 				goal = this.service.updateFromTool(args.status, options.ownerTurnId);
 			} else goal = this.service.inspect();
+			goal = this.service.modelView?.() ?? goal;
 			return {
 				success: true, modelOutput: JSON.stringify({ goal }), summary: goal ? `Goal ${goal.status}` : "No goal",
 				metadata: Object.freeze({}),

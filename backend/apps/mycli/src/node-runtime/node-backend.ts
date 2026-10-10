@@ -1,6 +1,7 @@
 import { SessionGoalService, SessionGoalUsageTracker, sessionGoalContext } from "@mycli/runtime";
 import { GoalTool } from "@mycli/tools";
 import { GatewayFailure } from "./node-gateway-errors.ts";
+import { GoalObjectiveFiles } from "./goal-objective-files.ts";
 import { loadGitWorkspaceDiff, repositoryInitPrompt, prepareInteractiveReview, workspaceWorkflowFailure } from "./workspace-slash-workflows.ts";
 import { SelectedSkillContext } from "./selected-skill-context.ts";
 import { randomUUID } from "node:crypto";
@@ -523,6 +524,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			: startPipeTransport(request),
 	});
 	const sessionArtifacts = new SessionArtifactStore({ homeDir });
+	const goalObjectiveFiles = new GoalObjectiveFiles({ homeDir });
 	const artifactQueue = new SerializedSessionArtifactQueue();
 	const shellLifecycle = new ShellLifecycleProjector({
 		store,
@@ -892,7 +894,10 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			const readRoot = runtimeOptions.review?.workspaceRoot ?? workspaceRoot;
 			const allowedTools = reviewMode ? ["Read"] : runtimeOptions.allowedTools;
 			const goal = !reviewMode && !runtimeOptions.subagentContext && options.enableGoals !== false
-				? new SessionGoalService({ sessionId, workspaceRoot, threadId, store: store.goals }) : undefined;
+				? new SessionGoalService({
+					sessionId, workspaceRoot, threadId, store: store.goals,
+					materializeObjective: (input) => goalObjectiveFiles.pathFor(input),
+				}) : undefined;
 			goal?.restore();
 			const goalUsage = new SessionGoalUsageTracker(goal);
 			let sessionPreferences = runtimeOptions.subagentContext
@@ -1334,7 +1339,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			providerAttemptLedger: store.providerAttemptLedger,
 			modelInputTokenCounter: tokenCounter,
 			contextSources: ({ config: activeConfig, runSnapshot }) => Object.freeze({
-				conversationContext: sessionGoalContext(goal?.get() ?? null, goal?.steeringFor(runSnapshot.turnId)),
+				conversationContext: sessionGoalContext(goal?.modelView() ?? null, goal?.steeringFor(runSnapshot.turnId)),
 				skillCatalog: runSnapshot.toolCatalog.skillCatalog ?? "",
 				loadedSkillInstructions: selectedSkills.load(runSnapshot.turnId),
 				workspace: workspaceInstructionsForTrust(

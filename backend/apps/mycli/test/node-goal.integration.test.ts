@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { createServer, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
@@ -215,6 +216,28 @@ test("a goal budget interrupt preserves its reason through the Worker and transc
 	const wrapUpTools = (f.requests.at(-1)?.tools ?? []) as { type?: string }[];
 	assert.equal(wrapUpTools.some((entry) => entry.type === "function"), false);
 });
+
+test("an oversized objective reaches the model as a file reference", async (t) => {
+	const objective = `Ship the migration with every requirement intact. ${"Requirement detail. ".repeat(300)}`.trim();
+	const f = await fixture(t, (response, step) => {
+		if (step === 1) text(response, step, "Progress saved.");
+		else tool(response, step, "update_goal", { status: "complete" });
+	});
+	await f.rpc("goal.update", { action: "create", objective });
+	await waitFor(() => f.messages.some((message) => message.method === "turn.completed"));
+
+	const request = JSON.stringify(f.requests[0]);
+	assert.match(request, /Read the goal objective file at /);
+	assert.doesNotMatch(request, /Requirement detail/);
+
+	const goal = parseSessionGoal((await f.rpc("goal.get")).goal);
+	assert.equal(goal.objective, objective);
+	assert.equal(
+		readFileSync(join(f.homeDir, ".mycli", "attachments", "goals", `${goal.goal_id}.md`), "utf8"),
+		`${objective}\n`,
+	);
+});
+
 
 test("an objective edit mid-turn steers the running turn instead of interrupting it", async (t) => {
 	let held: ServerResponse | undefined;

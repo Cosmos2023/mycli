@@ -1,5 +1,5 @@
 export { TurnTransitionError } from "./errors.ts";
-export { GoalStateError, goalReference, matchesGoal, goalObjective, goalTokenBudget, createSessionGoal, changeGoalStatus, goalUsageTokens, addGoalCount } from "./lifecycle/session-goal.ts";
+export { GoalStateError, goalReference, matchesGoal, goalObjective, goalTokenBudget, createSessionGoal, changeGoalStatus, goalUsageTokens, addGoalCount, goalObjectiveFileReference, isGoalObjectiveFileReference, GOAL_OBJECTIVE_INLINE_CHARS, MAX_GOAL_OBJECTIVE_CHARS } from "./lifecycle/session-goal.ts";
 export type { GoalRef, GoalStatus } from "./lifecycle/session-goal.ts";
 export { isSkillReferenceName } from "./skill-reference.ts";
 export { MAX_LOOPBACK_PORTS, freezeLoopbackPorts, loopbackAccessIsSubset, intersectLoopbackAccess, validateLoopbackPortPolicy } from "./policy/loopback-policy.ts";

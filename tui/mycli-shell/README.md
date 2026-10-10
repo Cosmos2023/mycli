@@ -97,7 +97,7 @@ Work summaries and pending interactions remain visible independently of that set
 
 Metadata uses the editor's inset and avoids the terminal's wrap column. Narrow widths omit
 reasoning and branch details before truncating longer labels; trust/mode and Goal status take
-priority. Exact Goal usage and continuation counts remain available through `/goal`.
+priority. Goal accounting and continuation counts remain available through `/goal`.
 Work-only updates invalidate their summary without rebuilding the session footer or transcript.
 
 ## Input And Pasted Text
