@@ -48,6 +48,11 @@ export class ProviderAttemptComponent extends Container {
 			if (facts.length) this.addChild(new Text(theme.fg("dim", `    ${facts.join(" | ")}`), 1, 0));
 		}
 	}
+
+	/** The `>`/`v` caret row toggles this attempt's retry history. */
+	isDetailsToggleRow(row: number, _width: number): boolean {
+		return row === 0;
+	}
 }
 
 function stateLabel(record: ProviderAttemptRecord): string {
