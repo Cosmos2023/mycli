@@ -40,9 +40,12 @@ export class Input implements Component, Focusable {
 		return this.value;
 	}
 
-	setValue(value: string): void {
+	/** `cursor` places the caret explicitly, which prefilled prompts need to append text. */
+	setValue(value: string, cursor?: number): void {
 		this.value = value;
-		this.cursor = Math.min(this.cursor, value.length);
+		this.cursor = cursor === undefined
+			? Math.min(this.cursor, value.length)
+			: Math.max(0, Math.min(cursor, value.length));
 	}
 
 	handleInput(data: string): void {

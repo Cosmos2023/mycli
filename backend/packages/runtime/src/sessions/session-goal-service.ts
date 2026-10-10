@@ -1,6 +1,6 @@
 import type { TurnInterruptionReason } from "@mycli/contracts";
 import { randomUUID } from "node:crypto";
-import type { SessionGoal } from "@mycli/contracts";
+import { GOAL_RESTORED_STOP_REASON, type SessionGoal } from "@mycli/contracts";
 import {
 	GoalStateError, addGoalCount, changeGoalStatus, createSessionGoal, goalObjective,
 	goalReference, goalTokenBudget, goalUsageTokens, matchesGoal,
@@ -153,7 +153,7 @@ export class SessionGoalService {
 
 	/** Cold activation never inherits permission to launch automatic work. */
 	restore(): void {
-		if (this.get()?.status === "active") this.setStatus("paused", "Session restored. Resume the goal to continue.");
+		if (this.get()?.status === "active") this.setStatus("paused", GOAL_RESTORED_STOP_REASON);
 	}
 
 	interrupt(): void {

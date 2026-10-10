@@ -239,7 +239,7 @@ test("work changes only invalidate their summary and never duplicate the live st
 	runtime.setState({ ...runtime.getState(), footer: { ...runtime.getState().footer, goal: { ...goal, status: "paused", tokens_used: 4321 }, backgroundShellCount: 0 } });
 	assert.equal(runtime.footerContainer.children[0], footer);
 	assert.equal(runtime.chatContainer.getRenderCacheKey(), transcriptRevision);
-	assert.match(stripAnsi(runtime.workStatusContainer.render(100).join("\n")), /Goal paused.*4321.*\/goal resume/);
+	assert.match(stripAnsi(runtime.workStatusContainer.render(100).join("\n")), /Goal paused.*\/goal resume/);
 	assert.doesNotMatch(stripAnsi(runtime.workStatusContainer.render(100).join("\n")), /shells/);
 	runtime.setState({ ...runtime.getState(), footer: { ...runtime.getState().footer, turnRunning: false, liveState: "Waiting for input", liveStateKind: "waiting" } });
 	assert.equal(stripAnsi(runtime.ui.render(100).join("\n")).match(/Waiting for input/gu)?.length, 1);

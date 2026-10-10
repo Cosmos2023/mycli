@@ -38,15 +38,22 @@ test("work summaries stay bounded and reserve room for omitted extension counts"
 });
 
 test("goal summaries keep an appropriate control and preserve incomplete usage", () => {
-	assert.match(stripAnsi(renderGoalStatus(goal, 100)), /1250\/50000 tokens.*\/goal pause/);
+	assert.match(stripAnsi(renderGoalStatus(goal, 100)), /1\.25K \/ 50K.*\/goal pause/);
 	for (const status of ["paused", "blocked", "usage_limited"] as const) {
 		assert.match(stripAnsi(renderGoalStatus({ ...goal, status }, 100)), /\/goal resume$/);
 	}
 	for (const status of ["budget_limited", "complete"] as const) {
 		assert.match(stripAnsi(renderGoalStatus({ ...goal, status }, 100)), /\/goal$/);
 	}
-	assert.match(stripAnsi(renderGoalStatus({ ...goal, usage_incomplete: true }, 100)), /1250\+\/50000 tokens/);
+	assert.match(stripAnsi(renderGoalStatus({ ...goal, usage_incomplete: true }, 100)), /1\.25K\+ \/ 50K/);
+	assert.match(stripAnsi(renderGoalStatus({ ...goal, status: "budget_limited" }, 100)), /1\.25K \/ 50K tokens/);
+	// Codex reports elapsed time while a goal has no token budget to report.
+	assert.match(stripAnsi(renderGoalStatus({ ...goal, token_budget: null, elapsed_ms: 90_000 }, 100)), /Goal active · 1m · \/goal pause/);
+	assert.match(stripAnsi(renderGoalStatus({ ...goal, token_budget: null, elapsed_ms: 90_000, status: "complete" }, 100)), /Goal complete · 1m/);
+	// The control keeps priority; the compact usage is the fallback when it no longer fits.
 	assert.equal(stripAnsi(renderGoalStatus(goal, 28)), "Goal active · /goal pause");
+	assert.equal(stripAnsi(renderGoalStatus(goal, 24)), "Goal active");
+	assert.equal(stripAnsi(renderGoalStatus({ ...goal, token_budget: null, elapsed_ms: 90_000 }, 24)), "Goal active · 1m");
 	assert.equal(stripAnsi(renderGoalStatus(goal, 14)), "Goal active");
 	assert.doesNotMatch(stripAnsi(renderGoalStatus(goal, 160)), /continuations/);
 });

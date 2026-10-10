@@ -1,6 +1,7 @@
 import { TerminalAttention } from "../platform/terminal-attention.ts";
-import { modelSelectionNotice } from "@mycli/contracts";
+import { GOAL_RESTORED_STOP_REASON, modelSelectionNotice } from "@mycli/contracts";
 import { ReviewSelectorComponent } from "../components/selectors/review-selector.ts";
+import { GoalResumeSelectorComponent } from "../components/selectors/goal-resume-selector.ts";
 import { TextEntrySelectorComponent } from "../components/selectors/text-entry-selector.ts";
 import { TextViewerSelectorComponent } from "../components/selectors/text-viewer-selector.ts";
 import { HooksSelectorComponent } from "../components/selectors/hooks-selector.ts";
@@ -217,6 +218,7 @@ export class MycliShellRuntime {
 	private nativeResizeTimer: ReturnType<typeof setTimeout> | undefined;
 	private nativeTranscriptDeltaHeld = false;
 	private transcriptViewer: ActiveTranscriptViewer | null = null;
+	private goalResumePromptedFor: string | undefined;
 	private startupOnboarding: StartupOnboardingCoordinator | null;
 	private startupProviderId: string | undefined;
 
@@ -396,6 +398,7 @@ export class MycliShellRuntime {
 			}
 		}
 		this.maybeShowPlanImplementation(options.eventType);
+		this.maybeShowResumeGoalPrompt();
 		this.attention.configure(effectiveState.settings?.terminalNotifications ?? true);
 		if (sessionChanged) this.attention.clear();
 		else if (options.eventType) {
@@ -1313,6 +1316,31 @@ export class MycliShellRuntime {
 		});
 	}
 
+	/** `/goal edit` without an objective opens the editor Codex shows for the same command. */
+	showGoalEditor(): void {
+		const goal = this.state.footer.goal;
+		if (!goal) {
+			this.addSystemNotice("This session has no goal. Create one with /goal <objective>.");
+			return;
+		}
+		this.showSelector((done) => {
+			const component = new TextEntrySelectorComponent({
+				...this.decisionPanelOptions(),
+				title: "Edit goal",
+				description: "Type a goal objective and press Enter.",
+				initialValue: goal.objective,
+				maxLength: 16_384,
+				onCancel: done,
+				onSubmit: async (value, signal) => {
+					signal.throwIfAborted();
+					await this.dispatchAction({ type: "command", command: `/goal edit ${value}` });
+					if (!signal.aborted) done();
+				},
+			});
+			return { component, focus: component, dispose: () => component.dispose() };
+		});
+	}
+
 	showRenameSelector(): void {
 		this.showSelector((done) => {
 			const component = new TextEntrySelectorComponent({ ...this.decisionPanelOptions(), title: "Rename session", description: "Enter a title for this conversation.", initialValue: this.state.footer.sessionName ?? "", maxLength: 200, onCancel: done,
@@ -1792,6 +1820,42 @@ export class MycliShellRuntime {
 						await this.startPlanImplementation(choice, plan.plan.text);
 					}
 					done();
+				},
+			});
+			return { component: selector, focus: selector };
+		});
+	}
+
+	/**
+	 * A restored session pauses its goal so cold start cannot launch work; Codex asks once
+	 * whether to resume it instead of leaving the goal silently stopped.
+	 */
+	private maybeShowResumeGoalPrompt(): void {
+		const goal = this.state.footer.goal;
+		if (!goal || goal.status !== "paused" || goal.stop_reason !== GOAL_RESTORED_STOP_REASON) return;
+		const promptKey = `${goal.goal_id}:${goal.revision}`;
+		if (this.goalResumePromptedFor === promptKey) return;
+		if (
+			!this.mainMounted
+			|| this.selectorActive
+			|| this.transcriptViewer !== null
+			|| this.state.pendingApproval !== undefined
+			|| this.state.pendingClarification !== undefined
+			|| this.hasQueuedInput()
+		) {
+			return;
+		}
+		this.goalResumePromptedFor = promptKey;
+		this.showSelector((done) => {
+			const selector = new GoalResumeSelectorComponent({
+				...this.decisionPanelOptions(),
+				objective: goal.objective,
+				onCancel: done,
+				onSelect: async (choice) => {
+					done();
+					if (choice === "resume") {
+						await this.dispatchAction({ type: "command", command: "/goal resume" });
+					}
 				},
 			});
 			return { component: selector, focus: selector };
@@ -2647,6 +2711,11 @@ export class MycliShellRuntime {
 	}
 
 	private async submitCommand(command: string): Promise<void> {
+		// Keep the command surface unchanged: only the objective-less form opens the editor.
+		if (/^\/goal\s+edit\s*$/u.test(command)) {
+			this.showGoalEditor();
+			return;
+		}
 		await this.dispatchAction({ type: "command", command });
 	}
 

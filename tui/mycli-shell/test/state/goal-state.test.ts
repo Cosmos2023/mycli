@@ -37,7 +37,14 @@ test("goal status keeps text labels and fits narrow terminals", () => {
 	for (const status of ["active", "paused", "blocked", "usage_limited", "budget_limited", "complete"] as const) {
 		const line = renderGoalStatus({ ...goal, status }, 100);
 		assert.match(line, new RegExp(`Goal ${status.replaceAll("_", " ")}`));
-		assert.match(line, /1250\/50000/);
+		// Stopped goals report no usage, matching Codex's indicator.
+		if (status === "paused" || status === "blocked" || status === "usage_limited") {
+			assert.doesNotMatch(line, /1\.25K/);
+		} else if (status === "complete") {
+			assert.match(line, /1\.25K tokens/);
+		} else {
+			assert.match(line, /1\.25K \/ 50K/);
+		}
 		for (const width of [1, 8, 20, 40, 80]) assert.ok(visibleWidth(renderGoalStatus({ ...goal, status }, width)) <= width);
 	}
 });

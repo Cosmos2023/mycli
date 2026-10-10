@@ -110,6 +110,13 @@ export type { PluginV2ProtocolMessage } from "./generated/plugin-v2-protocol.ts"
 export type { RuntimeStateRecord } from "./generated/runtime-state-record.ts";
 export type { SessionGoal } from "./generated/session-goal.ts";
 export { parseSessionGoal } from "./validation.ts";
+export {
+	GOAL_RESTORED_STOP_REASON,
+	formatGoalElapsed,
+	formatGoalTokensCompact,
+	goalStatusUsage,
+	goalSummaryLines,
+} from "./goal-display.ts";
 export type {
 	RuntimeErrorCode,
 	RuntimeTurnRecord,

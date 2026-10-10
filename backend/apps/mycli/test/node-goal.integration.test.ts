@@ -226,7 +226,7 @@ test("an objective edit mid-turn steers the running turn instead of interrupting
 	await f.rpc("goal.update", { action: "create", objective: "Ship the migration" });
 	await waitFor(() => held !== undefined);
 	await f.rpc("goal.update", { action: "edit", objective: "Ship the migration and its rollback" });
-	tool(held, 2, "get_goal", {});
+	tool(held!, 2, "get_goal", {});
 	await waitFor(() => f.requests.length >= 3);
 
 	assert.match(JSON.stringify(f.requests[2]), /objective was edited by the user/);

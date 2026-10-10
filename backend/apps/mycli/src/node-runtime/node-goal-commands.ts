@@ -1,6 +1,6 @@
 import { GoalStateError } from "@mycli/core";
 import type { SessionGoalService } from "@mycli/runtime";
-import type { GatewayParams, SessionGoal } from "@mycli/contracts";
+import { goalSummaryLines, type GatewayParams, type SessionGoal } from "@mycli/contracts";
 import { GatewayFailure } from "./node-gateway-errors.ts";
 
 export type GoalControl = GatewayParams<"goal.update">;
@@ -45,11 +45,5 @@ export function applyGoalControl(service: SessionGoalService, input: GoalControl
 
 export function describeGoal(goal: SessionGoal | null): string {
 	if (!goal) return "No goal. Create one with /goal <objective>, optionally /goal --tokens 50000 <objective>.";
-	return [
-		goal.objective,
-		`Status: ${goal.status.replaceAll("_", " ")} · Continuations: ${goal.rounds_started}`,
-		`Tokens: ${goal.tokens_used}${goal.usage_incomplete ? "+ (usage incomplete)" : ""}${goal.token_budget === null ? " (no budget)" : ` / ${goal.token_budget}`} · Active time: ${Math.floor(goal.elapsed_ms / 1000)}s`,
-		...(goal.stop_reason ? [goal.stop_reason] : []),
-		"/goal pause · /goal resume · /goal edit <objective> · /goal budget <tokens|off> · /goal clear",
-	].join("\n");
+	return ["Goal", ...goalSummaryLines(goal)].join("\n");
 }

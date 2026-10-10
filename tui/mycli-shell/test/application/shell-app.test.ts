@@ -1,7 +1,7 @@
 import { WorkStatusComponent } from "../../src/components/composer/work-status.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { TUI_KEYMAP_ACTIONS, turnFailedNoticeId, turnFailureNotice } from "@mycli/contracts";
+import { GOAL_RESTORED_STOP_REASON, TUI_KEYMAP_ACTIONS, turnFailedNoticeId, turnFailureNotice } from "@mycli/contracts";
 import { setTimeout } from "node:timers/promises";
 import { homedir } from "node:os";
 import { join, relative } from "node:path";
@@ -4845,6 +4845,72 @@ test("clicking a collapsed file change expands only that diff", async () => {
 	assert.equal(block?.kind === "file_change" ? block.fileChange.expanded : undefined, true);
 	await runtime.shutdown();
 });
+
+
+test("a bare /goal edit opens the goal editor with the current objective", async () => {
+	const terminal = new TestTerminal();
+	const commands: string[] = [];
+	const runtime = new MycliShellRuntime({
+		initialState: { ...sampleState(), footer: { ...sampleState().footer, goal: sampleGoal() } },
+		terminal,
+		commands: [slashCommand("goal", "/goal", "Create, inspect, pause, or resume a session goal")],
+		onCommandSubmit: (command) => { commands.push(command); },
+	});
+	runtime.start();
+
+	await runtime.editor.onSubmit?.("/goal edit");
+	const rows = stripAnsi(runtime.ui.render(100).join("\n"));
+	assert.match(rows, /Edit goal/);
+	assert.match(rows, /Ship the migration/);
+
+	for (const char of " and its rollback") terminal.input?.(char);
+	terminal.input?.("\r");
+	await setTimeout(20);
+
+	assert.deepEqual(commands, ["/goal edit Ship the migration and its rollback"]);
+	await runtime.shutdown();
+});
+
+
+test("a goal paused by session restore asks whether to resume it", async () => {
+	const terminal = new TestTerminal();
+	const commands: string[] = [];
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			footer: {
+				...sampleState().footer,
+				goal: { ...sampleGoal(), status: "paused", stop_reason: GOAL_RESTORED_STOP_REASON },
+			},
+		},
+		terminal,
+		commands: [slashCommand("goal", "/goal", "Create, inspect, pause, or resume a session goal")],
+		onCommandSubmit: (command) => { commands.push(command); },
+	});
+	runtime.start();
+	runtime.setState(runtime.getState());
+
+	const rows = stripAnsi(runtime.ui.render(100).join("\n"));
+	assert.match(rows, /Resume paused goal\?/);
+	assert.match(rows, /Leave paused/);
+	assert.match(rows, /Ship the migration/);
+
+	terminal.input?.("1");
+	await setTimeout(20);
+
+	assert.deepEqual(commands, ["/goal resume"]);
+	await runtime.shutdown();
+});
+
+
+function sampleGoal(): NonNullable<MycliShellState["footer"]["goal"]> {
+	return {
+		goal_id: "goal-1", revision: 2, objective: "Ship the migration", status: "active",
+		token_budget: 50_000, tokens_used: 1_250, elapsed_ms: 90_000, rounds_started: 0, audit_turns: 0,
+		created_at: "2026-10-10T06:00:00.000Z", updated_at: "2026-10-10T06:00:00.000Z",
+		stop_reason: null, usage_incomplete: false,
+	};
+}
 
 
 test("dragging across transcript rows copies the selection", async () => {

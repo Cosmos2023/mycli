@@ -14,7 +14,11 @@ export class TextEntrySelectorComponent implements Component, Focusable {
 		readonly onSubmit: (value: string, signal: AbortSignal) => Promise<void>;
 		readonly onCancel: () => void;
 	}) {
-		this.panel = new DecisionPanel(options); this.input.setValue(options.initialValue ?? ""); this.update();
+		this.panel = new DecisionPanel(options);
+		const initialValue = options.initialValue ?? "";
+		// Prefilled prompts read as "edit this", so typing appends to the existing value.
+		this.input.setValue(initialValue, initialValue.length);
+		this.update();
 	}
 	get focused(): boolean { return this.input.focused; }
 	set focused(value: boolean) { this.input.focused = value; }
