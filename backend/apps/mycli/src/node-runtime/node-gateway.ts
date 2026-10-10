@@ -1,9 +1,11 @@
 import { modelSelectionNotice } from "@mycli/contracts";
+import type { SessionGoal } from "@mycli/contracts";
 import { parseTrainingExportSettings, type SessionTrainingExportSettings } from "./session-training-export-options.ts";
 import { TrainingExportError, type TrainingExportResult } from "./session-training-export.ts";
 import { randomUUID } from "node:crypto";
 import { publishCompactionEvent } from "./node-gateway-compaction.ts";
 import { applyGoalControl, describeGoal, parseGoalCommand, type GoalControl } from "./node-goal-commands.ts";
+import { goalInstructionItem } from "./goal-instruction.ts";
 import {
 	gatewayContractCatalog,
 	createErrorContext,
@@ -1549,7 +1551,9 @@ class InProcessNodeGateway implements NodeGateway {
 		if (control.action === "create" || control.action === "resume") {
 			this.#settingsController.ensureSessionPreferences(this.#settingsController.collaborationMode);
 		}
+		const previous = service.get();
 		applyGoalControl(service, control);
+		this.#recordGoalInstruction(control, previous, service.get());
 		const turnId = this.#turnController.activeTurnId();
 		// An objective edit steers the running turn; only pause and clear stop it.
 		if (turnId && (control.action === "pause" || control.action === "clear")) {
@@ -1557,6 +1561,23 @@ class InProcessNodeGateway implements NodeGateway {
 		}
 		this.#turnController.requestNextQueuedTurn();
 		return this.#goalSnapshot();
+	}
+
+	/**
+	 * The durable goal already changed, so a failed instruction record must not fail the command;
+	 * the per-turn goal context still tells the model the current objective and status.
+	 */
+	#recordGoalInstruction(control: GoalControl, previous: SessionGoal | null, goal: SessionGoal | null): void {
+		const item = goalInstructionItem({ action: control.action, previous, goal });
+		if (!item) return;
+		try {
+			this.#options.appendContextItem?.({
+				sessionId: this.#sessionController.sessionId(),
+				...item,
+			});
+		} catch {
+			// Best effort: the goal state is already durable.
+		}
 	}
 
 	#status(): JsonObject {

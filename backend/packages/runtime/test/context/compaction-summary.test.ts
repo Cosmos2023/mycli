@@ -6,6 +6,34 @@ import { assertCompactionSummary, compactionSummaryHistory, compactionSummaryIte
 	removeOldestCompactionItem, retainCompactionUserMessages } from "../../src/context/compaction-summary.ts";
 import { TokenCounter } from "../../src/context/token-counter.ts";
 
+test("user goal instructions survive compaction whole or not at all", () => {
+	const counter = new TokenCounter();
+	const instruction = goalInstruction("The user set this session's goal objective.\nShip the migration");
+	const oversized = goalInstruction(`The user set this session's goal objective.\n${"Requirement. ".repeat(2_000)}`);
+
+	assert.deepEqual(
+		retainCompactionUserMessages([instruction, { type: "assistant", text: "Working." }], counter, 1_000),
+		[instruction],
+	);
+	// A goal instruction that cannot fit is dropped whole, so a restriction never reads as a grant.
+	assert.deepEqual(retainCompactionUserMessages([oversized], counter, 50), []);
+	assert.equal(retainCompactionUserMessages([oversized], counter, 100_000).length, 1);
+});
+
+
+function goalInstruction(text: string): CanonicalConversationItem {
+	return {
+		type: "context",
+		text,
+		metadata: {
+			kind: "user_goal", role: "user", cacheClass: "dynamic", durability: "persistent",
+			scope: "session", sourceId: "goal",
+			contentSha256: "0".repeat(64), contentLength: text.length,
+		},
+	};
+}
+
+
 test("summary input preserves original roles, images, tool protocol and provider replay", () => {
 	const images = [{ mediaType: "image/png" as const, data: "AA==" }];
 	const items: CanonicalConversationItem[] = [

@@ -72,6 +72,17 @@ export function retainCompactionUserMessages(
 	const retained: CanonicalConversationItem[] = [];
 	for (const item of items.toReversed()) {
 		if (remaining <= 0) break;
+		// A user goal instruction is kept whole or dropped whole: a truncated restriction could
+		// read as a grant. Codex pins the same items at its compaction boundary.
+		if (item.type === "context" && item.metadata.kind === "user_goal") {
+			if (!item.text.trim()) continue;
+			const tokens = counter.count(`user: ${item.text}`);
+			if (tokens <= remaining) {
+				retained.push(item);
+				remaining -= tokens;
+			}
+			continue;
+		}
 		if (item.type !== "user" || !item.text.trim() || item.text.startsWith(COMPACTION_SUMMARY_PREFIX)) continue;
 		const tokens = counter.count(`user: ${item.text}`);
 		if (tokens <= remaining) {

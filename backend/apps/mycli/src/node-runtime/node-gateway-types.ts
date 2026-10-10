@@ -1,5 +1,6 @@
 import type { GatewayCompactionEvent } from "./node-gateway-compaction.ts";
 import type { SessionGoalService } from "@mycli/runtime";
+import type { AppendContextItemInput } from "@mycli/storage";
 import type { ReviewSelection, SkillReference } from "@mycli/contracts";
 import type { HookBrowserService } from "@mycli/integrations";
 import type {
@@ -275,6 +276,7 @@ export interface CreateNodeGatewayOptions {
 	readonly sandboxReadiness?: SandboxReadiness;
 	readonly runtime: NodeGatewayRuntime;
 	readonly loadConversation: (sessionId: string) => readonly CanonicalMessage[];
+	readonly appendContextItem?: (input: AppendContextItemInput) => void;
 	readonly loadTranscript?: (sessionId: string) => readonly TranscriptItem[];
 	readonly loadProviderAttempts?: (input: {
 		readonly sessionId: string;

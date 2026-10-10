@@ -929,7 +929,7 @@ function parseContextMetadata(value: unknown): CanonicalContextMetadata {
 			"skill_instructions", "workspace_instructions", "environment_context",
 			"conversation_context", "memory", "compaction_rehydration", "plan",
 			"hook_context", "runtime_policy_reminder", "runtime_context_reminder",
-			"subagent_context", "turn_aborted",
+			"subagent_context", "turn_aborted", "user_goal",
 		] as const, "provider context kind"),
 		cacheClass: oneOf(metadata.cacheClass,
 			["static", "dynamic", "ephemeral"] as const,

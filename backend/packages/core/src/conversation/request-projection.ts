@@ -227,6 +227,7 @@ const CONTEXT_KINDS = new Set([
 	"runtime_policy_reminder",
 	"runtime_context_reminder",
 	"subagent_context",
+	"user_goal",
 	"turn_aborted",
 ]);
 const CONTEXT_CACHE_CLASSES = new Set(["static", "dynamic", "ephemeral"]);

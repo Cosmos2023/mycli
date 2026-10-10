@@ -217,6 +217,20 @@ test("a goal budget interrupt preserves its reason through the Worker and transc
 	assert.equal(wrapUpTools.some((entry) => entry.type === "function"), false);
 });
 
+test("a user goal change enters the model conversation with provenance", async (t) => {
+	const f = await fixture(t, (response, step) => {
+		if (step === 1) text(response, step, "Progress saved.");
+		else tool(response, step, "update_goal", { status: "complete" });
+	});
+	await f.rpc("goal.update", { action: "create", objective: "Ship the migration" });
+	await waitFor(() => f.requests.length >= 1);
+
+	// Only the recorded instruction carries this wording; the goal context reports state.
+	assert.match(JSON.stringify(f.requests[0]), /The user set this session's goal objective/);
+	assert.match(JSON.stringify(f.requests[0]), /Ship the migration/);
+});
+
+
 test("an oversized objective reaches the model as a file reference", async (t) => {
 	const objective = `Ship the migration with every requirement intact. ${"Requirement detail. ".repeat(300)}`.trim();
 	const f = await fixture(t, (response, step) => {

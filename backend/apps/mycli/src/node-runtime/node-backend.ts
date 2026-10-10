@@ -1945,6 +1945,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			mcpElicitations,
 			networkApprovals,
 			loadConversation: (sessionId) => store.loadConversation(sessionId),
+			appendContextItem: (input) => store.appendContextItem(input),
 			loadProviderAttempts: (input) => store.providerAttemptLedger.list(input),
 			loadTranscript: (sessionId) => {
 				const active = sessionCoordinator.snapshot();

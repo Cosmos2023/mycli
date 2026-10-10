@@ -80,6 +80,7 @@ const CONTEXT_KINDS = new Set([
 	"runtime_context_reminder",
 	"subagent_context",
 	"turn_aborted",
+	"user_goal",
 ]);
 
 const TIMELINE_EVENT_KINDS = new Set([

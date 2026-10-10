@@ -38,6 +38,7 @@ const CONTEXT_KINDS = new Set<CanonicalContextMetadata["kind"]>([
 	"runtime_policy_reminder",
 	"runtime_context_reminder",
 	"subagent_context",
+	"user_goal",
 	"turn_aborted",
 ]);
 
