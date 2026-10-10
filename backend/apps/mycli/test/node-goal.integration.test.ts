@@ -209,5 +209,29 @@ test("a goal budget interrupt preserves its reason through the Worker and transc
 	const transcript = await f.rpc("transcript.load", { session_id: "goal-session", limit: 100 });
 	assert.match(JSON.stringify(transcript), /Goal token budget reached/);
 	assert.doesNotMatch(JSON.stringify(transcript), /send a new message to continue/);
-	assert.equal(f.requests.length, 1);
+	// The spent turn still gets one wrap-up step, and that step is offered no tools.
+	assert.equal(f.requests.length, 2);
+	assert.match(JSON.stringify(f.requests.at(-1)), /has reached its token budget/);
+	const wrapUpTools = (f.requests.at(-1)?.tools ?? []) as { type?: string }[];
+	assert.equal(wrapUpTools.some((entry) => entry.type === "function"), false);
+});
+
+test("an objective edit mid-turn steers the running turn instead of interrupting it", async (t) => {
+	let held: ServerResponse | undefined;
+	const f = await fixture(t, (response, step) => {
+		if (step === 1) { tool(response, step, "get_goal", {}); return; }
+		if (step === 2) { held = response; return; }
+		text(response, step, "Adjusted to the updated objective.");
+	});
+	await f.rpc("goal.update", { action: "create", objective: "Ship the migration" });
+	await waitFor(() => held !== undefined);
+	await f.rpc("goal.update", { action: "edit", objective: "Ship the migration and its rollback" });
+	tool(held, 2, "get_goal", {});
+	await waitFor(() => f.requests.length >= 3);
+
+	assert.match(JSON.stringify(f.requests[2]), /objective was edited by the user/);
+	assert.match(JSON.stringify(f.requests[2]), /and its rollback/);
+	await waitFor(() => f.messages.some((message) => message.method === "turn.completed"));
+	assert.equal(f.messages.some((message) => message.method === "turn.interrupted"), false);
+	assert.equal(parseSessionGoal((await f.rpc("goal.get")).goal).objective, "Ship the migration and its rollback");
 });

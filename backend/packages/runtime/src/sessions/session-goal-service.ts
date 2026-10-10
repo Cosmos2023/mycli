@@ -7,11 +7,18 @@ import {
 	type GoalRef, type GoalStatus, type ProviderUsage,
 } from "@mycli/core";
 import type { GoalCommit, SessionGoalStore } from "@mycli/storage";
+import type { SessionGoalSteering } from "./session-goal-context.ts";
 
 interface GoalTurn {
 	ref: GoalRef | null;
 	accountingGoalId: string | null;
 	readonly human: boolean;
+	/** Objective the goal had when the turn started; a later edit steers instead of stopping. */
+	objective: string | null;
+	/** The budget really ran out in this turn, so the turn gets one wrap-up step. */
+	budgetWrapUp?: boolean;
+	/** The single wrap-up step has been requested and carries no tools. */
+	wrapUpServed?: boolean;
 	finalizing?: boolean;
 	accountedAt: number;
 }
@@ -87,6 +94,7 @@ export class SessionGoalService {
 		if (turn) {
 			turn.ref = goalReference(goal);
 			turn.accountingGoalId = goal.goal_id;
+			turn.objective = goal.objective;
 			turn.accountedAt = this.#now();
 		}
 		return goal;
@@ -122,7 +130,8 @@ export class SessionGoalService {
 		this.#assertOpen();
 		const turn = this.#turns.get(turnId);
 		const previous = this.#required();
-		if (!turn?.ref || !matchesGoal(previous, turn.ref)
+		// The same goal keeps owning its turn across an objective edit; a replacement or a stop does not.
+		if (!turn?.ref || previous.goal_id !== turn.ref.goalId
 			|| (previous.status !== "active" && previous.status !== "budget_limited")) throw staleError();
 		if (status === "paused" && !turn.human) throw authorityError();
 		if (status === "blocked" && previous.audit_turns < 3) {
@@ -169,13 +178,22 @@ export class SessionGoalService {
 		}), `goal:${active.goal_id}:turn:${turnId}`);
 		this.#turns.set(turnId, {
 			ref: previous ? goalReference(previous) : null, accountingGoalId: active?.goal_id ?? null,
-			human: source === "user", accountedAt: this.#now(),
+			human: source === "user", objective: active?.objective ?? null, accountedAt: this.#now(),
 		});
 	}
 
 	observeUsage(turnId: string, requestId: string, usage: ProviderUsage): void {
 		const turn = this.#turns.get(turnId);
-		if (turn?.accountingGoalId) this.observeAttributedUsage(turn.accountingGoalId, requestId, usage);
+		if (!turn?.accountingGoalId) return;
+		const before = this.get();
+		this.observeAttributedUsage(turn.accountingGoalId, requestId, usage);
+		const after = this.get();
+		// A known token count that tips an active goal over its budget earns one wrap-up step;
+		// unavailable usage keeps the hard stop, because the budget cannot be confirmed spent.
+		if (goalUsageTokens(usage) !== null && before?.status === "active"
+			&& after?.status === "budget_limited" && after.goal_id === turn.accountingGoalId) {
+			turn.budgetWrapUp = true;
+		}
 	}
 
 	/** Children retain their original goal identity even if their root turn has settled. */
@@ -226,19 +244,44 @@ export class SessionGoalService {
 		const halted = this.executionHaltReason();
 		if (halted) return halted;
 		const goal = this.get();
-		if (!goal || !turn.ref || !matchesGoal(goal, turn.ref)) return "Goal changed while this turn was running.";
+		// An objective edit keeps the same goal owning this turn and steers it instead of stopping it.
+		if (!goal || !turn.ref || goal.goal_id !== turn.ref.goalId) return "Goal changed while this turn was running.";
+		// The spent turn gets exactly one more step, and only that step answers without tools.
+		if (turn.budgetWrapUp && turn.wrapUpServed !== true) return undefined;
 		return turn.finalizing || goal.status === "active" ? undefined : goal.stop_reason ?? `Goal is ${goal.status}.`;
 	}
 
 	interruptionReason(turnId: string): TurnInterruptionReason {
 		const turn = this.#turns.get(turnId);
 		const goal = this.get();
-		if (!goal || !turn?.ref || !matchesGoal(goal, turn.ref)) return "goal_changed";
+		if (!goal || !turn?.ref || goal.goal_id !== turn.ref.goalId) return "goal_changed";
 		return goal.status === "budget_limited" ? goal.usage_incomplete ? "goal_usage_unavailable" : "goal_budget" : "goal_stopped";
 	}
 
 	toolsStopReason(turnId: string): string | undefined {
-		return this.#turns.get(turnId)?.finalizing ? "The goal has stopped; provide the final response without further tools." : this.stopReason(turnId);
+		const turn = this.#turns.get(turnId);
+		if (turn?.finalizing) return "The goal has stopped; provide the final response without further tools.";
+		// The pending batch still runs so the wrap-up step can answer it.
+		if (turn?.budgetWrapUp && turn.wrapUpServed !== true) return undefined;
+		if (turn?.budgetWrapUp) return "The goal token budget is exhausted; provide the final response without further tools.";
+		return this.stopReason(turnId);
+	}
+
+	/** Steering the goal adds to a running turn's context on its next provider step. */
+	steeringFor(turnId: string): SessionGoalSteering | undefined {
+		const turn = this.#turns.get(turnId);
+		if (!turn) return undefined;
+		if (turn.budgetWrapUp) return "budget_limit";
+		const goal = this.get();
+		return goal && turn.objective !== null && goal.objective !== turn.objective ? "objective_updated" : undefined;
+	}
+
+	/** Offer the single wrap-up step: the request carries no tools, so it cannot open new work. */
+	beginWrapUpStep(turnId: string): boolean {
+		const turn = this.#turns.get(turnId);
+		if (turn?.budgetWrapUp !== true || turn.wrapUpServed === true) return false;
+		turn.wrapUpServed = true;
+		return true;
 	}
 
 	executionHaltReason(): string | undefined {
@@ -251,7 +294,7 @@ export class SessionGoalService {
 		try {
 			this.#flushElapsed();
 			const goal = this.get();
-			if (!turn.ref || !matchesGoal(goal, turn.ref) || goal.status !== "active") return;
+			if (!turn.ref || !goal || goal.goal_id !== turn.ref.goalId || goal.status !== "active") return;
 			if (status === "interrupted") this.interrupt();
 			else if (status !== "completed") this.setStatus(
 				reason === "quota_exceeded" || reason === "usage_limit_exceeded" ? "usage_limited" : "blocked",

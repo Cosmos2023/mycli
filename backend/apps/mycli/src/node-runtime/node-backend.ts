@@ -1334,7 +1334,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			providerAttemptLedger: store.providerAttemptLedger,
 			modelInputTokenCounter: tokenCounter,
 			contextSources: ({ config: activeConfig, runSnapshot }) => Object.freeze({
-				conversationContext: sessionGoalContext(goal?.get() ?? null),
+				conversationContext: sessionGoalContext(goal?.get() ?? null, goal?.steeringFor(runSnapshot.turnId)),
 				skillCatalog: runSnapshot.toolCatalog.skillCatalog ?? "",
 				loadedSkillInstructions: selectedSkills.load(runSnapshot.turnId),
 				workspace: workspaceInstructionsForTrust(

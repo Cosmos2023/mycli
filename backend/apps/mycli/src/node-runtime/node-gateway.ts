@@ -1551,8 +1551,9 @@ class InProcessNodeGateway implements NodeGateway {
 		}
 		applyGoalControl(service, control);
 		const turnId = this.#turnController.activeTurnId();
-		if (turnId && (control.action === "pause" || control.action === "clear" || control.action === "edit")) {
-			await this.#turnController.interrupt({ ...this.#sessionController.context(), session_id: this.#sessionController.sessionId(), turn_id: turnId }, control.action !== "edit");
+		// An objective edit steers the running turn; only pause and clear stop it.
+		if (turnId && (control.action === "pause" || control.action === "clear")) {
+			await this.#turnController.interrupt({ ...this.#sessionController.context(), session_id: this.#sessionController.sessionId(), turn_id: turnId });
 		}
 		this.#turnController.requestNextQueuedTurn();
 		return this.#goalSnapshot();

@@ -1230,13 +1230,15 @@ export class NodeTurnRuntime {
 			let durableProviderStep: number | undefined;
 			let durableTimelineWindowId: string | undefined;
 			let logicalRequest: ProviderRequest;
+			// The turn that ran out of goal budget answers the pending batch without new tools.
+			const stepTools = this.#options.goal?.beginWrapUpStep(turnId) === true ? [] : tools;
 			if (this.#coordinatorBroker) {
 				try {
 					const hookContexts = context.hookContexts.snapshot();
 					const collectedSources = this.#options.contextSources?.({
 						submission,
 						config,
-						tools,
+						tools: stepTools,
 						...(context.executionPolicy ? { executionPolicy: context.executionPolicy } : {}),
 						...(context.runSnapshot.policy?.configuration ? {
 							executionPolicyConfiguration: context.runSnapshot.policy.configuration,
@@ -1251,7 +1253,7 @@ export class NodeTurnRuntime {
 						providerStep,
 						requestConfig,
 						instructionSnapshot: context.instructionSnapshot,
-						tools,
+						tools: stepTools,
 						history,
 						currentUserRequest: currentUserRequest(context, history),
 						sources: mergeRuntimeContextSources({
@@ -1289,14 +1291,14 @@ export class NodeTurnRuntime {
 					...requestConfig,
 					instructions,
 					developerInstructions,
-					tools,
+					tools: stepTools,
 				});
 				logicalRequest = projectProviderRequest({
 					config: requestConfig,
 					instructions,
 					developerInstructions,
 					history: providerHistory,
-					tools,
+					tools: stepTools,
 				});
 			}
 			const logicalRequestInput = (logicalRequest.items ?? history).map(continuationRecord);

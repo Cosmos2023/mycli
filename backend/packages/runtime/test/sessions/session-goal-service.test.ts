@@ -103,6 +103,54 @@ test("blocked audit restarts after resume and completion remains terminal", (t) 
 	assert.equal(service.continuation(), undefined);
 });
 
+test("an objective edit steers the running turn instead of stopping it", (t) => {
+	const { service } = fixture(t);
+	service.create({ objective: "Ship the migration" });
+	service.beginTurn("turn", "goal", service.continuation());
+	assert.equal(service.steeringFor("turn"), undefined);
+
+	service.edit({ objective: "Ship the migration and its rollback" });
+	assert.equal(service.steeringFor("turn"), "objective_updated");
+	assert.equal(service.stopReason("turn"), undefined);
+	service.updateFromTool("complete", "turn");
+	assert.equal(service.get()?.status, "complete");
+	service.finishTurn("turn", "completed");
+});
+
+test("a spent budget earns one wrap-up step instead of a hard stop", (t) => {
+	const { service } = fixture(t);
+	service.create({ objective: "Finish", tokenBudget: 10 });
+	service.beginTurn("turn", "goal", service.continuation());
+
+	service.observeUsage("turn", "large", { input_tokens: 10, output_tokens: 5 });
+
+	assert.equal(service.get()?.status, "budget_limited");
+	assert.equal(service.steeringFor("turn"), "budget_limit");
+	assert.equal(service.stopReason("turn"), undefined);
+	assert.equal(service.toolsStopReason("turn"), undefined);
+	assert.equal(service.beginWrapUpStep("turn"), true);
+	assert.equal(service.beginWrapUpStep("turn"), false);
+	assert.match(service.toolsStopReason("turn")!, /without further tools/u);
+	service.finishTurn("turn", "completed");
+	assert.equal(service.get()?.status, "budget_limited");
+});
+
+test("unavailable usage keeps the hard stop instead of a wrap-up step", (t) => {
+	const { service } = fixture(t);
+	service.create({ objective: "Finish", tokenBudget: 10 });
+	service.beginTurn("turn", "goal", service.continuation());
+
+	service.observeUsage("turn", "missing", {});
+
+	assert.equal(service.get()?.status, "budget_limited");
+	assert.equal(service.get()?.usage_incomplete, true);
+	assert.equal(service.steeringFor("turn"), undefined);
+	assert.ok(service.stopReason("turn"));
+	assert.equal(service.beginWrapUpStep("turn"), false);
+	service.finishTurn("turn", "completed");
+});
+
+
 test("budget stops at observations and unknown usage is not silently free", (t) => {
 	const { service } = fixture(t);
 	service.create({ objective: "Finish", tokenBudget: 10 });
