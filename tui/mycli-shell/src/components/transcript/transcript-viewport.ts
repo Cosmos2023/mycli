@@ -1,5 +1,6 @@
 import { Container, type Component } from "../../tui-core/tui.ts";
-import { sliceByColumn, visibleWidth } from "../../tui-core/utils.ts";
+import { sliceByColumn, truncateToWidth, visibleWidth } from "../../tui-core/utils.ts";
+import { uiGlyphs } from "../../theme/terminal-style.ts";
 import { theme } from "../../theme/theme.ts";
 import { stripVTControlCharacters } from "node:util";
 
@@ -102,6 +103,7 @@ export class TranscriptViewportComponent implements Component {
 		private readonly heightForWidth: (width: number) => number,
 		private readonly maxRenderedRows: number | undefined,
 		private readonly contentRevision?: () => unknown,
+		private readonly promptHeaderFor?: (component: Component) => string | undefined,
 	) {}
 
 	markContentChanged(): void {
@@ -292,24 +294,46 @@ export class TranscriptViewportComponent implements Component {
 		const start = this.visibleStart(lines, height, this.committedStart(lines, width));
 		this.lastVisibleStart = start;
 		this.lastRenderedLines = lines;
+		const visible = lines.slice(start, start + height);
+		this.applyPromptHeader(visible, start, width);
 		// The enclosing transcript area adds spare rows after live activity so
 		// activity follows output while the input stays at the bottom.
-		return this.applySelectionHighlight(lines.slice(start, start + height), start);
+		return this.applySelectionHighlight(visible, start);
+	}
+
+	/** Pin the prompt that owns the first visible answer, Codex-style, over the top row. */
+	private applyPromptHeader(visible: string[], start: number, width: number): void {
+		if (!this.promptHeaderFor || visible.length === 0) return;
+		const found = this.componentAtLine(start);
+		if (!found) return;
+		const header = this.promptHeaderFor(found.component);
+		if (!header) return;
+		visible[0] = truncateToWidth(header, Math.max(1, Math.floor(width)), uiGlyphs().ellipsis, true);
 	}
 
 	/** Component and its row rendered at the given row of the visible transcript window. */
 	hitTest(row: number): { component: Component; lineInComponent: number } | undefined {
 		const target = this.lastVisibleStart + row;
 		if (target < 0) return undefined;
+		const found = this.componentAtLine(target);
+		if (!found) return undefined;
+		// Tall components render only their tail, so shift the row back to the
+		// component's own line numbering.
+		const offset = Math.max(0, found.chunk.totalLines - found.chunk.visibleLines);
+		return { component: found.component, lineInComponent: offset + found.offsetInChunk };
+	}
+
+	private componentAtLine(target: number): {
+		component: Component;
+		chunk: TranscriptRenderedChunk;
+		offsetInChunk: number;
+	} | undefined {
 		let cursor = 0;
 		for (const chunk of this.retainedContentChunks) {
 			const end = cursor + chunk.visibleLines;
 			if (target < end) {
 				const component = chunk.section.children[chunk.componentIndex];
-				// Tall components render only their tail, so shift the row back to the
-				// component's own line numbering.
-				const offset = Math.max(0, chunk.totalLines - chunk.visibleLines);
-				return component ? { component, lineInComponent: offset + (target - cursor) } : undefined;
+				return component ? { component, chunk, offsetInChunk: target - cursor } : undefined;
 			}
 			cursor = end;
 		}

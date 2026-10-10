@@ -102,6 +102,7 @@ function viewportHarness(
 	maxRows: number,
 	contentRevision?: () => unknown,
 	height = 10,
+	promptHeaderFor?: (component: Component) => string | undefined,
 ): { viewport: TranscriptViewportComponent; transcript: Container } {
 	const content = new Container();
 	const header = new Container();
@@ -110,7 +111,7 @@ function viewportHarness(
 	content.addChild(header);
 	content.addChild(transcript);
 	return {
-		viewport: new TranscriptViewportComponent(content, () => height, maxRows, contentRevision),
+		viewport: new TranscriptViewportComponent(content, () => height, maxRows, contentRevision, promptHeaderFor),
 		transcript,
 	};
 }
@@ -159,6 +160,21 @@ test("transcript viewport holds its scroll anchor through a content growth", () 
 	component.setLines(Array.from({ length: 80 }, (_, index) => `line ${index}`));
 	viewport.render(80);
 	assert.equal(viewport.getScrollOffset(), 0);
+});
+
+test("transcript viewport pins the owning prompt over the first visible row", () => {
+	const first = new MutableLinesComponent(["answer line"]);
+	const { viewport } = viewportHarness([first], 200, undefined, 10, (component) =>
+		component === first ? "› ask something" : undefined);
+
+	assert.equal(viewport.render(40)[0]?.trimEnd(), "› ask something");
+});
+
+test("transcript viewport leaves the first row alone without a prompt header", () => {
+	const first = new MutableLinesComponent(["answer line"]);
+	const { viewport } = viewportHarness([first], 200, undefined, 10, () => undefined);
+
+	assert.equal(viewport.render(40)[0]?.trimEnd(), "answer line");
 });
 
 test("transcript viewport renders only the bounded tail", () => {

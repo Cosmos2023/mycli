@@ -254,6 +254,7 @@ export class MycliShellRuntime {
 				? undefined
 				: configuredReplayMaxRows ?? resolveTranscriptReplayMaxRows(),
 			() => this.transcriptRenderRevision,
+			(component) => this.promptHeaderForComponent(component),
 		);
 		this.transcriptArea = new TranscriptAreaComponent(
 			this.transcriptViewport,
@@ -2786,6 +2787,33 @@ export class MycliShellRuntime {
 		if (this.ui.terminal.nativeScrollback) return undefined;
 		if (this.transcriptViewport.getScrollOffset() === 0) return undefined;
 		return theme.fg("muted", `${uiGlyphs().down} Back to bottom ${uiGlyphs().separator} End`);
+	}
+
+	/**
+	 * Codex pins the prompt that owns the first visible answer to the top row while
+	 * scrolled up. It is presentation only, so copied or searched text stays exact.
+	 */
+	private promptHeaderForComponent(component: Component): string | undefined {
+		if (this.ui.terminal.nativeScrollback) return undefined;
+		const blocks = this.state.transcript?.length ? this.state.transcript : this.legacyTranscriptBlocks();
+		let index = -1;
+		for (const [id, block] of this.chatBlocks) {
+			if (block.component !== component) continue;
+			index = blocks.findIndex((item) => item.id === id);
+			break;
+		}
+		if (index < 0) return undefined;
+		const first = blocks[index];
+		if (first?.kind === "message" && first.message.role === "user" && first.message.text.trim()) {
+			return undefined;
+		}
+		for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+			const block = blocks[cursor];
+			if (block?.kind !== "message" || block.message.role !== "user" || !block.message.text.trim()) continue;
+			const text = block.message.text.slice(0, 512).split(/\s+/u).join(" ");
+			return theme.fg("muted", `${uiGlyphs().selector} ${text}`);
+		}
+		return undefined;
 	}
 
 	clearTerminalView(): void {
