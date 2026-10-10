@@ -1,11 +1,19 @@
 import { stripVTControlCharacters } from "node:util";
 import type { MycliShellCommandResult, MycliShellCommandRow } from "../../model.ts";
 import { theme } from "../../theme/theme.ts";
-import { uiGlyphs } from "../../theme/terminal-style.ts";
 import { Container, getKeybindings, Input, matchesKey, type Focusable } from "../../tui-core/index.ts";
 import { truncateToWidth, wrapTextWithAnsi } from "../../tui-core/utils.ts";
 import { keyForAction, keyHint, rawKeyHint } from "../shared/keybinding-hints.ts";
 import { CommandResultComponent } from "../transcript/command-result.ts";
+import {
+	listPanelColumns,
+	listPanelFooter,
+	listPanelHeader,
+	listPanelRow,
+	listPanelRule,
+	listPanelPrompt,
+	listPanelWidths,
+} from "./list-panel.ts";
 
 interface CommandResultOverlayOptions {
 	readonly maxHeight?: () => number;
@@ -46,22 +54,32 @@ export class CommandResultOverlayComponent extends Container implements Focusabl
 		const title = this.inspecting ? this.rows[this.selectedIndex]?.label ?? this.result.display.title
 			: this.result.display.title;
 		const header = !list && !this.inspecting ? [] : [
-			...(height >= 7 ? [theme.fg("border", uiGlyphs().horizontal.repeat(safeWidth))] : []),
-			`${theme.fg("accent", theme.bold(singleLine(title)))}${list ? theme.fg("muted", `  ${this.count()}`) : ""}`,
-			...(list && height >= 5 ? this.searchInput.render(safeWidth) : []),
+			...(height >= 7 ? [listPanelRule(safeWidth)] : []),
+			listPanelHeader(title, list ? this.count() : undefined, safeWidth),
+			...(list && height >= 6 ? [this.searchLine(safeWidth)] : []),
+			...(list && height >= 8 ? [listPanelRule(safeWidth)] : []),
 		];
 		this.bodyHeight = Math.min(list ? 12 : Number.MAX_SAFE_INTEGER, Math.max(1, height - header.length - 1));
 		const body = list ? this.listRows(safeWidth) : this.contentLines(safeWidth);
-		const navigation = `${keyForAction("tui.select.up")}/${keyForAction("tui.select.down")}`;
 		const footer = list ? [
-			keyHint("tui.select.cancel", "close"), keyHint("tui.select.confirm", "details"),
-			rawKeyHint(navigation, "select"),
+			rawKeyHint(`${keyForAction("tui.select.up")}/${keyForAction("tui.select.down")}`, "select"),
+			keyHint("tui.select.confirm", "details"), keyHint("tui.select.cancel", "close"),
 		] : [
 			keyHint("tui.select.cancel", this.inspecting ? "back" : "close"),
-			rawKeyHint(navigation, "scroll"),
+			rawKeyHint(`${keyForAction("tui.select.up")}/${keyForAction("tui.select.down")}`, "scroll"),
 		];
-		return [...header, ...body, footer.join("  ")].slice(0, height)
+		return [...header, ...body, listPanelFooter(footer, safeWidth)].slice(0, height)
 			.map((line) => truncateToWidth(line, safeWidth, "...", true));
+	}
+
+	/** The filter prompt keeps a placeholder so the panel explains itself before typing. */
+	private searchLine(width: number): string {
+		return listPanelPrompt(
+			this.searchInput.render(width)[0] ?? "",
+			this.searchInput.getValue().length > 0,
+			"type to filter",
+			width,
+		);
 	}
 
 	handleInput(data: string): void {
@@ -120,16 +138,32 @@ export class CommandResultOverlayComponent extends Container implements Focusabl
 
 	private listRows(width: number): string[] {
 		const height = this.bodyHeight;
-		const start = Math.max(0, Math.min(this.selectedIndex - Math.floor(height / 2), this.rows.length - height));
-		const lines = this.rows.slice(start, start + height).map((row, index) => {
-			const selected = start + index === this.selectedIndex;
-			const prefix = selected ? `${uiGlyphs().selector} ` : "  ";
-			const meta = [...row.values, ...(row.status ? [row.status] : [])].map(singleLine).join("  ");
-			const detail = row.detail ? `  ${theme.fg("dim", singleLine(row.detail))}` : "";
-			return truncateToWidth(`${theme.fg(selected ? "accent" : "text", prefix + singleLine(row.label))}  ${theme.fg("muted", meta)}${detail}`, width, "...");
-		});
-		if (!lines.length) lines.push(theme.fg("muted", this.searchInput.getValue() ? "  No matching items." : "  No items."));
+		const widths = listPanelWidths(this.rows, Math.max(8, Math.floor(width / 3)));
+		const columns = listPanelColumns(this.result.display.columns, widths, width);
+		const selected = this.rows[this.selectedIndex];
+		const preview = selected?.detail ? singleLine(selected.detail) : undefined;
+		const reserved = (columns ? 1 : 0) + (preview ? 1 : 0);
+		const listHeight = Math.max(1, height - reserved);
+		const start = Math.max(0, Math.min(this.selectedIndex - Math.floor(listHeight / 2), this.rows.length - listHeight));
+		const lines: string[] = [];
+		if (columns) lines.push(columns);
+		for (const [index, row] of this.rows.slice(start, start + listHeight).entries()) {
+			lines.push(listPanelRow({
+				selected: start + index === this.selectedIndex,
+				label: row.label,
+				values: row.values,
+				...(row.status ? { status: row.status } : {}),
+				widths,
+				width,
+			}));
+		}
+		if (!this.rows.length) {
+			lines.push(theme.fg("muted", this.searchInput.getValue() ? "  No matching items." : "  No items."));
+		}
 		while (lines.length < height) lines.push("");
+		if (preview) {
+			lines[lines.length - 1] = truncateToWidth(`  ${theme.fg("dim", preview)}`, width, "...");
+		}
 		return lines;
 	}
 

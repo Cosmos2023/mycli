@@ -34,7 +34,7 @@ function result(display: Partial<MycliShellCommandDisplay>): MycliShellCommandRe
 	};
 }
 
-test("status uses a compact bordered command surface", () => {
+test("status renders borderless fields with an aligned label column", () => {
 	const status = result({
 		kind: "status",
 		command: "/status",
@@ -46,10 +46,9 @@ test("status uses a compact bordered command surface", () => {
 	});
 	const output = stripAnsi(new CommandResultComponent(status).render(80).join("\n"));
 
-	assert.match(output, /^\n\/status\n\n╭─+/);
-	assert.match(output, /╭─+/);
-	assert.match(output, /Model\s+gpt-5\.4/);
-	assert.match(output, /Directory\s+\/repo\/mycli/);
+	assert.match(output, /^\n\/status\n\n  mycli\n  Model: {5}gpt-5\.4/);
+	assert.match(output, /Directory: \/repo\/mycli/);
+	assert.doesNotMatch(output, /╭|│|╰/);
 });
 
 test("list and notice results stay borderless and compact", () => {
@@ -201,13 +200,13 @@ test("empty lists and preformatted omissions have explicit text", () => {
 		omittedChars: 42,
 	});
 
-	assert.match(stripAnsi(new CommandResultComponent(empty).render(80).join("\n")), /^\n\/skills\n\nSkills\n  No items/);
+	assert.match(stripAnsi(new CommandResultComponent(empty).render(80).join("\n")), /^\n\/skills\n\n  Skills\s*\n─+\n  No items\./);
 	const output = stripAnsi(new CommandResultComponent(preformatted).render(80).join("\n"));
 	assert.match(output, /^\n\/trace\n\nhead\ntail/);
 	assert.match(output, /42 chars omitted/);
 });
 
-test("diagnostics use compact bordered cards with a separate command line", () => {
+test("diagnostics render borderless sections with a separate command line", () => {
 	const diagnostic = result({
 		kind: "diagnostic",
 		command: "/usage",
@@ -223,9 +222,9 @@ test("diagnostics use compact bordered cards with a separate command line", () =
 	});
 	const output = stripAnsi(new CommandResultComponent(diagnostic).render(100).join("\n"));
 
-	assert.match(output, /^\n\/usage\n\n╭─+/);
-	assert.match(output, /│  Usage/);
+	assert.match(output, /^\n\/usage\n\n  Usage\n  Turns: 3/);
 	assert.match(output, /Cumulative tokens/);
-	assert.match(output, /Input tokens\s+100000/);
+	assert.match(output, /Input tokens: 100000/);
+	assert.doesNotMatch(output, /╭|│|╰/);
 	assert.doesNotMatch(output, /\b(?:USE|CTX|CMD)\b/);
 });

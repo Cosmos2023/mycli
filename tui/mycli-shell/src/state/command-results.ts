@@ -11,6 +11,7 @@ const MAX_ROWS = 100;
 const MAX_SECTIONS = 16;
 const MAX_FIELDS = 100;
 const MAX_SUGGESTIONS = 3;
+const MAX_COLUMNS = 6;
 
 const DISPLAY_KINDS = new Set(["status", "diagnostic", "list", "notice", "error", "preformatted"]);
 const DISPLAY_SEVERITIES = new Set(["info", "success", "warning", "error"]);
@@ -75,7 +76,8 @@ function commandDisplayFromUnknown(value: unknown): MycliShellCommandDisplay | n
 	const rows = parsedArray(payload.rows, rowFromUnknown, MAX_ROWS);
 	const sections = parsedArray(payload.sections, sectionFromUnknown, MAX_SECTIONS);
 	const suggestions = optionalStringArray(payload, "suggestions", MAX_SUGGESTIONS);
-	if (!fields || !rows || !sections || !suggestions) return null;
+	const columns = optionalStringArray(payload, "columns", MAX_COLUMNS);
+	if (!fields || !rows || !sections || !suggestions || columns === null) return null;
 	return {
 		version: 1,
 		kind: kind as MycliShellCommandDisplay["kind"],
@@ -84,6 +86,7 @@ function commandDisplayFromUnknown(value: unknown): MycliShellCommandDisplay | n
 		severity: severity as MycliShellCommandDisplay["severity"],
 		...(summary.value !== undefined ? { summary: summary.value } : {}),
 		fields,
+		...(columns.length > 0 ? { columns } : {}),
 		rows,
 		sections,
 		...(usage.value !== undefined ? { usage: usage.value } : {}),

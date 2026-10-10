@@ -4,13 +4,18 @@ import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../../tui-core/
 import type {
 	MycliShellCommandField,
 	MycliShellCommandResult,
-	MycliShellCommandRow,
 } from "../../model.ts";
 import type { ThemeColor } from "../../theme/theme.ts";
 import { uiGlyphs } from "../../theme/terminal-style.ts";
 import { theme } from "../../theme/theme.ts";
+import {
+	listPanelColumns,
+	listPanelHeader,
+	listPanelRow,
+	listPanelRule,
+	listPanelWidths,
+} from "../selectors/list-panel.ts";
 
-const STATUS_MAX_WIDTH = 76;
 const FOLDED_ROW_LIMIT = 8;
 
 export class CommandResultComponent extends Container implements Component {
@@ -49,87 +54,92 @@ export class CommandResultComponent extends Container implements Component {
 		return this.withCommand(body, safeWidth);
 	}
 
+	/**
+	 * Codex renders command surfaces as borderless, indented lines so they read as transcript
+	 * content instead of a pasted box. Values wrap rather than truncate paths and identifiers.
+	 */
 	private renderStatus(width: number): string[] {
-		return this.renderCard(width, this.result.display.title);
+		return this.renderFields(width);
 	}
 
 	private renderDiagnostic(width: number): string[] {
-		return this.renderCard(width, this.result.display.title);
+		return this.renderFields(width);
 	}
 
-	private renderCard(width: number, title: string): string[] {
-		if (width < 8) {
-			return [this.fit(this.result.display.summary ?? title, width)];
+	private renderFields(width: number): string[] {
+		const display = this.result.display;
+		const indent = "  ";
+		const lines: string[] = [];
+		const title = sanitize(display.title);
+		const summary = display.summary === undefined ? "" : sanitize(display.summary);
+		if (title || summary) {
+			const heading = title && summary && title !== summary
+				? `${theme.fg("accent", theme.bold(title))}  ${theme.fg("dim", summary)}`
+				: theme.fg("accent", theme.bold(title || summary));
+			lines.push(...this.wrapField(`${indent}${heading}`, indent, width));
 		}
-		const boxWidth = Math.min(STATUS_MAX_WIDTH, width);
-		const contentWidth = boxWidth - 6;
-		const borderWidth = boxWidth - 2;
-		const glyphs = uiGlyphs();
-		const lines = [theme.fg("border", `${glyphs.topLeft}${glyphs.horizontal.repeat(borderWidth)}${glyphs.topRight}`)];
-		const cardTitle = this.result.display.summary
-			? `${title}  ${this.result.display.summary}`
-			: title;
-		lines.push(this.statusLine(theme.bold(cardTitle), contentWidth));
-		this.appendCardFields(lines, this.result.display.fields, contentWidth);
-		for (const section of this.result.display.sections) {
-			if (lines.length > 2) {
-				lines.push(this.statusLine("", contentWidth));
-			}
-			lines.push(this.statusLine(theme.fg("muted", theme.bold(sanitize(section.title))), contentWidth));
-			this.appendCardFields(lines, section.fields, contentWidth);
+		this.appendFields(lines, display.fields, indent, width);
+		for (const section of display.sections) {
+			lines.push("");
+			lines.push(...this.wrapField(`${indent}${theme.fg("muted", theme.bold(sanitize(section.title)))}`, indent, width));
+			this.appendFields(lines, section.fields, indent, width);
 			for (const row of section.rows) {
 				const value = [...row.values, ...(row.detail ? [row.detail] : [])].join("  ");
-				this.appendCardFields(
-					lines,
-					[{ label: row.label, value, tone: row.status }],
-					contentWidth,
-				);
+				this.appendFields(lines, [{ label: row.label, value, tone: row.status }], indent, width);
 			}
 		}
-		lines.push(theme.fg("border", `${glyphs.bottomLeft}${glyphs.horizontal.repeat(borderWidth)}${glyphs.bottomRight}`));
-		return lines;
+		return lines.length > 0 ? lines : [this.fit(`${indent}${title}`, width)];
 	}
 
-	private appendCardFields(lines: string[], fields: MycliShellCommandField[], contentWidth: number): void {
-		const labelWidth = this.labelWidth(fields, Math.max(1, Math.floor(contentWidth / 2)));
+	private appendFields(
+		lines: string[],
+		fields: MycliShellCommandField[],
+		indent: string,
+		width: number,
+	): void {
+		const labelWidth = this.labelWidth(fields, Math.max(1, Math.floor(width / 3)));
 		for (const field of fields) {
-			const label = padVisible(sanitize(field.label), labelWidth);
-			lines.push(
-				this.statusLine(
-					`${theme.fg("muted", label)}  ${theme.fg(this.fieldColor(field), sanitize(field.value))}`,
-					contentWidth,
-				),
-			);
+			const label = padVisible(`${sanitize(field.label)}:`, labelWidth + 1);
+			const prefix = `${indent}${theme.fg("muted", label)} `;
+			lines.push(...this.wrapField(
+				`${prefix}${theme.fg(this.fieldColor(field), sanitize(field.value))}`,
+				" ".repeat(visibleWidth(prefix)),
+				width,
+			));
 		}
 	}
 
-	private statusLine(text: string, contentWidth: number): string {
-		const content = truncateToWidth(text, contentWidth, theme.fg("dim", "..."), true);
-		return `${theme.fg("border", uiGlyphs().vertical)}  ${content}  ${theme.fg("border", uiGlyphs().vertical)}`;
+	/** Wrap a field value instead of truncating it, keeping continuation lines under the value. */
+	private wrapField(text: string, continuationIndent: string, width: number): string[] {
+		const plain = visibleWidth(text);
+		if (plain <= width) return [text];
+		return wrapTextWithAnsi(text, Math.max(1, width - visibleWidth(continuationIndent)))
+			.map((line, index) => this.fit(index === 0 ? line : `${continuationIndent}${line}`, width));
 	}
 
 	private renderList(width: number): string[] {
 		const display = this.result.display;
-		const title = display.summary
-			? `${theme.fg("accent", theme.bold(display.title))}  ${theme.fg("dim", display.summary)}`
-			: theme.fg("accent", theme.bold(display.title));
-		const lines = [this.fit(title, width)];
-		if (display.rows.length === 0) {
-			lines.push(this.fit(theme.fg("muted", "  No items."), width));
-			return lines;
-		}
 		const visibleRows = this.result.folded
 			? display.rows.slice(0, FOLDED_ROW_LIMIT)
 			: display.rows;
-		const columnWidths = this.columnWidths(visibleRows);
+		const widths = listPanelWidths(visibleRows, Math.max(8, Math.floor(width / 3)));
+		const lines = [listPanelHeader(display.title, display.summary, width), listPanelRule(width)];
+		const columns = listPanelColumns(display.columns, widths, width);
+		if (columns) lines.push(columns);
+		if (display.rows.length === 0) {
+			lines.push(this.fit(`  ${theme.fg("muted", "No items.")}`, width));
+			return lines;
+		}
 		for (const row of visibleRows) {
-			const values = [row.label, ...row.values].map(sanitize);
-			const columns = values.map((value, index) => {
-				const padded = padVisible(value, columnWidths[index] ?? visibleWidth(value));
-				return index === 0 ? theme.fg("text", padded) : theme.fg("muted", padded);
-			});
-			const detail = row.detail ? `  ${theme.fg("dim", sanitize(row.detail))}` : "";
-			lines.push(this.fit(`  ${columns.join("  ")}${detail}`, width));
+			lines.push(listPanelRow({
+				selected: false,
+				label: row.label,
+				values: row.values,
+				...(row.status ? { status: row.status } : {}),
+				widths,
+				...(row.detail ? { detail: row.detail } : {}),
+				width,
+			}));
 		}
 		const hiddenRows = display.rows.length - visibleRows.length + display.omittedRows;
 		if (hiddenRows > 0) {
@@ -187,16 +197,6 @@ export class CommandResultComponent extends Container implements Component {
 
 	private labelWidth(fields: MycliShellCommandField[], limit: number): number {
 		return Math.min(limit, Math.max(0, ...fields.map((field) => visibleWidth(sanitize(field.label)))));
-	}
-
-	private columnWidths(rows: MycliShellCommandRow[]): number[] {
-		const widths: number[] = [];
-		for (const row of rows) {
-			for (const [index, value] of [row.label, ...row.values].entries()) {
-				widths[index] = Math.max(widths[index] ?? 0, visibleWidth(sanitize(value)));
-			}
-		}
-		return widths;
 	}
 
 	private fit(text: string, width: number): string {

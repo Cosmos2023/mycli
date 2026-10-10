@@ -1,5 +1,5 @@
 import { getKeybindings, matchesKey, type Component } from "../../tui-core/index.ts";
-import { truncateToWidth, wrapTextWithAnsi } from "../../tui-core/utils.ts";
+import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../../tui-core/utils.ts";
 import { theme } from "../../theme/theme.ts";
 import { uiGlyphs } from "../../theme/terminal-style.ts";
 import { renderDecisionItems, type DecisionItem } from "./decision-list.ts";
@@ -13,6 +13,8 @@ export interface DecisionPanelOptions {
 
 export interface DecisionPanelContent {
 	readonly title: string;
+	/** Right-aligned count or state shown next to the title, like the list panels. */
+	readonly meta?: string;
 	readonly preview?: Component;
 	readonly details?: readonly string[];
 	readonly items: readonly DecisionItem[];
@@ -84,7 +86,7 @@ export class DecisionPanel implements Component {
 			.map((line) => `${" ".repeat(inset)}${line}`);
 		const header = [
 			...(compact ? [] : [theme.fg(this.content.tone ?? "accent", uiGlyphs().horizontal.repeat(safeWidth))]),
-			...textLines(this.content.title).slice(0, maxHeight < 12 ? 1 : 2),
+			...this.headerLines(textLines, safeWidth, maxHeight),
 		];
 		const details = [
 			...(this.content.preview?.render(Math.max(1, safeWidth - inset * 2)) ?? [])
@@ -123,6 +125,21 @@ export class DecisionPanel implements Component {
 			.slice(0, maxHeight)
 			// Match Text and visibleWidth's three-cell tabs before writing to the terminal.
 			.map((line) => truncateToWidth(line.replaceAll("\t", "   "), safeWidth, "", true));
+	}
+
+	/** Title with the panel's right-aligned count, so lists read like the command panels. */
+	private headerLines(
+		textLines: (text: string) => string[],
+		width: number,
+		maxHeight: number,
+	): string[] {
+		const title = textLines(this.content.title).slice(0, maxHeight < 12 ? 1 : 2);
+		const meta = this.content.meta?.trim();
+		if (!meta) return title;
+		const inset = Math.min(2, Math.floor((width - 1) / 2));
+		const first = title[0] ?? "";
+		const gap = Math.max(1, width - visibleWidth(first) - visibleWidth(meta) - inset);
+		return [truncateToWidth(`${first}${" ".repeat(gap)}${theme.fg("muted", meta)}`, width, ""), ...title.slice(1)];
 	}
 
 	private renderBody(

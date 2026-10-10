@@ -253,6 +253,8 @@ export type MycliShellCommandDisplay = {
 	severity: "info" | "success" | "warning" | "error";
 	summary?: string;
 	fields: MycliShellCommandField[];
+	/** Optional column labels so list surfaces can render an aligned header row. */
+	columns?: string[];
 	rows: MycliShellCommandRow[];
 	sections: MycliShellCommandSection[];
 	usage?: string;

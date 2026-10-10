@@ -24,7 +24,7 @@ export function integrationInspectionResult(
 		status: String(resource.status ?? (resource.enabled === false ? "disabled" : "configured")),
 		detail: kind === "mcp" ? mcpDetail(resource, invocation.args === "verbose")
 			: text(resource.inspection_detail) ?? text(resource.detail),
-	})));
+	})), kind === "mcp" ? ["Tools", "Resources", "Status"] : ["Source", "Status"]);
 }
 
 function toolInventory(invocation: ResolvedSlashCommand, manifest?: JsonObject): JsonObject {
@@ -32,7 +32,7 @@ function toolInventory(invocation: ResolvedSlashCommand, manifest?: JsonObject):
 		return listCommandResult(invocation, "Tool sets", records(manifest?.toolsets).map((value, index) => ({
 			key: `toolset:${index}`, label: String(value.id ?? "Tool set"),
 			values: [`tools=${count(value.tool_count)}`],
-		})));
+		})), ["Tools"]);
 	}
 	if (invocation.args && invocation.args !== "list") {
 		return errorCommandResult(invocation, "Unsupported tools action", "/tools [list|sets]");
@@ -43,7 +43,7 @@ function toolInventory(invocation: ResolvedSlashCommand, manifest?: JsonObject):
 		...(isObject(value.availability) && typeof value.availability.status === "string"
 			? { status: value.availability.status } : {}),
 		detail: text(value.description),
-	})));
+	})), ["Source", "Set", "Status"]);
 }
 
 function mcpDetail(resource: JsonObject, verbose: boolean): string {

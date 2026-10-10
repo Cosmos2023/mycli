@@ -1039,7 +1039,7 @@ class InProcessNodeGateway implements NodeGateway {
 					detail: isObject(record.payload) && typeof record.payload.progressSummary === "string"
 						? record.payload.progressSummary
 						: undefined,
-				})));
+				})), ["Task", "Status"]);
 			}
 			return errorCommandResult(
 				invocation,
@@ -1103,7 +1103,7 @@ class InProcessNodeGateway implements NodeGateway {
 				key: snapshot.snapshotId,
 				label: snapshot.path,
 				values: [snapshot.turnId, snapshot.toolName],
-			})));
+			})), ["Turn", "Tool"]);
 		}
 		if (invocation.commandId === "undo") {
 			const history = this.#options.fileHistoryCommands;
@@ -1185,7 +1185,7 @@ class InProcessNodeGateway implements NodeGateway {
 				label: `${match.sessionId}:${match.messageIndex}`,
 				values: [match.role],
 				detail: match.snippet,
-			})));
+			})), ["Role"]);
 		}
 		if (invocation.commandId === "session_maintenance") {
 			const action = sessionMaintenanceAction(invocation.args);
@@ -1254,7 +1254,7 @@ class InProcessNodeGateway implements NodeGateway {
 				key: `command:${command.id}`,
 				label: command.name,
 				detail: command.description,
-			})));
+			})), ["Command"]);
 		}
 		if (invocation.commandId === "model") {
 			const selection = parseModelSelection(invocation.args);

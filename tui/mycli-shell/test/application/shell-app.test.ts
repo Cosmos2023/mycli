@@ -1853,13 +1853,12 @@ test("mycli shell renders legacy command diagnostics as compact cards", () => {
 	}, 100);
 	const plain = stripAnsi(output.join("\n"));
 
-	assert.match(plain, /\/usage\n\n╭─+/);
-	assert.match(plain, /│  Usage/);
-	assert.match(plain, /Estimated cost\s+0\.123/);
+	assert.match(plain, /\/usage\n\n  Usage/);
+	assert.match(plain, /Estimated cost: {3}0\.123/);
 	assert.match(plain, /Cumulative tokens/);
-	assert.match(plain, /\/context\n\n╭─+/);
-	assert.match(plain, /│  Context/);
+	assert.match(plain, /\/context\n\n  Context/);
 	assert.match(plain, /Context composition/);
+	assert.doesNotMatch(plain, /╭|│|╰/);
 	assert.doesNotMatch(plain, /\[usage\] cumulative_usage/);
 });
 
@@ -8681,10 +8680,10 @@ test("native scrollback commits a tall slash command block in one state update",
 
 	const output = stripAnsi(terminal.output);
 	assert.match(output, /\/usage/);
-	assert.match(output, /╭─+/);
-	assert.match(output, /Session\s+session-demo/);
-	assert.match(output, /Cache read tokens\s+53120/);
-	assert.match(output, /╰─+/);
+	assert.match(output, /  Usage/);
+	assert.match(output, /Session: +session-demo/);
+	assert.match(output, /Cache read tokens: 53120/);
+	assert.doesNotMatch(output, /╭|╰/);
 	assertNativeScrollbackSafeOutput(terminal.output);
 });
 

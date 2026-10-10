@@ -5,7 +5,6 @@ import {
 	Input,
 	truncateToWidth,
 	type TUI,
-	visibleWidth,
 } from "../../tui-core/index.ts";
 import { wrapTextWithAnsi } from "../../tui-core/utils.ts";
 import type {
@@ -16,7 +15,16 @@ import type {
 } from "../../model.ts";
 import { uiGlyphs } from "../../theme/terminal-style.ts";
 import { theme } from "../../theme/theme.ts";
-import { keyHint } from "../shared/keybinding-hints.ts";
+import { keyForAction, keyHint, rawKeyHint } from "../shared/keybinding-hints.ts";
+import {
+	listPanelFooter,
+	listPanelHeader,
+	listPanelPrompt,
+	listPanelRow,
+	listPanelRule,
+	listPanelWidths,
+	singleLine,
+} from "./list-panel.ts";
 
 type SettingsStage = "list" | "scope" | "value";
 export type SettingsChangeScope = "session" | "user";
@@ -117,7 +125,7 @@ export class SettingsSelectorComponent extends Container implements Focusable {
 	override render(width: number): string[] {
 		const safeWidth = Math.max(1, width);
 		const border = theme.fg("border", uiGlyphs().horizontal.repeat(safeWidth));
-		const lines = [border, ""];
+		const lines = [border];
 		if (this.stage === "value") {
 			lines.push(...this.renderValueStage(safeWidth));
 		} else if (this.stage === "scope") {
@@ -227,41 +235,86 @@ export class SettingsSelectorComponent extends Container implements Focusable {
 	private renderListStage(width: number): string[] {
 		const category = CATEGORY_ORDER[this.categoryIndex] ?? "all";
 		const categoryLabel = category === "all"
-			? "All categories"
+			? "all categories"
 			: this.catalog.categories.find((item) => item.id === category)?.label ?? category;
 		const lines = [
-			theme.bold("Settings"),
-			theme.fg("muted", `Category: ${categoryLabel} ${uiGlyphs().separator} Tab changes category ${uiGlyphs().separator} type to search`),
-			"",
-			...this.searchInput.render(width),
-			"",
+			listPanelHeader("Settings", `${this.filteredItems.length} items ${uiGlyphs().separator} ${categoryLabel}`, width),
+			listPanelRule(width),
+			this.searchLine(width),
+			listPanelRule(width),
 		];
 		if (this.filteredItems.length === 0) {
-			lines.push(theme.fg("muted", "  No matching settings"));
+			lines.push(`  ${theme.fg("muted", "No matching settings")}`);
+			lines.push("", listPanelFooter(this.footerHints(), width));
 			return lines;
 		}
+		const widths = listPanelWidths(
+			this.filteredItems.map((item) => ({ label: item.label, values: [item.value, this.sourceLabel(item)] })),
+			Math.max(8, Math.floor(width / 3)),
+		);
 		const maxVisible = 10;
 		const start = Math.max(0, Math.min(this.selectedIndex - 4, this.filteredItems.length - maxVisible));
 		const end = Math.min(start + maxVisible, this.filteredItems.length);
+		let previousCategory: string | undefined;
 		for (let index = start; index < end; index += 1) {
 			const item = this.filteredItems[index];
-			if (item) lines.push(this.itemLine(item, index === this.selectedIndex, width, category === "all"));
+			if (!item) continue;
+			if (category === "all" && item.category !== previousCategory) {
+				lines.push(`  ${theme.fg("muted", theme.bold(this.categoryLabel(item.category)))}`);
+				previousCategory = item.category;
+			}
+			lines.push(listPanelRow({
+				selected: index === this.selectedIndex,
+				label: item.label,
+				values: [item.value, this.sourceLabel(item)],
+				widths,
+				width,
+			}));
 		}
 		if (start > 0 || end < this.filteredItems.length) {
-			lines.push(theme.fg("muted", `  ${this.selectedIndex + 1}/${this.filteredItems.length}`));
+			lines.push(`  ${theme.fg("muted", `${this.selectedIndex + 1}/${this.filteredItems.length}`)}`);
 		}
 		const selected = this.filteredItems[this.selectedIndex];
 		if (selected) {
-			lines.push("", theme.fg("muted", `  ${selected.description}`));
+			lines.push("", `  ${theme.fg("muted", singleLine(selected.description))}`);
 			const flags = [
 				selected.locked ? selected.lockReason ?? "locked" : undefined,
 				selected.restartRequired ? "restart required" : undefined,
 				selected.command,
 			].filter(Boolean).join(` ${uiGlyphs().separator} `);
-			if (flags) lines.push(theme.fg(selected.locked ? "warning" : "dim", `  ${flags}`));
+			if (flags) lines.push(`  ${theme.fg(selected.locked ? "warning" : "dim", flags)}`);
 		}
-		lines.push("", `  ${keyHint("tui.select.confirm", "opens")}  ${keyHint("tui.select.cancel", "closes")}`);
+		lines.push("", listPanelFooter(this.footerHints(), width));
 		return lines;
+	}
+
+	/** The filter prompt keeps a placeholder so the panel explains itself before typing. */
+	private searchLine(width: number): string {
+		return listPanelPrompt(
+			this.searchInput.render(width)[0] ?? "",
+			this.searchInput.getValue().length > 0,
+			"type to filter",
+			width,
+		);
+	}
+
+	private footerHints(): string[] {
+		return [
+			rawKeyHint(`${keyForAction("tui.select.up")}/${keyForAction("tui.select.down")}`, "select"),
+			keyHint("tui.input.tab", "category"),
+			keyHint("tui.select.confirm", "open"),
+			keyHint("tui.select.cancel", "close"),
+		];
+	}
+
+	private categoryLabel(id: MycliShellSettingsCategoryId): string {
+		return this.catalog.categories.find((entry) => entry.id === id)?.label ?? id;
+	}
+
+	/** `source/scope` is an internal pair; the panel shows the one word that matters. */
+	private sourceLabel(item: MycliShellSettingsItem): string {
+		if (item.scope === "user" || item.scope === "session") return item.scope;
+		return item.source || "default";
 	}
 
 	private renderValueStage(width: number): string[] {
@@ -300,20 +353,6 @@ export class SettingsSelectorComponent extends Container implements Focusable {
 		});
 		lines.push("", `  ${keyHint("tui.select.confirm", "applies")}  ${keyHint("tui.select.cancel", "returns to values")}`);
 		return lines;
-	}
-
-	private itemLine(item: MycliShellSettingsItem, selected: boolean, width: number, showCategory: boolean): string {
-		const prefix = selected ? theme.fg("accent", `${uiGlyphs().selector} `) : "  ";
-		const category = showCategory
-			? `[${this.catalog.categories.find((entry) => entry.id === item.category)?.label ?? item.category}] `
-			: "";
-		const label = `${category}${item.label}`;
-		const left = selected ? theme.fg("accent", label) : item.locked ? theme.fg("dim", label) : label;
-		const source = width >= 72 ? ` ${uiGlyphs().separator} ${item.source}/${item.scope}` : "";
-		const lock = item.locked ? ` ${uiGlyphs().separator} locked` : "";
-		const meta = `${item.value}${source}${lock}`;
-		const gap = Math.max(2, width - visibleWidth(prefix) - visibleWidth(label) - visibleWidth(meta));
-		return truncateToWidth(`${prefix}${left}${" ".repeat(gap)}${theme.fg(item.locked ? "warning" : "muted", meta)}`, width, "...");
 	}
 
 	private applyFilter(): void {

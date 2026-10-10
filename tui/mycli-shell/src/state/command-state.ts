@@ -159,6 +159,7 @@ function commandResultDisplayPayload(commandResult: MycliShellCommandResult): Re
 		severity: display.severity,
 		...(display.summary !== undefined ? { summary: display.summary } : {}),
 		...(display.fields.length > 0 ? { fields: display.fields } : {}),
+		...(display.columns && display.columns.length > 0 ? { columns: display.columns } : {}),
 		...(display.rows.length > 0 ? { rows: display.rows } : {}),
 		...(display.sections.length > 0 ? { sections: display.sections } : {}),
 		...(display.usage !== undefined ? { usage: display.usage } : {}),

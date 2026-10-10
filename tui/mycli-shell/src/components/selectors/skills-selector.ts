@@ -121,9 +121,9 @@ export class SkillsSelectorComponent implements Component, Focusable {
 		}));
 		this.focused = this.hasFocus;
 		this.panel.setContent({ title: theme.bold(menu ? "Skills" : this.view === "manage" ? "Enable/Disable Skills" : "Select a skill"),
+			...(menu ? {} : { meta: this.loading ? "loading…" : `${skills.length} skills` }),
 			preview: menu ? undefined : this.search,
 			details: menu ? ["Choose an action"] : [
-				this.loading ? "Loading skills…" : `${skills.length} skills`,
 				...(this.view === "manage" ? ["Changes are saved automatically and apply to subsequent turns."] : []),
 				...(!this.loading && !skills.length ? [this.search.getValue() ? "No matching skills." : this.view === "manage" ? "No skills found." : "No enabled skills. Enable skills from the management menu."] : []),
 				...(skill ? [`${safe(skill.source)} · ${safe(skill.path)}`] : []),
@@ -135,4 +135,4 @@ export class SkillsSelectorComponent implements Component, Focusable {
 	}
 }
 
-function safe(value: string): string { return value.replace(/[\p{Cc}\p{Cf}]/gu, " "); }
+function safe(value: string | undefined): string { return (value ?? "").replace(/[\p{Cc}\p{Cf}]/gu, " "); }

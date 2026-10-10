@@ -43,12 +43,14 @@ export function listCommandResult(
 	invocation: ResolvedSlashCommand,
 	title: string,
 	rows: readonly CommandRow[],
+	columns?: readonly string[],
 ): JsonObject {
 	const boundedRows = rows.slice(0, MAX_ROWS);
 	return commandResult(invocation, display({
 		kind: "list",
 		title,
 		summary: `${rows.length} ${rows.length === 1 ? "item" : "items"}`,
+		...(columns && columns.length > 0 ? { columns } : {}),
 		rows: boundedRows,
 		totalRows: rows.length,
 		omittedRows: Math.max(0, rows.length - boundedRows.length),
