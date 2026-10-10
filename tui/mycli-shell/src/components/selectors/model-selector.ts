@@ -13,6 +13,14 @@ import { safeErrorMessage } from "../../safe-ui-text.ts";
 import { uiGlyphs } from "../../theme/terminal-style.ts";
 import { theme } from "../../theme/theme.ts";
 import { keyForAction, keyHint, rawKeyHint } from "../shared/keybinding-hints.ts";
+import {
+	listPanelFooter,
+	listPanelHeader,
+	listPanelPrompt,
+	listPanelRow,
+	listPanelRule,
+	listPanelWidths,
+} from "./list-panel.ts";
 
 type SelectorStage =
 	| "provider_loading"
@@ -156,7 +164,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		if (height < MIN_SELECTOR_HEIGHT) return [this.line(theme.fg("muted", "Terminal too small"), safeWidth)];
 		const gap = height < 18 ? [] : [""];
 		const border = theme.fg("border", uiGlyphs().horizontal.repeat(safeWidth));
-		const lines = [border, ...gap];
+		const lines = [border];
 		const listBudget = (extraRows = 0): number => Math.max(1,
 			height - lines.length - gap.length - 1 - (this.error ? gap.length + 1 : 0) - extraRows);
 		if (this.stage === "provider_loading") {
@@ -212,26 +220,31 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			lines.push(...gap);
 			lines.push(this.line(theme.fg("muted", `Enter select ${uiGlyphs().separator} Esc back`), safeWidth));
 		} else {
-			lines.push(this.line(theme.bold("Select model"), safeWidth));
-			lines.push(this.line(theme.fg("muted", this.selectedProvider?.name ?? ""), safeWidth));
-			lines.push(this.line(theme.fg("muted", [
-				"Type to search",
+			lines.push(this.line(listPanelHeader("Select model",
+				`${this.filteredModels.length} models ${uiGlyphs().separator} ${this.selectedProvider?.name ?? ""}`, safeWidth), safeWidth));
+			lines.push(this.line(listPanelRule(safeWidth), safeWidth));
+			lines.push(this.line(listPanelPrompt(
+				this.searchInput.render(safeWidth)[0] ?? "",
+				this.searchInput.getValue().length > 0,
+				"type to search",
+				safeWidth,
+			), safeWidth));
+			lines.push(this.line(listPanelRule(safeWidth), safeWidth));
+			lines.push(...this.modelRows(safeWidth, listBudget(2)));
+			lines.push(...gap);
+			lines.push(this.line(listPanelFooter([
 				keyHint("tui.select.confirm", "use"),
 				keyHint("tui.select.options", "options"),
 				...(this.providerCycleHint() ? [this.providerCycleHint()] : []),
 				this.modelBackHint(),
-			].join(` ${uiGlyphs().separator} `)), safeWidth));
-			lines.push(...gap);
-			lines.push(...this.searchInput.render(safeWidth).map((line) => this.line(line, safeWidth)));
-			lines.push(...gap);
-			lines.push(...this.modelRows(safeWidth, listBudget()));
+			], safeWidth), safeWidth));
 		}
 		if (this.error) {
 			lines.push(...gap);
 			lines.push(this.line(theme.fg("error", this.error), safeWidth));
 		}
 		lines.push(...gap, border);
-		return lines.map((line) => this.line(line, safeWidth));
+		return lines.slice(0, height).map((line) => this.line(line, safeWidth));
 	}
 
 	handleInput(keyData: string): void {
@@ -604,18 +617,28 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		const start = Math.max(0, Math.min(this.selectedModelIndex - Math.floor((maxVisible - 1) / 2), this.filteredModels.length - maxVisible));
 		const end = Math.min(start + maxVisible, this.filteredModels.length);
 		const showProvider = width >= 48;
-		const showDescription = width >= 80;
-		const rows = this.filteredModels.slice(start, end).map((model, offset) => {
-			const index = start + offset;
-			const selected = index === this.selectedModelIndex;
+		const visible = this.filteredModels.slice(start, end);
+		const cells = visible.map((model) => {
 			const current = model.current === true || modelsAreEqual(this.currentModel, model);
 			const markers = [current ? "current" : "", model.default ? "default" : ""].filter(Boolean).join(", ");
-			const provider = showProvider ? theme.fg("muted", `  ${model.provider}`) : "";
-			const marker = markers ? theme.fg("success", `  (${markers})`) : "";
-			const description = showDescription && model.description ? theme.fg("dim", `  ${model.description}`) : "";
-			const prefix = selected ? theme.fg("accent", `${uiGlyphs().selector} `) : "  ";
-			const name = selected ? theme.fg("accent", model.model) : model.model;
-			return this.line(`${prefix}${name}${provider}${marker}${description}`, width);
+			return {
+				label: model.model,
+				values: [...(showProvider ? [model.provider] : []), ...(markers ? [markers] : [])],
+			};
+		});
+		const widths = listPanelWidths(cells, Math.max(8, Math.floor(width / 3)));
+		const rows = cells.map((cell, offset) => {
+			const index = start + offset;
+			const selected = index === this.selectedModelIndex;
+			const model = visible[offset]!;
+			return this.line(listPanelRow({
+				selected,
+				label: cell.label,
+				values: cell.values,
+				widths,
+				...(width >= 80 && model.description ? { detail: model.description } : {}),
+				width,
+			}), width);
 		});
 		if (rows.length < budget && (start > 0 || end < this.filteredModels.length)) {
 			rows.push(this.line(theme.fg("muted", `  ${this.selectedModelIndex + 1}/${this.filteredModels.length}`), width));

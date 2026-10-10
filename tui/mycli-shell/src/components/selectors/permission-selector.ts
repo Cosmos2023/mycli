@@ -153,6 +153,8 @@ export class PermissionSelectorComponent extends Container {
 		this.panel.setContent({
 			title: theme.bold(this.stage === "profiles" ? this.title
 				: this.stage === "allowances" ? "Session command allowances" : "Confirm Full Access"),
+			...(this.stage === "profiles" ? { meta: `${this.permissions.profiles.length} profiles` }
+				: this.stage === "allowances" ? { meta: `${this.permissions.commandAllowanceCount} active` } : {}),
 			tone: this.stage === "confirm-full-access" ? "warning" : "accent",
 			details: this.detailLines(),
 			items: this.items(),
@@ -193,7 +195,7 @@ export class PermissionSelectorComponent extends Container {
 		if (this.stage === "confirm-full-access") return [theme.fg("warning",
 			"mycli will be able to edit files outside this workspace and access the internet without asking.",
 		)];
-		if (this.stage === "allowances") return [theme.fg("muted", `${this.permissions.commandAllowanceCount} active`)];
+		if (this.stage === "allowances") return [];
 		const lines: string[] = [];
 		const effective = this.permissions.effective;
 		const readiness = this.permissions.sandboxReadiness;

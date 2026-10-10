@@ -1,5 +1,6 @@
 import type { MycliShellHook, MycliShellHookCatalog, MycliShellHookManager } from "../../model.ts";
 import { Input, fuzzyFilter, getKeybindings, matchesKey, type Component, type Focusable } from "../../tui-core/index.ts";
+import { uiGlyphs } from "../../theme/terminal-style.ts";
 import { theme } from "../../theme/theme.ts";
 import { rawKeyHint } from "../shared/keybinding-hints.ts";
 import { DecisionPanel, type DecisionPanelOptions } from "./decision-panel.ts";
@@ -133,6 +134,7 @@ export class HooksSelectorComponent implements Component, Focusable {
 		const hook = this.selected;
 		this.focused = this.hasFocus;
 		this.panel.setContent({ title: theme.bold(this.confirmingTrust ? "Trust hook command" : hook ? `Hook · ${safe(hook.name)}` : this.point ? `Hooks · ${this.point}` : "Hooks"),
+			...(hook ? {} : { meta: this.loading ? `loading${uiGlyphs().ellipsis}` : `${this.hooks().length} hooks` }),
 			preview: hook ? undefined : this.search,
 			details: hook ? [
 				...(hook.command.length ? [`$ ${hook.command.map((part) => /^[a-zA-Z0-9_./:-]+$/u.test(part) ? part : JSON.stringify(part)).join(" ")}`] : ["Plugin handler"]),
@@ -140,7 +142,7 @@ export class HooksSelectorComponent implements Component, Focusable {
 				`Source: ${safe(hook.source)} · ${safe(hook.path)}`,
 				hook.trustSource === "plugin" ? "Trusted through the enabled plugin. Manage plugin trust in /plugins." : `Trust: ${hook.trusted ? "allowed" : "required before execution"}`,
 				...(hook.timeoutMs ? [`Timeout: ${hook.timeoutMs} ms`] : []),
-			] : [this.loading ? "Loading hooks…" : this.hooks().length ? "Select an event or search hooks" : "No matching hooks."],
+			] : [this.loading || this.hooks().length ? "" : "No matching hooks."].filter(Boolean),
 			items: this.items(), selectedIndex: this.index, busy: this.busy, tone: this.confirmingTrust ? "warning" : "accent",
 			status: theme.fg(this.failed ? "error" : "muted", this.status),
 			hints: [...decisionNavigationHints(), rawKeyHint("ctrl+r", "refresh")],

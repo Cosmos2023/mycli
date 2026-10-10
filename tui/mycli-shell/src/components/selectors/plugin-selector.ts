@@ -274,7 +274,7 @@ export class PluginSelectorComponent implements Component, Focusable {
 				return [visibleWidth(labels.join("  ")) <= width ? labels.join("  ") : truncateToWidth(current, width, ""),
 					...this.searchInput.render(width)];
 			} };
-			details = [this.loading ? `Loading plugins${uiGlyphs().ellipsis}` : `${this.plugins().length} plugins ${uiGlyphs().separator} Type to search`,
+			details = [
 				...(!this.loading && !this.plugins().length ? [this.searchInput.getValue() ? "No matching plugins." : "No plugins found. Add a marketplace or install a local plugin."] : []),
 				...(this.catalog?.truncated ? ["Combined catalog is limited. Select a marketplace to browse its complete list."] : []),
 				...(this.catalog?.repository_enabled === false ? ["Workspace plugins are hidden until this workspace is trusted."] : []),
@@ -304,7 +304,9 @@ export class PluginSelectorComponent implements Component, Focusable {
 			items = this.actions();
 		}
 		if (this.busy) hints = [rawKeyHint("esc", "close and cancel")];
-		this.panel.setContent({ title, details: details.map(safe), ...(preview ? { preview } : {}), items,
+		this.panel.setContent({ title,
+			...(this.view === "list" ? { meta: this.loading ? `Loading plugins${uiGlyphs().ellipsis}` : `${this.plugins().length} plugins` } : {}),
+			details: details.map(safe), ...(preview ? { preview } : {}), items,
 			selectedIndex: this.view === "list" ? this.listIndex : this.actionIndex, hints, busy: this.busy || this.loading,
 			...(this.status ? { status: theme.fg(this.error ? "warning" : "muted", safe(this.status)) } : {}) });
 	}
