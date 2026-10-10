@@ -92,6 +92,28 @@ test("turn activity stays above the composer during transcript scrolling and sta
 	assert.doesNotMatch(stripAnsi(runtime.statusContainer.render(80).join("\n")), /esc to interrupt/u);
 });
 
+test("a scrolled transcript pins the owning prompt in its own top row", async (context) => {
+	const terminal = new HeadlessTerminal({ columns: 80, rows: 24 });
+	const runtime = new MycliShellRuntime({ initialState: stateFor(promptAndAnswerBlocks()), terminal, now: () => 10_000 });
+	context.after(async () => { await runtime.shutdown(); terminal.dispose(); });
+	runtime.editor.setText("composer-marker");
+
+	// The header takes its own row, so the newest answer row stays visible at the bottom.
+	const bottom = runtime.transcriptViewport.render(80).map(stripAnsi);
+	assert.equal(bottom[0]?.trim(), "› explain the runtime architecture");
+	assert.equal(bottom.at(-1)?.trim(), "answer line 39");
+
+	runtime.transcriptViewport.scrollBy(20);
+	const scrolled = runtime.transcriptViewport.render(80).map(stripAnsi);
+	assert.equal(scrolled[0]?.trim(), "› explain the runtime architecture");
+	assert.equal(scrolled[1]?.trim(), "answer line 3");
+
+	// The prompt supplies its own context at the top, so no header is pinned over it.
+	runtime.transcriptViewport.scrollToTop();
+	const top = runtime.transcriptViewport.render(80).map(stripAnsi);
+	assert.equal(top.filter((line) => line.includes("explain the runtime architecture")).length, 1);
+});
+
 test("native terminal keeps one activity row out of history through Shell output, queue changes and resize", async (context) => {
 	const terminal = new HeadlessTerminal({ columns: 80, rows: 24, nativeScrollback: true, scrollback: 500 });
 	let transcript = shellBlocks(30);
@@ -127,6 +149,19 @@ function shellBlocks(count: number, offset = 0): MycliShellTranscriptBlock[] {
 		const id = `shell-${offset + index}`;
 		return { id, kind: "bash", bash: { id, command: `command-${offset + index}`, status: "success", outputPreview: `result-${offset + index}\n\n` } };
 	});
+}
+
+function promptAndAnswerBlocks(): MycliShellTranscriptBlock[] {
+	const prompt = { id: "user-1", role: "user", text: "explain the runtime architecture" } as const;
+	const answer = {
+		id: "assistant-1",
+		role: "assistant",
+		text: Array.from({ length: 40 }, (_, index) => `answer line ${index}`).join("\n"),
+	} as const;
+	return [
+		{ id: prompt.id, kind: "message", message: prompt },
+		{ id: answer.id, kind: "message", message: answer },
+	];
 }
 
 function stateFor(transcript: MycliShellTranscriptBlock[]): MycliShellState {

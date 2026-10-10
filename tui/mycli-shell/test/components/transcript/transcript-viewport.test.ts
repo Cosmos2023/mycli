@@ -162,12 +162,44 @@ test("transcript viewport holds its scroll anchor through a content growth", () 
 	assert.equal(viewport.getScrollOffset(), 0);
 });
 
-test("transcript viewport pins the owning prompt over the first visible row", () => {
-	const first = new MutableLinesComponent(["answer line"]);
+test("transcript viewport pins the owning prompt in its own top row", () => {
+	const first = new MutableLinesComponent(["answer one", "answer two", "answer three"]);
 	const { viewport } = viewportHarness([first], 200, undefined, 10, (component) =>
 		component === first ? "› ask something" : undefined);
 
-	assert.equal(viewport.render(40)[0]?.trimEnd(), "› ask something");
+	const lines = viewport.render(40).map((line) => line.trimEnd());
+	assert.equal(lines[0], "› ask something");
+	// The header takes its own row, so no visible content line is replaced.
+	assert.deepEqual(lines.slice(1, 4), ["answer one", "answer two", "answer three"]);
+});
+
+test("transcript viewport maps rows past the pinned prompt header", () => {
+	const first = new MutableLinesComponent(["answer one", "answer two", "answer three"]);
+	const { viewport } = viewportHarness([first], 200, undefined, 10, (component) =>
+		component === first ? "› ask something" : undefined);
+
+	viewport.render(40);
+	assert.equal(viewport.hitTest(0), undefined);
+	assert.deepEqual(viewport.hitTest(1), { component: first, lineInComponent: 0 });
+});
+
+test("transcript viewport keeps the pinned prompt out of copied text", () => {
+	const first = new MutableLinesComponent(["answer one", "answer two", "answer three"]);
+	const { viewport } = viewportHarness([first], 200, undefined, 10, (component) =>
+		component === first ? "› ask something" : undefined);
+
+	viewport.render(40);
+	viewport.beginSelection(1, 0);
+	viewport.extendSelection(2, 6);
+	assert.equal(viewport.selectedText(), "answer one\nanswer");
+	viewport.clearSelection();
+});
+
+test("transcript viewport keeps a lone row when there is no room for a header", () => {
+	const first = new MutableLinesComponent(["answer line"]);
+	const { viewport } = viewportHarness([first], 200, undefined, 10, () => "› ask something");
+
+	assert.equal(viewport.render(40)[0]?.trimEnd(), "answer line");
 });
 
 test("transcript viewport leaves the first row alone without a prompt header", () => {

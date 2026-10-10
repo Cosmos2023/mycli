@@ -90,7 +90,10 @@ export class TranscriptViewportComponent implements Component {
 	private pendingContentChange: TranscriptContentChange | undefined;
 	private lastRenderedLineOrigin = 0;
 	private lastRenderedContentLineage: number | undefined;
-	private lastVisibleStart = 0;
+	/** Rows the pinned prompt header takes from the top of the visible window. */
+	private headerRows = 0;
+	/** First transcript line rendered below the header, for row-to-line mapping. */
+	private lastContentStart = 0;
 	private selection: { anchor: TranscriptSelectionPoint; focus: TranscriptSelectionPoint } | undefined;
 	private heldScrollOffset = 0;
 
@@ -292,28 +295,41 @@ export class TranscriptViewportComponent implements Component {
 		this.scrollOffset = Math.min(this.scrollOffset, Math.max(0, lines.length - height));
 
 		const start = this.visibleStart(lines, height, this.committedStart(lines, width));
-		this.lastVisibleStart = start;
 		this.lastRenderedLines = lines;
-		const visible = lines.slice(start, start + height);
-		this.applyPromptHeader(visible, start, width);
+		const window = lines.slice(start, start + height);
+		const header = this.promptHeader(start, width, window.length);
+		this.headerRows = header ? 1 : 0;
+		// The header takes its own top row, exactly like Codex's reserved row in
+		// transcript_view/prompt_header.rs, so no visible content line is replaced.
+		// Scrolled up, the window keeps its anchor and defers its last row. At the end
+		// of the transcript the window stays bottom-anchored so the newest row remains
+		// visible, and only the oldest visible row gives up its place.
+		const contentRows = Math.max(0, height - this.headerRows);
+		const atEnd = start + height >= lines.length;
+		const contentStart = this.headerRows > 0 && atEnd
+			? Math.max(0, lines.length - contentRows)
+			: start;
+		this.lastContentStart = contentStart;
+		const content = lines.slice(contentStart, contentStart + contentRows);
+		const visible = header ? [header, ...content] : content;
 		// The enclosing transcript area adds spare rows after live activity so
 		// activity follows output while the input stays at the bottom.
-		return this.applySelectionHighlight(visible, start);
+		return this.applySelectionHighlight(visible, contentStart);
 	}
 
-	/** Pin the prompt that owns the first visible answer, Codex-style, over the top row. */
-	private applyPromptHeader(visible: string[], start: number, width: number): void {
-		if (!this.promptHeaderFor || visible.length === 0) return;
+	/** Pin the prompt that owns the first visible answer, Codex-style, into its own top row. */
+	private promptHeader(start: number, width: number, rows: number): string | undefined {
+		if (!this.promptHeaderFor || rows < 2 || width < 16) return undefined;
 		const found = this.componentAtLine(start);
-		if (!found) return;
+		if (!found) return undefined;
 		const header = this.promptHeaderFor(found.component);
-		if (!header) return;
-		visible[0] = truncateToWidth(header, Math.max(1, Math.floor(width)), uiGlyphs().ellipsis, true);
+		if (!header) return undefined;
+		return truncateToWidth(header, Math.max(1, Math.floor(width)), uiGlyphs().ellipsis, true);
 	}
 
 	/** Component and its row rendered at the given row of the visible transcript window. */
 	hitTest(row: number): { component: Component; lineInComponent: number } | undefined {
-		const target = this.lastVisibleStart + row;
+		const target = this.lastContentStart + row - this.headerRows;
 		if (target < 0) return undefined;
 		const found = this.componentAtLine(target);
 		if (!found) return undefined;
@@ -342,7 +358,10 @@ export class TranscriptViewportComponent implements Component {
 
 	/** Start a text selection at a row of the visible transcript window. */
 	beginSelection(row: number, column: number): void {
-		const point = { line: Math.max(0, this.lastVisibleStart + row), column: Math.max(0, column) };
+		const point = {
+			line: Math.max(0, this.lastContentStart + row - this.headerRows),
+			column: Math.max(0, column),
+		};
 		this.selection = { anchor: point, focus: point };
 	}
 
@@ -350,7 +369,10 @@ export class TranscriptViewportComponent implements Component {
 		if (!this.selection) return;
 		this.selection = {
 			anchor: this.selection.anchor,
-			focus: { line: Math.max(0, this.lastVisibleStart + row), column: Math.max(0, column) },
+			focus: {
+				line: Math.max(0, this.lastContentStart + row - this.headerRows),
+				column: Math.max(0, column),
+			},
 		};
 	}
 
@@ -390,7 +412,8 @@ export class TranscriptViewportComponent implements Component {
 		if (!selection) return visible;
 		const { from, to } = orderedSelection(selection.anchor, selection.focus);
 		return visible.map((line, index) => {
-			const lineIndex = start + index;
+			if (index < this.headerRows) return line;
+			const lineIndex = start + index - this.headerRows;
 			if (lineIndex < from.line || lineIndex > to.line) return line;
 			const width = visibleWidth(line);
 			const startCol = lineIndex === from.line ? from.column : 0;
