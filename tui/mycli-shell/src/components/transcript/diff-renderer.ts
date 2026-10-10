@@ -57,6 +57,15 @@ export function renderUnifiedDiff(diff: string, options: DiffRenderOptions): str
 		return renderFallback(normalizedDiff, width, indent);
 	}
 	const chunks = files.flatMap((file) => file.chunks);
+	// parse-diff pads a hunk whose declared line counts exceed the supplied lines — a
+	// truncated diff does that — and the padding renders as a blank numbered row.
+	for (const chunk of chunks) {
+		while (chunk.changes.length > 0) {
+			const last = chunk.changes[chunk.changes.length - 1]!;
+			if (last.type !== "normal" || last.content !== "") break;
+			chunk.changes.pop();
+		}
+	}
 	if (chunks.length === 0) return renderFallback(normalizedDiff, width, indent);
 
 	const changes = chunks.flatMap((chunk) => chunk.changes);

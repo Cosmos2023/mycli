@@ -143,6 +143,37 @@ test("diff renderer shows an explicit omission marker", () => {
 });
 
 
+test("diff renderer drops the blank row a hunk with short content leaves behind", () => {
+	const lines = renderUnifiedDiff(
+		"@@ -1,6 +1,6 @@\n-a1\n-b2\n-c3\n-d4\n+a1\n+b2\n+c3\n+d4\n",
+		{ width: 60, indent: 2 },
+	).map((line) => stripAnsi(line).trimEnd());
+
+	assert.deepEqual(lines, [
+		"  1 - a1", "  2 - b2", "  3 - c3", "  4 - d4",
+		"  1 + a1", "  2 + b2", "  3 + c3", "  4 + d4",
+	]);
+});
+
+
+test("diff renderer drops padding after a truncated hunk but keeps its marker", () => {
+	const lines = renderUnifiedDiff(
+		"@@ -1,10 +1,10 @@\n-a1\n+b1\n... 20 lines / 400 chars omitted ...\n",
+		{ width: 60, indent: 2 },
+	).map((line) => stripAnsi(line).trimEnd());
+
+	assert.deepEqual(lines, ["  1 - a1", "  1 + b1", "  ... 20 lines / 400 chars omitted ..."]);
+});
+
+
+test("diff renderer keeps a real trailing empty context line", () => {
+	const lines = renderUnifiedDiff("@@ -1,2 +1,2 @@\n a\n \n", { width: 60, indent: 2 })
+		.map((line) => stripAnsi(line).trimEnd());
+
+	assert.deepEqual(lines, ["  1   a", "  2"]);
+});
+
+
 test("malformed diff falls back to bounded preformatted rows", () => {
 	const lines = renderUnifiedDiff("not a unified diff\n+still visible", {
 		width: 30,
@@ -398,7 +429,7 @@ test("file change component collapses a long diff to a three-line head preview",
 	const collapsed = component.render(80).map(stripAnsi);
 
 	assert.match(collapsed[2] ?? "", /1 - a1/);
-	assert.match(collapsed.join("\n"), /\+ 6 lines \(ctrl\+o to expand\)/);
+	assert.match(collapsed.join("\n"), /\+ 5 lines \(ctrl\+o to expand\)/);
 	assert.doesNotMatch(collapsed.join("\n"), /d4/);
 	assert.equal(component.isDetailsToggleRow(collapsed.length - 1, 80), true);
 	assert.equal(component.isDetailsToggleRow(1, 80), false);

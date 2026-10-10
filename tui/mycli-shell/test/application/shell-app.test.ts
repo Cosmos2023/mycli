@@ -4830,7 +4830,7 @@ test("clicking a collapsed file change expands only that diff", async () => {
 	runtime.start();
 
 	const rows = stripAnsi(runtime.ui.render(80).join("\n")).split("\n");
-	assert.match(rows.join("\n"), /\+ 6 lines \(ctrl\+o to expand\)/);
+	assert.match(rows.join("\n"), /\+ 5 lines \(ctrl\+o to expand\)/);
 	assert.doesNotMatch(rows.join("\n"), /d4/);
 
 	const hintRow = rows.findIndex((line) => line.includes("to expand"));
