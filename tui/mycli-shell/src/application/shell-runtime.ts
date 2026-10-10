@@ -212,6 +212,7 @@ export class MycliShellRuntime {
 	private readonly composerSnapshots = new Map<string, ComposerSessionSnapshot>();
 	private toolDetailMode: ToolDetailMode = "default";
 	private detailOverrides: DetailOverrides = new Map();
+	private holdTranscriptScroll = false;
 	private readonly toolDetailProjector = new ToolDetailProjector();
 	private transcriptPointer: { targetId: string | undefined; dragged: boolean } | null = null;
 	private nativeResizeTimer: ReturnType<typeof setTimeout> | undefined;
@@ -692,6 +693,7 @@ export class MycliShellRuntime {
 	}
 
 	private maybeResetTranscriptScroll(previousState: MycliShellState, nextState: MycliShellState): void {
+		if (this.holdTranscriptScroll) return;
 		if (this.isTranscriptGrowth(previousState, nextState)) {
 			this.resetTranscriptScroll();
 		}
@@ -2676,7 +2678,13 @@ export class MycliShellRuntime {
 			);
 			this.toolDetailMode = hasCollapsed ? "expanded" : "collapsed";
 		}
-		this.setState(this.state);
+		this.transcriptViewport.holdScrollOffsetForNextGrowth();
+		this.holdTranscriptScroll = true;
+		try {
+			this.setState(this.state);
+		} finally {
+			this.holdTranscriptScroll = false;
+		}
 		this.applyReasoningDisplayMode();
 		this.queueNativeTranscriptHistory(true);
 	}
@@ -2688,7 +2696,13 @@ export class MycliShellRuntime {
 		const overrides = new Map(this.detailOverrides);
 		for (const target of targets) overrides.set(target, !expanded);
 		this.detailOverrides = overrides;
-		this.setState(this.state);
+		this.transcriptViewport.holdScrollOffsetForNextGrowth();
+		this.holdTranscriptScroll = true;
+		try {
+			this.setState(this.state);
+		} finally {
+			this.holdTranscriptScroll = false;
+		}
 		this.applyReasoningDisplayMode();
 		this.queueNativeTranscriptHistory(true);
 	}

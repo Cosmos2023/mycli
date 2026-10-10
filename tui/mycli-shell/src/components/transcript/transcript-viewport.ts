@@ -91,6 +91,7 @@ export class TranscriptViewportComponent implements Component {
 	private lastRenderedContentLineage: number | undefined;
 	private lastVisibleStart = 0;
 	private selection: { anchor: TranscriptSelectionPoint; focus: TranscriptSelectionPoint } | undefined;
+	private heldScrollOffset = 0;
 
 	/**
 	 * `contentRevision` must change before the owner mutates any transcript-visible content.
@@ -132,6 +133,11 @@ export class TranscriptViewportComponent implements Component {
 
 	getScrollOffset(): number {
 		return this.scrollOffset;
+	}
+
+	/** Keep the current scroll anchor through the next content growth. */
+	holdScrollOffsetForNextGrowth(): void {
+		this.heldScrollOffset += 1;
 	}
 
 	scrollBy(deltaLines: number): void {
@@ -271,7 +277,10 @@ export class TranscriptViewportComponent implements Component {
 		const widthChanged = this.lastRenderedWidth !== undefined && this.lastRenderedWidth !== width;
 		const lines = this.renderContent(width);
 		if (!widthChanged && lines.length > this.lastLineCount) {
-			this.scrollOffset = 0;
+			// An expand/collapse toggle grows the transcript without producing new
+			// output, so keep the reader's anchor instead of snapping to the bottom.
+			if (this.heldScrollOffset > 0) this.heldScrollOffset -= 1;
+			else this.scrollOffset = 0;
 		}
 		this.lastLineCount = lines.length;
 		this.scrollOffset = Math.min(this.scrollOffset, Math.max(0, lines.length - height));

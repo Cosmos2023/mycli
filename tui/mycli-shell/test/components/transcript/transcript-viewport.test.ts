@@ -141,6 +141,26 @@ test("transcript viewport highlights and extracts a dragged mouse selection", ()
 	}
 });
 
+test("transcript viewport holds its scroll anchor through a content growth", () => {
+	const component = new MutableLinesComponent(Array.from({ length: 40 }, (_, index) => `line ${index}`));
+	const { viewport } = viewportHarness([component], 200, undefined, 10);
+	viewport.render(80);
+	viewport.scrollBy(5);
+	viewport.render(80);
+	const before = viewport.getScrollOffset();
+	assert.ok(before > 0, "expected a scrolled-up viewport");
+
+	viewport.holdScrollOffsetForNextGrowth();
+	component.setLines(Array.from({ length: 60 }, (_, index) => `line ${index}`));
+	viewport.render(80);
+
+	assert.equal(viewport.getScrollOffset(), before);
+
+	component.setLines(Array.from({ length: 80 }, (_, index) => `line ${index}`));
+	viewport.render(80);
+	assert.equal(viewport.getScrollOffset(), 0);
+});
+
 test("transcript viewport renders only the bounded tail", () => {
 	const components = Array.from({ length: 10_000 }, (_, index) => new CountingComponent(`line ${index}`));
 	const viewport = viewportFor(components, 20);
