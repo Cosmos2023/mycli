@@ -71,8 +71,12 @@ export type ApprovalPolicyDecision =
 interface ApprovalPolicyDecisionBase {
 	readonly callId: string;
 	readonly toolName: string;
+	/** Human label for the tool when the provider-safe name is not readable (MCP `server.tool`). */
+	readonly displayName?: string;
 	readonly preview: string;
 	readonly reason: string;
+	readonly risk?: string;
+	readonly riskReason?: string;
 }
 
 export interface ApprovalPolicyAllow extends ApprovalPolicyDecisionBase {
@@ -108,6 +112,21 @@ export interface ExtensionToolApprovalPolicy {
 	readonly name: string;
 	readonly approvalPolicy: "auto_allow" | "request" | "always_request";
 	readonly approvalScope?: ExtensionApprovalScope;
+	/** What the integration says the tool does, shown in the approval reason. */
+	readonly description?: string;
+	/** Integration origin: the MCP server, tool, or plugin that owns this tool. */
+	readonly origin?: {
+		readonly source?: string;
+		readonly server?: string;
+		readonly tool?: string;
+		readonly plugin?: string;
+	};
+	/** MCP annotations that describe what a call can touch. */
+	readonly annotations?: {
+		readonly readOnlyHint?: boolean;
+		readonly destructiveHint?: boolean;
+		readonly openWorldHint?: boolean;
+	};
 }
 
 export function fileMutationApprovalPreview(
@@ -393,12 +412,16 @@ export class ApprovalPolicy {
 		if (policy.approvalPolicy === "auto_allow" || remembered || fullAccess && policy.approvalPolicy !== "always_request") {
 			return allow(call, `${call.name} local integration`);
 		}
+		const label = extensionToolLabel(policy, call.name);
+		const risk = extensionToolRisk(policy.annotations);
 		return Object.freeze({
 			kind: "request" as const,
 			callId: call.callId,
 			toolName: call.name,
-			preview: bounded(`${call.name} integration request`),
-			reason: "External integration requires one-time approval.",
+			displayName: label.display,
+			preview: bounded(extensionArgumentPreview(call.argumentsJson) ?? label.short),
+			reason: extensionApprovalReason(policy, label),
+			...(risk ? { risk: risk.risk, riskReason: risk.reason } : {}),
 			options: scope ? Object.freeze(["approve_once", "reject", "allow_session", "always_allow"] as const) : APPROVAL_OPTIONS,
 			...(scope ? { extensionApproval: scope } : {}),
 		});
@@ -618,6 +641,59 @@ function extensionToolPolicies(
 			...(policy.approvalScope ? { approvalScope: parseExtensionApprovalScope(policy.approvalScope)! } : {}) }));
 	}
 	return result;
+}
+
+/** MCP and plugin tools read better as `server.tool` than as their provider-safe name. */
+function extensionToolLabel(
+	policy: ExtensionToolApprovalPolicy,
+	fallback: string,
+): { readonly display: string; readonly short: string } {
+	const origin = policy.origin;
+	const qualified = origin?.server && origin.tool ? `${origin.server}.${origin.tool}`
+		: origin?.tool ?? undefined;
+	if (!qualified) return { display: fallback, short: fallback };
+	const kind = origin?.plugin ? "plugin" : origin?.server ? "MCP" : undefined;
+	return { display: kind ? `${kind} ${qualified}` : qualified, short: qualified };
+}
+
+/**
+ * Approval reasons answer "what is this, and why is it asking now" instead of restating the
+ * policy. The integration description supplies the first half; the approval mode the second.
+ */
+function extensionApprovalReason(
+	policy: ExtensionToolApprovalPolicy,
+	label: { readonly display: string; readonly short: string },
+): string {
+	const description = bounded(policy.description ?? "").trim();
+	const asked = policy.approvalPolicy === "always_request"
+		? `${label.short} asks for approval before every call.`
+		: `${label.short} is not approved in this workspace yet.`;
+	return [description, asked].filter(Boolean).join(" ");
+}
+
+/** MCP annotations describe what a call can touch, so they drive the risk line. */
+function extensionToolRisk(
+	annotations: ExtensionToolApprovalPolicy["annotations"],
+): { readonly risk: string; readonly reason: string } | undefined {
+	if (!annotations) return undefined;
+	if (annotations.destructiveHint) return { risk: "high", reason: "The server marks this tool as destructive." };
+	if (annotations.openWorldHint) return { risk: "medium", reason: "It can reach outside this workspace." };
+	if (annotations.readOnlyHint) return { risk: "low", reason: "The server marks this tool as read-only." };
+	return undefined;
+}
+
+/** `key=value` pairs read better than raw JSON in a single-line approval preview. */
+function extensionArgumentPreview(argumentsJson: string): string | undefined {
+	const value = parseArguments(argumentsJson);
+	if (!value) return undefined;
+	const entries = Object.entries(value);
+	if (entries.length === 0) return undefined;
+	const parts = entries.slice(0, 4).map(([key, entry]) => {
+		const text = typeof entry === "string" ? entry : JSON.stringify(entry) ?? "";
+		return `${key}=${text.length > 48 ? `${text.slice(0, 47)}…` : text}`;
+	});
+	if (entries.length > 4) parts.push(`+${entries.length - 4} more`);
+	return parts.join(" · ");
 }
 
 function freezePattern(pattern: readonly string[]): readonly string[] {

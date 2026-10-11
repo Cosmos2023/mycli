@@ -660,6 +660,8 @@ export type MycliShellPendingApproval = {
 	justification?: string;
 	reason?: string;
 	toolName?: string;
+	/** Readable tool label when the provider-safe name is not (MCP `server.tool`). */
+	displayName?: string;
 	workerName?: string;
 	workerColor?: string;
 	childSessionId?: string;

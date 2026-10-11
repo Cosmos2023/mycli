@@ -1026,6 +1026,20 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				approvalPolicy: registration.approvalPolicy ?? (registration.source === "skill" || registration.source === "subagent"
 					? "auto_allow" as const
 					: "request" as const),
+				...(registration.definition.description
+					? { description: registration.definition.description }
+					: {}),
+				...(registration.originMetadata.server || registration.originMetadata.tool
+					? {
+						origin: {
+							source: registration.source,
+							...(registration.originMetadata.server ? { server: registration.originMetadata.server } : {}),
+							...(registration.originMetadata.tool ? { tool: registration.originMetadata.tool } : {}),
+							...(registration.originMetadata.plugin ? { plugin: registration.originMetadata.plugin } : {}),
+						},
+					}
+					: {}),
+				...(registration.annotations ? { annotations: registration.annotations } : {}),
 			})),
 		});
 		let loadExecPolicy: Promise<void> | undefined;

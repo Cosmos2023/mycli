@@ -47,6 +47,7 @@ export function pendingApprovalFromRecord(value: Record<string, unknown> | null)
 		workerColor: stringValue(value.worker_color) ?? stringValue(value.workerColor) ?? undefined,
 		childSessionId: stringValue(value.child_session_id) ?? stringValue(value.childSessionId) ?? undefined,
 		agentPath: stringValue(value.agent_path) ?? stringValue(value.agentPath) ?? undefined,
+		displayName: stringValue(value.display_name) ?? stringValue(value.displayName) ?? undefined,
 		options: options.length > 0 ? options : defaultApprovalOptions(),
 		risk: stringValue(value.risk) ?? undefined,
 		riskReason: stringValue(value.risk_reason) ?? stringValue(value.riskReason) ?? undefined,

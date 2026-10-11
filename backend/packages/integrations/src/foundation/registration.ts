@@ -24,6 +24,8 @@ export interface IntegrationRegistration {
 	readonly modelVisible?: boolean;
 	readonly approvalPolicy?: ExtensionToolApprovalPolicy["approvalPolicy"];
 	readonly approvalScope?: ExtensionApprovalScope;
+	/** MCP annotations that describe what a call can touch, surfaced in the approval prompt. */
+	readonly annotations?: ExtensionToolApprovalPolicy["annotations"];
 }
 
 const PROVIDER_SAFE_NAME = /^[A-Za-z0-9_]+$/;

@@ -829,6 +829,7 @@ export function loadApprovalState(
 			decisionId: call.call_id,
 			callId: call.call_id,
 			toolName: call.name,
+			...optionalApprovalDisplay(pending.payload),
 			preview: pending.payload.preview,
 			...shellApprovalPreview({
 				callId: call.call_id,
@@ -840,6 +841,24 @@ export function loadApprovalState(
 			...(permissionRequest ? { permissionRequest } : {}),
 		},
 		suspendedTurn: true,
+	};
+}
+
+/** A resumed approval keeps the readable label and risk line the policy produced. */
+function optionalApprovalDisplay(payload: Readonly<Record<string, unknown>>): {
+	readonly displayName?: string;
+	readonly risk?: string;
+	readonly riskReason?: string;
+} {
+	const text = (value: unknown, limit: number): string | undefined =>
+		typeof value === "string" && value.trim() ? value.slice(0, limit) : undefined;
+	const displayName = text(payload.display_name, 128);
+	const risk = text(payload.risk, 32);
+	const riskReason = text(payload.risk_reason, 512);
+	return {
+		...(displayName ? { displayName } : {}),
+		...(risk ? { risk } : {}),
+		...(riskReason ? { riskReason } : {}),
 	};
 }
 

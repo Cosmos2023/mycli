@@ -1381,8 +1381,11 @@ export class NodeGatewayTurnController {
 					decisionId: event.decisionId,
 					callId: event.callId,
 					toolName: event.toolName,
+					...(event.displayName ? { displayName: event.displayName } : {}),
 					preview: event.preview,
 					reason: event.reason,
+					...(event.risk ? { risk: event.risk } : {}),
+					...(event.riskReason ? { riskReason: event.riskReason } : {}),
 					options: event.options,
 					...(event.permissionRequest ? {
 						permissionRequest: event.permissionRequest,

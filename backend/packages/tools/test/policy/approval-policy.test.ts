@@ -282,6 +282,65 @@ test("extension approval metadata allows local controls and gates external tools
 	assert.equal(policy.evaluate(toolCall("UnknownExtension", {})).kind, "deny");
 });
 
+test("mcp approvals describe the tool, the reason and the risk instead of a constant", () => {
+	const policy = approvalPolicy({
+		autoApproveMedium: true,
+		extensionTools: [{
+			name: "mcp_demo_run",
+			approvalPolicy: "request",
+			description: "Runs a script in the workspace.",
+			origin: { source: "mcp", server: "demo", tool: "run" },
+			annotations: { destructiveHint: true, openWorldHint: true },
+		}],
+	});
+
+	const decision = policy.evaluate(toolCall("mcp_demo_run", { script: "print(1)", cwd: "/repo" }));
+
+	assert.equal(decision.kind, "request");
+	if (decision.kind !== "request") return;
+	assert.equal(decision.displayName, "MCP demo.run");
+	assert.equal(decision.preview, "script=print(1) · cwd=/repo");
+	assert.equal(decision.reason, "Runs a script in the workspace. demo.run is not approved in this workspace yet.");
+	assert.equal(decision.risk, "high");
+	assert.match(decision.riskReason ?? "", /destructive/u);
+});
+
+
+test("mcp prompt mode and annotations shape the reason and risk line", () => {
+	const policy = approvalPolicy({
+		autoApproveMedium: true,
+		extensionTools: [{
+			name: "mcp_docs_search",
+			approvalPolicy: "always_request",
+			description: "Searches the documentation site.",
+			origin: { source: "mcp", server: "docs", tool: "search" },
+			annotations: { readOnlyHint: true },
+		}],
+	});
+
+	const decision = policy.evaluate(toolCall("mcp_docs_search", { query: "agents" }));
+
+	assert.equal(decision.kind, "request");
+	if (decision.kind !== "request") return;
+	assert.equal(decision.displayName, "MCP docs.search");
+	assert.match(decision.reason, /Searches the documentation site\./u);
+	assert.match(decision.reason, /asks for approval before every call/u);
+	assert.equal(decision.risk, "low");
+	assert.match(decision.riskReason ?? "", /read-only/u);
+
+	const plain = approvalPolicy({
+		autoApproveMedium: true,
+		extensionTools: [{ name: "McpSearch", approvalPolicy: "request" }],
+	}).evaluate(toolCall("McpSearch", { query: "docs" }));
+	assert.equal(plain.kind, "request");
+	if (plain.kind !== "request") return;
+	// Without integration metadata the reason still explains itself and no risk line is invented.
+	assert.equal(plain.reason, "McpSearch is not approved in this workspace yet.");
+	assert.equal(plain.risk, undefined);
+	assert.equal(plain.displayName, "McpSearch");
+});
+
+
 test("full access skips routine approval for valid tools", () => {
 	const policy = approvalPolicy({
 		autoApproveMedium: false,
@@ -531,7 +590,10 @@ function approvalPolicy(options: {
 	}[];
 	readonly extensionTools?: readonly {
 		readonly name: string;
-		readonly approvalPolicy: "auto_allow" | "request";
+		readonly approvalPolicy: "auto_allow" | "request" | "always_request";
+		readonly description?: string;
+		readonly origin?: Readonly<Record<string, string>>;
+		readonly annotations?: Readonly<Record<string, boolean>>;
 	}[];
 }): {
 	configurePermissionProfile(profile: "read-only" | "workspace" | "full-access"): void;
@@ -539,8 +601,11 @@ function approvalPolicy(options: {
 	finishTurn(turnId: string): void;
 	evaluate(call: CanonicalToolCall, executionPolicy?: ExecutionPolicy, turnId?: string): {
 		readonly kind: string;
+		readonly displayName?: string;
 		readonly preview: string;
 		readonly reason: string;
+		readonly risk?: string;
+		readonly riskReason?: string;
 		readonly options?: readonly string[];
 		readonly commandPattern?: readonly string[];
 		readonly proposedExecPolicyPattern?: readonly string[];

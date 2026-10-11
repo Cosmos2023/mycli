@@ -137,6 +137,9 @@ export function approvalRequestPayload(
 		preview: approval.preview,
 		reason: approval.reason,
 		tool_name: approval.toolName,
+		...(approval.displayName ? { display_name: approval.displayName } : {}),
+		...(approval.risk ? { risk: approval.risk } : {}),
+		...(approval.riskReason ? { risk_reason: approval.riskReason } : {}),
 		action: approval.toolName,
 		...approvalPreviewPayload(approval),
 		options: approval.options.map((choice) => ({

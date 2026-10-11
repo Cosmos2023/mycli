@@ -121,6 +121,13 @@ export function createMcpToolRegistration(
 			approvalScope: { id, fingerprint: modelInputSha256({ server: mcpConfigFingerprint([config]), definition,
 				annotations: descriptor.annotations ?? null }) },
 		} : {}),
+		...(descriptor.annotations ? {
+			annotations: Object.freeze({
+				...(descriptor.annotations.readOnlyHint === undefined ? {} : { readOnlyHint: descriptor.annotations.readOnlyHint }),
+				...(descriptor.annotations.destructiveHint === undefined ? {} : { destructiveHint: descriptor.annotations.destructiveHint }),
+				...(descriptor.annotations.openWorldHint === undefined ? {} : { openWorldHint: descriptor.annotations.openWorldHint }),
+			}),
+		} : {}),
 		originMetadata: { server: descriptor.serverId, tool: descriptor.name,
 			...(config?.plugin ? { plugin: config.plugin.id, plugin_server: config.plugin.serverName } : {}) },
 		...(descriptor.serverInstructions ? { sourceDescription: descriptor.serverInstructions } : {}),

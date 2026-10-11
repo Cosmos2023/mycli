@@ -159,7 +159,7 @@ export class ApprovalSelectorComponent extends Container {
 
 	private titleText(): string {
 		const parts = [
-			this.approval.toolName,
+			this.approval.displayName ?? this.approval.toolName,
 			this.approval.workerName ? `@${this.approval.workerName}` : undefined,
 		].filter((part): part is string => Boolean(part));
 		const suffix = parts.length ? theme.fg("muted", ` ${uiGlyphs().separator} ${parts.join(` ${uiGlyphs().separator} `)}`) : "";

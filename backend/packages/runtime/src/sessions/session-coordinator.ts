@@ -42,8 +42,12 @@ export interface PendingSessionApproval extends ApprovalPreviewDetails {
 	readonly decisionId: string;
 	readonly callId: string;
 	readonly toolName: string;
+	/** Human label for the tool when the provider-safe name is not readable (MCP `server.tool`). */
+	readonly displayName?: string;
 	readonly preview: string;
 	readonly reason: string;
+	readonly risk?: string;
+	readonly riskReason?: string;
 	readonly options: readonly PendingApprovalChoice[];
 	readonly permissionRequest?: PermissionRequestProfile;
 }

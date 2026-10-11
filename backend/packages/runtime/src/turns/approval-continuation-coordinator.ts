@@ -64,8 +64,11 @@ export interface ApprovalSuspensionInput {
 	readonly modelOverride?: string;
 	readonly reasoningEffort?: ReasoningEffort;
 	readonly runSnapshot?: RunExecutionSnapshot;
+	readonly displayName?: string;
 	readonly preview: string;
 	readonly reason: string;
+	readonly risk?: string;
+	readonly riskReason?: string;
 	readonly options?: readonly ApprovalChoice[];
 	readonly commandPattern?: readonly string[];
 	readonly proposedExecPolicyPattern?: readonly string[];
@@ -82,8 +85,12 @@ export interface PendingApprovalContinuation {
 	readonly decisionId: string;
 	readonly callId: string;
 	readonly toolName: string;
+	/** Human label for the tool when the provider-safe name is not readable (MCP `server.tool`). */
+	readonly displayName?: string;
 	readonly preview: string;
 	readonly reason: string;
+	readonly risk?: string;
+	readonly riskReason?: string;
 	readonly options: readonly ApprovalChoice[];
 	readonly commandPattern?: readonly string[];
 	readonly proposedExecPolicyPattern?: readonly string[];
@@ -517,8 +524,11 @@ function pendingFromInput(
 		decisionId: nonEmpty(input.call.callId, "decisionId"),
 		callId: nonEmpty(input.call.callId, "callId"),
 		toolName: nonEmpty(input.call.name, "toolName"),
+		...(input.displayName ? { displayName: bounded(input.displayName, 128) } : {}),
 		preview: bounded(input.preview, 512),
 		reason: bounded(input.reason, 512),
+		...(input.risk ? { risk: bounded(input.risk, 32) } : {}),
+		...(input.riskReason ? { riskReason: bounded(input.riskReason, 512) } : {}),
 		options: normalizedApprovalOptions(
 			input.options ?? approvalOptions(
 				input.commandPattern,
@@ -603,8 +613,14 @@ function pendingFromStates(
 		decisionId: call.callId,
 		callId: call.callId,
 		toolName: call.name,
+		...(typeof pending.payload.display_name === "string" && pending.payload.display_name
+			? { displayName: bounded(pending.payload.display_name, 128) } : {}),
 		preview: bounded(pending.payload.preview, 512),
 		reason: bounded(pending.payload.reason, 512),
+		...(typeof pending.payload.risk === "string" && pending.payload.risk
+			? { risk: bounded(pending.payload.risk, 32) } : {}),
+		...(typeof pending.payload.risk_reason === "string" && pending.payload.risk_reason
+			? { riskReason: bounded(pending.payload.risk_reason, 512) } : {}),
 		options: restoredApprovalOptions(
 			pending.payload.options,
 			commandPattern,
@@ -647,6 +663,9 @@ function pendingDecisionState(
 			kind: "needs_choice",
 			reason: pending.reason,
 			preview: pending.preview,
+			...(pending.displayName ? { display_name: pending.displayName } : {}),
+			...(pending.risk ? { risk: pending.risk } : {}),
+			...(pending.riskReason ? { risk_reason: pending.riskReason } : {}),
 			options: persistedOptions(pending.options),
 			...(pending.commandPattern ? { command_pattern: pending.commandPattern.join(" ") } : {}),
 			...(pending.proposedExecPolicyPattern ? {
@@ -679,6 +698,9 @@ function suspendedTurnState(
 		tool_call: storedToolCall(pending.call),
 		reason: pending.reason,
 		preview: pending.preview,
+		...(pending.displayName ? { display_name: pending.displayName } : {}),
+		...(pending.risk ? { risk: pending.risk } : {}),
+		...(pending.riskReason ? { risk_reason: pending.riskReason } : {}),
 		...(pending.commandPattern ? { command_pattern: pending.commandPattern.join(" ") } : {}),
 		...(pending.proposedExecPolicyPattern ? {
 			proposed_execpolicy_pattern: tuplePattern(pending.proposedExecPolicyPattern),

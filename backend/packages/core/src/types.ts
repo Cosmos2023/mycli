@@ -331,8 +331,12 @@ export type RuntimeEvent =
 		readonly decisionId: string;
 		readonly callId: string;
 		readonly toolName: string;
+		/** Readable tool label when the provider-safe name is not (MCP `server.tool`). */
+		readonly displayName?: string;
 		readonly preview: string;
 		readonly reason: string;
+		readonly risk?: string;
+		readonly riskReason?: string;
 		readonly options: readonly ApprovalChoice[];
 		readonly permissionRequest?: PermissionRequestProfile;
 	})
