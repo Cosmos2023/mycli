@@ -89,6 +89,7 @@ interface ShellInvocation {
 	readonly yieldTimeMs: number;
 	readonly maxOutputTokens: number;
 	readonly timeoutSeconds: number;
+	readonly backgroundIdleTimeoutSeconds?: number;
 	readonly background?: boolean;
 }
 
@@ -189,6 +190,11 @@ export class ShellTool implements ToolAdapter {
 				"Shell output budget must be a positive integer.",
 			);
 		}
+		const explicitTimeout = argumentsValue.timeout;
+		if (explicitTimeout !== undefined && !isPositiveNumber(explicitTimeout)) {
+			return shellFailure("invalid_timeout", "Shell timeout must be a positive number.");
+		}
+		const timeoutSeconds = explicitTimeout ?? this.#timeoutSeconds;
 		return this.#invoke({
 			command,
 			...(typeof argumentsValue.description === "string"
@@ -198,7 +204,8 @@ export class ShellTool implements ToolAdapter {
 			tty,
 			yieldTimeMs: clamp(yieldValue, MIN_YIELD_TIME_MS, MAX_YIELD_TIME_MS),
 			maxOutputTokens: outputBudget,
-			timeoutSeconds: this.#timeoutSeconds,
+			timeoutSeconds,
+			...(explicitTimeout === undefined ? {} : { backgroundIdleTimeoutSeconds: explicitTimeout }),
 		}, options, sandboxPermissions === "require_escalated");
 	}
 
@@ -212,10 +219,11 @@ export class ShellTool implements ToolAdapter {
 		if (typeof background !== "boolean") {
 			return shellFailure("invalid_background", "Bash background flag must be a boolean.");
 		}
-		const timeout = argumentsValue.timeout ?? this.#timeoutSeconds;
-		if (!isPositiveNumber(timeout)) {
+		const explicitTimeout = argumentsValue.timeout;
+		if (explicitTimeout !== undefined && !isPositiveNumber(explicitTimeout)) {
 			return shellFailure("invalid_timeout", "Bash timeout must be a positive number.");
 		}
+		const timeout = explicitTimeout ?? this.#timeoutSeconds;
 		return this.#invoke({
 			command,
 			cwd: argumentsValue.cwd,
@@ -223,6 +231,7 @@ export class ShellTool implements ToolAdapter {
 			yieldTimeMs: background ? 0 : DEFAULT_YIELD_TIME_MS,
 			maxOutputTokens: Math.min(DEFAULT_SHELL_MODEL_OUTPUT_MAX_TOKENS, this.#maxOutputTokens),
 			timeoutSeconds: timeout,
+			...(explicitTimeout === undefined ? {} : { backgroundIdleTimeoutSeconds: explicitTimeout }),
 			background,
 		}, options);
 	}
@@ -338,6 +347,9 @@ export class ShellTool implements ToolAdapter {
 			...(invocation.background === undefined ? {} : { background: invocation.background }),
 			yieldTimeMs: invocation.yieldTimeMs,
 			timeoutSeconds: invocation.timeoutSeconds,
+			...(invocation.backgroundIdleTimeoutSeconds === undefined
+				? {}
+				: { backgroundIdleTimeoutSeconds: invocation.backgroundIdleTimeoutSeconds }),
 			publishLifecycle: options.publishLifecycle,
 			signal: options.signal,
 			shellKind: this.#profile.kind,

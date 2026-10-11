@@ -37,7 +37,8 @@ test("process resources are revoked on timeout, abort, shutdown and inconclusive
 			const signal = new AbortController();
 			const pending = manager.start(shellStart({
 				background: mode !== "abort", signal: signal.signal,
-				timeoutSeconds: mode === "timeout" ? 0.02 : 30,
+				timeoutSeconds: 30,
+				...(mode === "timeout" ? { backgroundIdleTimeoutSeconds: 0.02 } : {}),
 				processResource: { close: async () => { closed = true; } },
 			}));
 			await eventually(() => manager.list("session-a").length === 1);
@@ -312,7 +313,7 @@ test("termination is serialized behind an active shell write", async () => {
 	assert.equal(transport.terminateCalls, 1);
 });
 
-test("absolute timeout terminates and completes a background shell", async () => {
+test("a background shell ignores the blocking budget and is reaped only by its idle timeout", async () => {
 	const events: ShellLifecycleEvent[] = [];
 	const factory = new FakeShellTransportFactory();
 	const manager = new ShellSessionManager({
@@ -321,9 +322,12 @@ test("absolute timeout terminates and completes a background shell", async () =>
 	});
 	await manager.start(shellStart({
 		background: true,
-		timeoutSeconds: 0.01,
+		// The blocking budget must not apply to a background session.
+		timeoutSeconds: 30,
+		backgroundIdleTimeoutSeconds: 0.05,
 		publishLifecycle: (event) => events.push(event),
 	}));
+	assert.equal(manager.list("session-a")[0]?.terminalState, undefined);
 	await eventually(() => manager.list("session-a")[0]?.terminalState === "timed_out");
 	const snapshot = manager.list("session-a")[0];
 	const transport = factory.transports[0];
@@ -333,6 +337,41 @@ test("absolute timeout terminates and completes a background shell", async () =>
 	assert.equal(snapshot.cleanupResult, "terminated");
 	assert.equal(transport.terminateCalls, 1);
 	assert.equal(events.filter((event) => event.kind === "shell.completed").length, 1);
+});
+
+test("background idle timeout is reset by output and interaction", async () => {
+	const factory = new FakeShellTransportFactory();
+	const manager = new ShellSessionManager({
+		transportFactory: factory.create,
+		createShellId: () => "a1b2c3d4",
+		backgroundIdleTimeoutSeconds: 0.06,
+	});
+	await manager.start(shellStart({ background: true, timeoutSeconds: 30 }));
+	const transport = factory.transports[0]!;
+	await delay(40);
+	transport.emitOutput({ sequence: 1, stream: "stdout", data: "ping\n" });
+	await delay(40);
+	// The idle window restarted when the process produced output.
+	assert.equal(manager.list("session-a")[0]?.terminalState, undefined);
+	await manager.interact(shellInteraction({ chars: "" }));
+	await delay(40);
+	// Polling is activity too, so the session is still alive.
+	assert.equal(manager.list("session-a")[0]?.terminalState, undefined);
+	await eventually(() => manager.list("session-a")[0]?.terminalState === "timed_out");
+	await manager.close();
+});
+
+test("a blocking call keeps its absolute timeout budget", async () => {
+	const factory = new FakeShellTransportFactory();
+	const manager = new ShellSessionManager({
+		transportFactory: factory.create,
+		createShellId: () => "a1b2c3d4",
+	});
+	const snapshot = await manager.start(shellStart({ background: false, timeoutSeconds: 0.02 }));
+	assert.equal(snapshot.terminalState, "timed_out");
+	assert.equal(snapshot.cleanupResult, "terminated");
+	assert.equal(factory.transports[0]?.terminateCalls, 1);
+	await manager.close();
 });
 
 test("owners cannot observe or interact with another session", async () => {

@@ -46,6 +46,12 @@ const SHELL_PARAMETERS: readonly ToolParameterManifest[] = deepFreeze([
 		description: OUTPUT_BUDGET_DESCRIPTION,
 	},
 	{
+		name: "timeout",
+		type: "integer",
+		required: false,
+		description: "Maximum seconds this command may run. Defaults to 120. A command still running when the call returns stays alive in the background and is only stopped after this long with no output and no interaction; the background default is 1800, so pass a larger value to keep a long-lived server alive.",
+	},
+	{
 		name: "prefix_rule",
 		type: "array",
 		required: false,
@@ -95,6 +101,11 @@ export const SHELL_TOOL_DEFINITION: ToolDefinition = deepFreeze({
 				type: "integer",
 				minimum: 1,
 				description: parameterDescription(SHELL_PARAMETERS, "max_output_tokens"),
+			},
+			timeout: {
+				type: "integer",
+				minimum: 1,
+				description: parameterDescription(SHELL_PARAMETERS, "timeout"),
 			},
 			prefix_rule: {
 				type: "array",

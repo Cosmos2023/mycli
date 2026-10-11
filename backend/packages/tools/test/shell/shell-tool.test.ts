@@ -598,6 +598,40 @@ test("Shell fails before manager start when a restricted sandbox is unavailable"
 	assert.equal(manager.starts.length, 0);
 });
 
+test("Shell advertises timeout and maps it to the blocking and background budgets", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-shell-timeout-"));
+	t.after(() => import("node:fs/promises").then(({ rm }) => rm(root, { recursive: true, force: true })));
+	const manager = new StartManager(completedSnapshot());
+	const tool = new ShellTool({
+		workspaceRoot: root,
+		manager,
+		profile: resolveShellProfile({ platform: "linux", shellPath: "/bin/bash" }),
+		platform: "linux",
+		env: { PATH: "/usr/bin" },
+	});
+	const router = new ToolRouter({ adapters: [tool], exposure: [tool.definition] });
+	const run = (args: Readonly<Record<string, unknown>>) => router.execute({
+		callId: "call-shell-1",
+		name: "Shell",
+		argumentsJson: JSON.stringify({ command: "printf ready", ...args }),
+	}, executionOptions(root));
+
+	await run({});
+	assert.equal(manager.starts[0]?.timeoutSeconds, 120);
+	assert.equal("backgroundIdleTimeoutSeconds" in (manager.starts[0] ?? {}), false);
+
+	await run({ timeout: 3600 });
+	assert.equal(manager.starts[1]?.timeoutSeconds, 3600);
+	assert.equal(manager.starts[1]?.backgroundIdleTimeoutSeconds, 3600);
+
+	const invalid = await run({ timeout: 0 });
+	assert.equal(invalid.success, false);
+	assert.equal(manager.starts.length, 2);
+
+	const properties = tool.definition.inputSchema.properties as Record<string, unknown>;
+	assert.ok(properties.timeout, "Shell must advertise the timeout parameter");
+});
+
 class StartManager {
 	readonly starts: ShellStartRequest[] = [];
 

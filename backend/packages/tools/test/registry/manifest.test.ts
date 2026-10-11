@@ -287,6 +287,7 @@ test("exposure planner preserves manifest order and provider schemas", () => {
 		["tty", false],
 		["yield_time_ms", false],
 		["max_output_tokens", false],
+		["timeout", false],
 		["prefix_rule", false],
 		["sandbox_permissions", false],
 		["justification", false],

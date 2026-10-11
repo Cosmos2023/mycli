@@ -25,6 +25,8 @@ const DEFAULT_OUTPUT_MAX_CHARS = 1_048_576;
 const DEFAULT_OUTPUT_EVENT_INTERVAL_MS = 50;
 const DEFAULT_OUTPUT_EVENT_MAX_CHARS = 4_096;
 const MAX_SHELL_ID_ATTEMPTS = 16;
+/** A background session is reaped only after this long with no output and no interaction. */
+const DEFAULT_BACKGROUND_IDLE_TIMEOUT_SECONDS = 1_800;
 
 interface ShellProcessResource {
 	/** Idempotently revoke and close process-owned infrastructure. */
@@ -40,6 +42,11 @@ export interface ShellStartRequest extends ShellTransportStartRequest {
 	readonly background?: boolean;
 	readonly yieldTimeMs: number;
 	readonly timeoutSeconds: number;
+	/**
+	 * Idle budget for a session that keeps running in the background. When omitted the manager
+	 * default applies; a background session is never killed on an absolute timer.
+	 */
+	readonly backgroundIdleTimeoutSeconds?: number;
 	readonly publishLifecycle: (event: ShellLifecycleEvent) => void;
 	readonly signal?: AbortSignal;
 	readonly shellKind?: string;
@@ -98,6 +105,7 @@ export interface ShellSessionManagerOptions {
 	readonly outputMaxChars?: number;
 	readonly outputEventIntervalMs?: number;
 	readonly outputEventMaxChars?: number;
+	readonly backgroundIdleTimeoutSeconds?: number;
 	readonly transportFactory?: ShellTransportFactory;
 	readonly createShellId?: () => string;
 }
@@ -119,6 +127,7 @@ interface SessionRecord {
 	readonly startedAt: string;
 	readonly startedTimeMs: number;
 	readonly timeoutSeconds: number;
+	readonly backgroundIdleTimeoutSeconds?: number;
 	readonly shellKind?: string;
 	readonly shellEdition?: string;
 	readonly stateWaiters: Set<() => void>;
@@ -151,6 +160,7 @@ export class ShellSessionManager {
 	readonly #outputMaxChars: number;
 	readonly #outputEventIntervalMs: number;
 	readonly #outputEventMaxChars: number;
+	readonly #backgroundIdleTimeoutSeconds: number;
 	readonly #transportFactory: ShellTransportFactory;
 	readonly #createShellId: () => string;
 	readonly #sessions = new Map<string, SessionRecord>();
@@ -177,6 +187,10 @@ export class ShellSessionManager {
 			options.outputEventMaxChars ?? DEFAULT_OUTPUT_EVENT_MAX_CHARS,
 			"outputEventMaxChars",
 			SHELL_LIFECYCLE_OUTPUT_CHUNK_MAX_CHARS,
+		);
+		this.#backgroundIdleTimeoutSeconds = nonNegativeFiniteNumber(
+			options.backgroundIdleTimeoutSeconds ?? DEFAULT_BACKGROUND_IDLE_TIMEOUT_SECONDS,
+			"backgroundIdleTimeoutSeconds",
 		);
 		this.#transportFactory = options.transportFactory ?? startPipeTransport;
 		this.#createShellId = options.createShellId ?? (() => randomBytes(4).toString("hex"));
@@ -245,7 +259,7 @@ export class ShellSessionManager {
 		if (session.background) this.#publishListUpdate(session);
 		session.unsubscribeOutput = transport.onOutput((chunk) => this.#acceptOutput(session, chunk));
 		session.unsubscribeExit = transport.onExit((exit) => this.#acceptExit(session, exit));
-		this.#startAbsoluteTimeout(session);
+		this.#armSessionTimeout(session);
 		this.#listenForAbort(session, request.signal);
 
 		if (request.background === false) {
@@ -261,6 +275,9 @@ export class ShellSessionManager {
 				session.background = true;
 				session.yielded = true;
 				this.#publishListUpdate(session);
+				// A session that outlives its yield is a background process: stop bounding it
+				// with the blocking budget and reap it only when it goes idle.
+				this.#armSessionTimeout(session);
 			}
 		}
 
@@ -275,6 +292,8 @@ export class ShellSessionManager {
 		if (owned instanceof ErrorSnapshotMarker) return owned.snapshot;
 		return this.#serialize(owned, async () => {
 			const cursor = owned.modelCursor;
+			// Polling and input both count as activity, so an observed session stays alive.
+			owned.lastUsedTimeMs = Date.now();
 			if (request.chars && owned.terminalState !== undefined) {
 				return errorSnapshot(
 					request.ownerSessionId,
@@ -521,11 +540,46 @@ export class ShellSessionManager {
 		}
 	}
 
-	#startAbsoluteTimeout(session: SessionRecord): void {
+	/**
+	 * A blocking call is bounded by `timeoutSeconds`. A background session is not bounded by an
+	 * absolute lifetime — it is only reaped after `backgroundIdleTimeoutSeconds` with no output
+	 * and no interaction, so a long-lived dev server survives idle stretches between requests.
+	 */
+	#armSessionTimeout(session: SessionRecord): void {
+		if (session.timeoutTimer !== undefined) {
+			clearTimeout(session.timeoutTimer);
+			session.timeoutTimer = undefined;
+		}
+		if (session.terminalState !== undefined) return;
+		if (session.background) {
+			const seconds = session.backgroundIdleTimeoutSeconds ?? this.#backgroundIdleTimeoutSeconds;
+			if (seconds > 0) this.#armIdleTimeout(session, seconds);
+			return;
+		}
+		if (session.timeoutSeconds <= 0) return;
 		session.timeoutTimer = setTimeout(() => {
+			session.timeoutTimer = undefined;
 			void this.#queueStop(session, "timed_out", false);
 		}, session.timeoutSeconds * 1_000);
 		session.timeoutTimer.unref();
+	}
+
+	#armIdleTimeout(session: SessionRecord, seconds: number): void {
+		const limitMs = seconds * 1_000;
+		const arm = (delayMs: number): void => {
+			session.timeoutTimer = setTimeout(() => {
+				session.timeoutTimer = undefined;
+				if (session.terminalState !== undefined) return;
+				const idleMs = Date.now() - session.lastUsedTimeMs;
+				if (idleMs < limitMs) {
+					arm(Math.max(1_000, limitMs - idleMs));
+					return;
+				}
+				void this.#queueStop(session, "timed_out", false);
+			}, delayMs);
+			session.timeoutTimer.unref();
+		};
+		arm(limitMs);
 	}
 
 	#listenForAbort(session: SessionRecord, signal: AbortSignal | undefined): void {
@@ -618,7 +672,10 @@ export class ShellSessionManager {
 		session.exitCode = exit.exitCode ?? undefined;
 		session.cleanupResult = cleanupResult;
 		session.completedAt = new Date().toISOString();
-		if (session.timeoutTimer !== undefined) clearTimeout(session.timeoutTimer);
+		if (session.timeoutTimer !== undefined) {
+			clearTimeout(session.timeoutTimer);
+			session.timeoutTimer = undefined;
+		}
 		if (session.outputEventTimer !== undefined) {
 			clearTimeout(session.outputEventTimer);
 			session.outputEventTimer = undefined;
@@ -729,7 +786,6 @@ export class ShellSessionManager {
 	}
 
 	#snapshot(session: SessionRecord, cursor: number): ShellSessionSnapshot {
-		session.lastUsedTimeMs = Date.now();
 		const output = session.output.read(cursor);
 		const stdout = session.stdout.read(0);
 		const stderr = session.stderr.read(0);
@@ -808,6 +864,9 @@ function createSession(
 		startedAt: new Date(startedTimeMs).toISOString(),
 		startedTimeMs,
 		timeoutSeconds: request.timeoutSeconds,
+		...(request.backgroundIdleTimeoutSeconds === undefined
+			? {}
+			: { backgroundIdleTimeoutSeconds: request.backgroundIdleTimeoutSeconds }),
 		shellKind: request.shellKind,
 		shellEdition: request.shellEdition,
 		stateWaiters: new Set(),
@@ -863,6 +922,9 @@ function validateStartRequest(request: ShellStartRequest): void {
 	if (!Number.isFinite(request.timeoutSeconds) || request.timeoutSeconds < 0) {
 		throw new RangeError("timeoutSeconds must be a non-negative finite number");
 	}
+	if (request.backgroundIdleTimeoutSeconds !== undefined) {
+		nonNegativeFiniteNumber(request.backgroundIdleTimeoutSeconds, "backgroundIdleTimeoutSeconds");
+	}
 }
 
 function validateInteractionRequest(request: ShellInteractionRequest): void {
@@ -889,6 +951,13 @@ function boundedPositiveInteger(value: number, name: string, maximum: number): n
 function nonNegativeInteger(value: number, name: string): number {
 	if (!Number.isSafeInteger(value) || value < 0) {
 		throw new RangeError(`${name} must be a non-negative safe integer`);
+	}
+	return value;
+}
+
+function nonNegativeFiniteNumber(value: number, name: string): number {
+	if (!Number.isFinite(value) || value < 0) {
+		throw new RangeError(`${name} must be a non-negative finite number`);
 	}
 	return value;
 }
