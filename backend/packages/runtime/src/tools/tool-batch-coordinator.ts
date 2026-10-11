@@ -18,7 +18,9 @@ import {
 } from "@mycli/storage";
 import {
 	fileMutationApprovalPreview,
+	formatArgumentPreview,
 	imageInputUnsupportedResult,
+	parseToolArguments,
 	toolErrorContext,
 	shellApprovalPreview,
 	toolCallRequestsSandboxOverride,
@@ -770,10 +772,12 @@ export class ToolBatchCoordinator {
 		});
 		const terminalInteraction = terminalInteractionFromArguments(call.name, call.argumentsJson);
 		const agentInteraction = agentInteractionFromArguments(call.name, call.argumentsJson);
+		const argumentsPreview = formatArgumentPreview(parseToolArguments(call.argumentsJson));
 		const activeTool = this.#options.activeTools.begin({
 			turnId: context.turnId,
 			callId: call.callId,
 			toolName: call.name,
+			...(argumentsPreview ? { argumentsPreview } : {}),
 			...(terminalInteraction ? { terminalInteraction } : {}),
 			...(agentInteraction ? { agentInteraction } : {}),
 			interruptErrorKind: mutating ? "effect_outcome_unknown" : "tool_interrupted",

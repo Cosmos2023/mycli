@@ -44,6 +44,7 @@ import type {
 	ToolExecutionResult,
 	ToolRouterContract,
 } from "@mycli/tools";
+import { formatArgumentPreview, parseToolArguments } from "@mycli/tools";
 import {
 	StorageFailure,
 } from "@mycli/storage";
@@ -752,10 +753,12 @@ export class NodeTurnRuntime {
 			signal: options.signal,
 			toolStopReason: () => this.#options.goal?.toolsStopReason(pending.turnId) ?? this.#options.goalUsage?.stopReason(pending.turnId),
 			onExecutionStart: () => {
+				const argumentsPreview = formatArgumentPreview(parseToolArguments(pending.call.argumentsJson));
 				activeTool = this.#toolExecutions.begin({
 					turnId: pending.turnId,
 					callId: pending.callId,
 					toolName: pending.toolName,
+					...(argumentsPreview ? { argumentsPreview } : {}),
 					interruptErrorKind: "effect_outcome_unknown",
 				},
 					emit,

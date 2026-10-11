@@ -275,6 +275,11 @@ test("Worker-backed root directly exposes and approves a small MCP catalog", {
 		)),
 		["mcp_local_echo"],
 	);
+	const completed = events(messages, "tool.complete")[0];
+	const completedParams = isObject(completed?.params) ? completed.params : {};
+	assert.equal(completedParams.display_label, "MCP local.echo");
+	assert.equal(completedParams.args_preview, "text=worker echo");
+	assert.equal(completedParams.result_preview, "echo:worker echo");
 
 	assert.equal(existsSync(mcpPidFile), true);
 	await shutdown();
@@ -552,6 +557,26 @@ test("M7 runs skills MCP hooks plugins and a subagent entirely in Node", {
 			"wait_agent",
 		],
 		JSON.stringify(extensionDiagnostics(requests, messages)),
+	);
+	const completedByName = new Map(events(messages, "tool.complete").map((message) => [
+		isObject(message.params) && typeof message.params.name === "string" ? message.params.name : "",
+		isObject(message.params) ? message.params : {},
+	]));
+	assert.deepEqual(
+		{
+			label: completedByName.get("mcp_local_echo")?.display_label,
+			args: completedByName.get("mcp_local_echo")?.args_preview,
+			result: completedByName.get("mcp_local_echo")?.result_preview,
+		},
+		{ label: "MCP local.echo", args: "text=m7", result: "echo:m7" },
+	);
+	assert.deepEqual(
+		{
+			label: completedByName.get("plugin_good_echo")?.display_label,
+			args: completedByName.get("plugin_good_echo")?.args_preview,
+			result: completedByName.get("plugin_good_echo")?.result_preview,
+		},
+		{ label: "Plugin good.echo", args: "text=m7", result: "m7" },
 	);
 	assert.equal(providerToolNames(parentRequests[0]!).includes("mcp_local_echo"), true);
 	assert.equal(providerToolNames(parentRequests[0]!).includes("plugin_good_echo"), true);

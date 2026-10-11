@@ -1501,6 +1501,9 @@ export interface GatewayToolRecord {
   version: 1;
   kind: "tool_execution";
   name: string;
+  display_label?: string;
+  args_preview?: string;
+  result_preview?: string;
   call_id?: string;
   status: "running" | "success" | "error" | "cancelled";
   mutating: boolean;

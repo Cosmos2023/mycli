@@ -65,7 +65,7 @@ test("plugin runtime adapts one isolated plugin into tools, hooks, and commands"
 		success: true,
 		modelOutput: "hello",
 		summary: "echoed",
-		metadata: { registrationCount: 1 },
+		metadata: { registrationCount: 1, result_display: "hello" },
 	});
 	assert.deepEqual(hookResult[0]?.result, { action: "modify", arguments: { checked: true } });
 	assert.deepEqual(secretHookResult[0]?.result, { action: "allow", additionalContexts: ["redacted"] });

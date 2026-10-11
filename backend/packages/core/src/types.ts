@@ -356,6 +356,8 @@ export type RuntimeEvent =
 		readonly multiSelect: boolean;
 	}
 	| { readonly type: "tool_execution_started"; readonly callId: string; readonly toolName: string;
+		/** Compact `key=value` preview of the call arguments, shown on the tool row. */
+		readonly argumentsPreview?: string;
 		readonly terminalInteraction?: GatewayTerminalInteraction; readonly agentInteraction?: GatewayAgentInteraction }
 	| {
 		readonly type: "tool_execution_completed";
@@ -363,6 +365,7 @@ export type RuntimeEvent =
 		readonly toolName: string;
 		readonly summary: string;
 		readonly durationMs: number;
+		readonly argumentsPreview?: string;
 		readonly metadata: Readonly<Record<string, unknown>>;
 	}
 	| {
@@ -372,6 +375,7 @@ export type RuntimeEvent =
 		readonly summary: string;
 		readonly durationMs: number;
 		readonly errorKind?: string;
+		readonly argumentsPreview?: string;
 		readonly metadata: Readonly<Record<string, unknown>>;
 	}
 	| {

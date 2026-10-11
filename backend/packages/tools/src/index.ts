@@ -334,6 +334,7 @@ export {
 	fileMutationApprovalPreview,
 } from "./policy/approval-policy.ts";
 export { shellApprovalPreview } from "./policy/shell-approval-preview.ts";
+export { formatArgumentPreview, parseToolArguments } from "./policy/tool-arguments.ts";
 export type {
 	ApprovalPolicyAllow,
 	ApprovalPolicyDecision,

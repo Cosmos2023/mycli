@@ -9,6 +9,7 @@ import {
 	type McpToolDescriptor,
 } from "../../src/index.ts";
 import { createMcpToolRegistration } from "../../src/mcp/index.ts";
+import { renderMcpDisplay } from "../../src/mcp/result-content.ts";
 
 test("creates stable MCP registrations and validates arguments through the shared router", async () => {
 	let callCount = 0;
@@ -256,6 +257,38 @@ test("rejects malformed MCP input schemas before registration", () => {
 		}),
 		/invalid_mcp_tool_schema/,
 	);
+});
+
+test("MCP display rendering replaces images, audio and resources with markers", () => {
+	assert.equal(
+		renderMcpDisplay({
+			content: [
+				{ type: "text", text: "hello" },
+				{ type: "image", mimeType: "image/png", data: "AAAA" },
+				{ type: "resource", resource: { uri: "data:///notes", mimeType: "text/plain", text: "notes" } },
+				{ type: "audio", mimeType: "audio/wav", data: "AAAA" },
+			],
+			isError: false,
+		}),
+		"hello\nimage returned · image/png\nresource · data:///notes\naudio returned",
+	);
+});
+
+test("MCP tool results carry a terminal-friendly display without raw payloads", async () => {
+	const client: McpClientContract = {
+		callTool: async (): Promise<McpToolCallResult> => ({
+			content: [
+				{ type: "text", text: "file contents" },
+				{ type: "resource", resource: { uri: "data:///notes", mimeType: "text/plain", text: "notes" } },
+			],
+			isError: false,
+		}),
+	};
+	const registration = createMcpToolRegistration(client, descriptor());
+	const router = new ToolRouter({ adapters: [registration.adapter], exposure: [registration.definition] });
+	const result = await router.execute(call('{"path":"README.md"}'), executionOptions());
+	assert.equal(result.success, true);
+	assert.equal(result.metadata.result_display, "file contents\nresource · data:///notes");
 });
 
 function descriptor(supportsParallelToolCalls = false): McpToolDescriptor {

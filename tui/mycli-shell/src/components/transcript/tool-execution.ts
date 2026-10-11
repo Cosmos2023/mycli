@@ -93,7 +93,8 @@ export class ToolExecutionComponent extends Container {
 		const target = this.tool.name.trim().toLowerCase() === "skill" ? shortPreview(this.tool.args) : undefined;
 		const targetSuffix = target ? ` ${target}` : "";
 		const suffix = duration ? theme.fg("dim", ` ${duration}`) : "";
-		return `${theme.fg(presentation.accent, theme.bold(presentation.icon))} ${theme.fg(presentation.accent, theme.bold(`${presentation.label}${targetSuffix}`))}${suffix}`;
+		const label = this.tool.displayLabel ?? presentation.label;
+		return `${theme.fg(presentation.accent, theme.bold(presentation.icon))} ${theme.fg(presentation.accent, theme.bold(`${label}${targetSuffix}`))}${suffix}`;
 	}
 
 	private contextHeaderText(): string {
@@ -112,11 +113,30 @@ export class ToolExecutionComponent extends Container {
 
 	private resultText(): string {
 		const color = this.tool.status === "error" ? "error" : "muted";
-		return theme.fg(color, `${uiGlyphs().output} ${this.resultSummary()}`);
+		return theme.fg(color, `${uiGlyphs().output} ${this.isExtensionTool() ? this.extensionBranchText() : this.resultSummary()}`);
 	}
 
 	private resultSummary(): string {
 		return conciseToolResult(this.tool, { includeTarget: !contextToolKind(this.tool.name) });
+	}
+
+	/**
+	 * MCP and plugin rows lead with what was called; the result moves into the detail block so
+	 * arguments and output never share one line.
+	 */
+	private extensionBranchText(): string {
+		const args = this.tool.argsPreview?.trim();
+		if (this.tool.status === "running") {
+			return args ? `${args} ${uiGlyphs().separator} Running...` : "Running...";
+		}
+		if (args) return args;
+		return firstMeaningfulLine(this.tool.resultPreview)
+			?? this.tool.summaryPreview
+			?? (this.tool.status === "error" ? "Failed" : "Done");
+	}
+
+	private isExtensionTool(): boolean {
+		return Boolean(this.tool.displayLabel);
 	}
 
 	private detailsComponent(): Text | { render: (width: number) => string[]; invalidate: () => void } | undefined {
@@ -144,7 +164,7 @@ export class ToolExecutionComponent extends Container {
 								0,
 							).render(width),
 						];
-					} else if (this.shouldShowCollapsedHint()) {
+					} else if (!this.isExtensionTool() && this.shouldShowCollapsedHint()) {
 						cachedLines = [
 							...cachedLines,
 							...new Text(this.collapsedHint(), TRANSCRIPT_DETAIL_INDENT, 0).render(width),
@@ -162,6 +182,9 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private detailText(): string {
+		if (this.isExtensionTool()) {
+			return this.tool.resultPreview ?? this.tool.detailPreview ?? "";
+		}
 		if (this.tool.status === "error") {
 			const detail = this.tool.errorPreview ?? this.tool.detailPreview ?? this.tool.outputPreview ?? "";
 			if (!this.tool.expanded && this.tool.name === "Compact") {
@@ -243,6 +266,9 @@ export class ToolExecutionComponent extends Container {
 		const rows = this.render(width).length;
 		if (this.tool.expanded) return this.detailText() !== "" && row === rows - 1;
 		if (toolContextActivity(this.tool) !== undefined) return row === rows - 1;
+		if (this.isExtensionTool()) {
+			return this.truncateDetailText(this.detailText(), width).skippedCount > 0 && row === rows - 1;
+		}
 		return this.shouldShowCollapsedHint() && row === rows - 1;
 	}
 

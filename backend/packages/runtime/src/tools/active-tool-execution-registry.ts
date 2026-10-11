@@ -10,6 +10,8 @@ export interface ActiveToolExecutionInput {
 	readonly turnId: string;
 	readonly callId: string;
 	readonly toolName: string;
+	/** Compact `key=value` preview of the call arguments, shown on the tool row. */
+	readonly argumentsPreview?: string;
 	readonly terminalInteraction?: GatewayTerminalInteraction;
 	readonly agentInteraction?: GatewayAgentInteraction;
 	readonly interruptErrorKind: "effect_outcome_unknown" | "tool_interrupted";
@@ -20,6 +22,7 @@ export interface ActiveToolExecutionClaim {
 	readonly trackingCallId: string;
 	readonly callId: string;
 	readonly toolName: string;
+	readonly argumentsPreview?: string;
 	readonly terminalInteraction?: GatewayTerminalInteraction;
 	readonly agentInteraction?: GatewayAgentInteraction;
 	readonly signal: AbortSignal;
@@ -67,6 +70,7 @@ export class ActiveToolExecutionRegistry {
 			trackingCallId: input.callId,
 			callId: boundedCallId(input.callId),
 			toolName: boundedToolName(input.toolName),
+			...(input.argumentsPreview ? { argumentsPreview: input.argumentsPreview.slice(0, 512) } : {}),
 			...(input.terminalInteraction ? { terminalInteraction: input.terminalInteraction } : {}),
 			...(input.agentInteraction ? { agentInteraction: input.agentInteraction } : {}),
 			signal: abortController.signal,
@@ -84,6 +88,7 @@ export class ActiveToolExecutionRegistry {
 			type: "tool_execution_started",
 			callId: claim.callId,
 			toolName: claim.toolName,
+			...(claim.argumentsPreview ? { argumentsPreview: claim.argumentsPreview } : {}),
 			...(claim.terminalInteraction ? { terminalInteraction: claim.terminalInteraction } : {}),
 			...(claim.agentInteraction ? { agentInteraction: claim.agentInteraction } : {}),
 		});
@@ -112,7 +117,7 @@ export class ActiveToolExecutionRegistry {
 				? {}
 				: { failureKind: result.errorKind.slice(0, 128) }),
 		});
-		emitToolExecutionResult(result, durationMs, emit);
+		emitToolExecutionResult(result, durationMs, emit, claim.argumentsPreview);
 		return true;
 	}
 
@@ -167,6 +172,7 @@ export class ActiveToolExecutionRegistry {
 					: `${claim.toolName} failed`,
 			durationMs,
 			errorKind,
+			...(claim.argumentsPreview ? { argumentsPreview: claim.argumentsPreview } : {}),
 			metadata: Object.freeze({
 				...(claim.terminalInteraction ? { terminal_interaction: claim.terminalInteraction } : {}),
 				...(claim.agentInteraction ? { agent_interaction: claim.agentInteraction } : {}),
@@ -198,6 +204,7 @@ export function emitToolExecutionResult(
 	result: ToolExecutionResult,
 	durationMs: number,
 	emit: (event: RuntimeEvent) => void,
+	argumentsPreview?: string,
 ): void {
 	const shared = {
 		callId: boundedCallId(result.callId),
@@ -205,6 +212,7 @@ export function emitToolExecutionResult(
 		summary: result.summary.slice(0, 512),
 		durationMs,
 		metadata: result.metadata,
+		...(argumentsPreview ? { argumentsPreview } : {}),
 	};
 	if (result.success) {
 		emit({ type: "tool_execution_completed", ...shared });

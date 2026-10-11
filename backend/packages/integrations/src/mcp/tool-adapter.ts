@@ -22,7 +22,13 @@ import type {
 	McpServerConfig,
 } from "./types.ts";
 import { mcpConfigFingerprint } from "./config-identity.ts";
-import { boundMcpText as boundText, contentMetadata, jsonText, renderMcpContent } from "./result-content.ts";
+import {
+	boundMcpText as boundText,
+	contentMetadata,
+	jsonText,
+	renderMcpContent,
+	renderMcpDisplay,
+} from "./result-content.ts";
 
 const MODEL_OUTPUT_LIMIT = 4_000;
 const METADATA_LIMIT = 12_000;
@@ -73,13 +79,17 @@ class McpTool implements ToolAdapter {
 					server: this.#descriptor.serverId,
 					tool: this.#descriptor.name,
 					failureCategory,
+					result_display: mcpFailureText(failure),
 					...(errorContext ? { error_context: errorContext } : {}),
 				}),
 			});
 		}
 		const rendered = renderMcpContent(result);
 		const modelOutput = boundText(rendered.text || "MCP tool returned no content.", MODEL_OUTPUT_LIMIT);
-		const metadata = boundMetadata(this.#descriptor, result, rendered.rawTruncated);
+		const metadata = Object.freeze({
+			...boundMetadata(this.#descriptor, result, rendered.rawTruncated),
+			result_display: renderMcpDisplay(result),
+		});
 		const summary = result.isError || rendered.invalidImages
 			? `MCP ${this.#descriptor.serverId}.${this.#descriptor.name} failed`
 			: `MCP ${this.#descriptor.serverId}.${this.#descriptor.name} completed`;

@@ -18,6 +18,9 @@ export function projectGatewayToolRecord(input: {
 	const metadata = input.metadata ?? {};
 	const name = text(metadata.tool_name, 256) ?? text(metadata.name, 256)
 		?? text(input.text.split(/\s+/, 1)[0], 256) ?? "Tool";
+	const displayLabel = text(metadata.display_label, 128);
+	const argsPreview = text(metadata.args_preview, GATEWAY_TOOL_PREVIEW_MAX_CHARS);
+	const resultPreview = preview(metadata.result_preview);
 	const raw = record(metadata.raw_payload);
 	const args = record(metadata.arguments);
 	const display = record(metadata.display);
@@ -60,6 +63,9 @@ export function projectGatewayToolRecord(input: {
 		version: 1,
 		kind: "tool_execution",
 		name,
+		display_label: displayLabel,
+		args_preview: argsPreview,
+		result_preview: resultPreview,
 		call_id: text(metadata.call_id, 512) ?? text(metadata.callId, 512),
 		status,
 		...(terminalInteraction ? { terminal_interaction: terminalInteraction } : {}),

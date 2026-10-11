@@ -2,6 +2,7 @@ import { normalizeCanonicalImages, type CanonicalImage } from "@mycli/core";
 import type { McpContentItem, McpToolCallResult } from "./types.ts";
 
 const RAW_TEXT_LIMIT = 12_000;
+const RESULT_DISPLAY_LIMIT = 4_000;
 
 interface RenderedMcpContent {
 	readonly text: string;
@@ -52,6 +53,41 @@ export function renderMcpContent(result: McpToolCallResult): RenderedMcpContent 
 		parts.unshift("MCP images unavailable: invalid or oversized image data.");
 	}
 	return { text: parts.join("\n"), images, rawTruncated, invalidImages };
+}
+
+/**
+ * A rendering for the terminal, not the model: images and embedded resources become compact
+ * markers instead of base64 or raw JSON, and text stays text.
+ */
+export function renderMcpDisplay(result: McpToolCallResult): string {
+	const parts: string[] = [];
+	for (const item of result.content) {
+		if (item.type === "image") {
+			parts.push(imageMarker(item.mimeType ?? item.mediaType));
+		} else if (item.type === "audio") {
+			parts.push("audio returned");
+		} else if (item.type === "resource" && isRecord(item.resource)) {
+			const resource = item.resource;
+			const uri = typeof resource.uri === "string" ? resource.uri : undefined;
+			const mimeType = typeof resource.mimeType === "string" ? resource.mimeType : undefined;
+			parts.push(typeof resource.blob === "string" && mimeType?.startsWith("image/")
+				? imageMarker(mimeType)
+				: `resource · ${uri ?? mimeType ?? "embedded"}`);
+		} else if (item.type === "text" && typeof item.text === "string") {
+			parts.push(item.text);
+		} else if (item.type === "json") {
+			parts.push(jsonText(item.value ?? item.json ?? item.data));
+		} else {
+			parts.push(jsonText(contentMetadata(item)));
+		}
+	}
+	if (result.structuredContent !== undefined) parts.push(jsonText(result.structuredContent));
+	const text = parts.join("\n").trim();
+	return text ? boundMcpText(text, RESULT_DISPLAY_LIMIT) : "";
+}
+
+function imageMarker(mimeType: unknown): string {
+	return typeof mimeType === "string" && mimeType ? `image returned · ${mimeType}` : "image returned";
 }
 
 export function contentMetadata(item: McpContentItem): Readonly<Record<string, unknown>> {

@@ -44,6 +44,9 @@ export function toolFromTranscriptItem(
 	return {
 		id: item.id,
 		name: record.name,
+		displayLabel: record.display_label,
+		argsPreview: record.args_preview,
+		resultPreview: record.result_preview,
 		terminalInteraction: record.terminal_interaction,
 		agentInteraction: record.agent_interaction?.kind === agentInteractionKind(record.name) ? record.agent_interaction : undefined,
 		args: compactTarget(commandTargetPreview(record.name, record.target ?? null), workspace) ?? undefined,

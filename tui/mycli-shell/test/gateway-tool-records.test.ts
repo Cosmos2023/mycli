@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { stripVTControlCharacters as stripAnsi } from "node:util";
 import { createErrorContext, gatewayToolLifecycleRecord, projectGatewayToolRecord, type GatewayToolRecord } from "@mycli/contracts";
 import { ToolExecutionComponent } from "../src/components/transcript/tool-execution.ts";
 import { visibleWidth } from "../src/tui-core/utils.ts";
@@ -217,4 +218,54 @@ test("bounded typed shell output preserves the final line for lifecycle events a
 		assert.match(preview, /chars omitted/);
 		assert.match(preview, /\nlast\n$/);
 	}
+});
+
+function extensionTool(metadata: Record<string, unknown>, method: "tool.start" | "tool.complete" | "tool.failed") {
+	const record = gatewayToolLifecycleRecord(method, metadata);
+	const state = reduceRuntimeEvent(initialRuntimeState(), method, { ...metadata, tool_id: "mcp", tool_record: record });
+	return { record, tool: projectRuntimeState(state).tools[0]! };
+}
+
+test("MCP rows lead with the integration label and arguments and keep the result on its own lines", () => {
+	const { record, tool } = extensionTool({
+		name: "mcp_demo_run", call_id: "call:mcp", duration_s: 0.82, summary: "MCP demo.run completed", success: true,
+		display_label: "MCP demo.run", args_preview: "script=print(1) · cwd=/repo", result_preview: "1",
+	}, "tool.complete");
+	assert.equal(record.display_label, "MCP demo.run");
+	assert.equal(record.args_preview, "script=print(1) · cwd=/repo");
+	assert.equal(record.result_preview, "1");
+	assert.equal(tool.displayLabel, "MCP demo.run");
+	const lines = new ToolExecutionComponent(tool).render(100).map((line) => stripAnsi(line).trimEnd());
+	assert.equal(lines[1]?.trim(), "• MCP demo.run 820ms");
+	assert.equal(lines[2]?.trim(), "⎿ script=print(1) · cwd=/repo");
+	assert.equal(lines[3]?.trim(), "1");
+	assert.doesNotMatch(lines.join("\n"), /mcp_demo_run/u);
+});
+
+test("MCP failures show the result once without repeating the summary", () => {
+	const { tool } = extensionTool({
+		name: "mcp_demo_run", call_id: "call:mcp", duration_s: 0.3, summary: "MCP demo.run failed", success: false,
+		display_label: "MCP demo.run", args_preview: "script=print(1)",
+		result_preview: "Error kind: transport_closed\nConnection closed",
+	}, "tool.failed");
+	const text = new ToolExecutionComponent(tool).render(100).map((line) => stripAnsi(line).trimEnd()).join("\n");
+	assert.match(text, /⎿ script=print\(1\)/u);
+	assert.match(text, /Error kind: transport_closed/u);
+	assert.doesNotMatch(text, /MCP demo\.run failed/u);
+});
+
+test("MCP rows stay width safe and expand the full result on demand", () => {
+	const result = Array.from({ length: 12 }, (_, index) => `line ${index} of output`).join("\n");
+	const { tool } = extensionTool({
+		name: "mcp_demo_run", call_id: "call:mcp", duration_s: 0.82, summary: "MCP demo.run completed", success: true,
+		display_label: "MCP demo.run", args_preview: "script=print(1)", result_preview: result,
+	}, "tool.complete");
+	for (const width of [32, 60, 100]) {
+		const collapsed = new ToolExecutionComponent({ ...tool, expanded: false }).render(width).map(stripAnsi);
+		assert.ok(collapsed.every((line) => visibleWidth(line) <= width));
+		assert.match(collapsed.join("\n"), /\+ \d+ lines/u);
+	}
+	const expanded = new ToolExecutionComponent({ ...tool, expanded: true }).render(100).map(stripAnsi);
+	assert.match(expanded.join("\n"), /line 0 of output/u);
+	assert.match(expanded.join("\n"), /line 11 of output/u);
 });

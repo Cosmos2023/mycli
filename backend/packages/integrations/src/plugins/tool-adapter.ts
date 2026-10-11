@@ -70,14 +70,21 @@ class PluginTool implements ToolAdapter {
 				summary,
 				...(!success ? { errorKind: errorKind ?? "plugin_tool_error" } : {}),
 				...(errorContext ? { errorContext } : {}),
-				metadata: Object.freeze({ ...boundedMetadata(result.value.metadata), ...(errorContext ? { error_context: errorContext } : {}) }),
+				metadata: Object.freeze({
+					...boundedMetadata(result.value.metadata),
+					result_display: modelOutput,
+					...(errorContext ? { error_context: errorContext } : {}),
+				}),
 			});
 		} catch (error) {
 			if (options.signal.aborted || isAbortError(error)) throw error;
 			const errorContext = pluginFailureContext(error, { pluginId: this.#pluginId, operation: "tools/call", scope: failureScope("tool_call", options.callId) });
+			const failureText = pluginFailureText(errorContext);
 			return Object.freeze({ success: false, modelOutput: pluginFailureText(errorContext), summary: `Plugin ${this.definition.name} failed`,
 				errorKind: `plugin_${error instanceof PluginHostError ? error.kind : "error"}`,
-				...(options.errorContextVersion === 1 ? { errorContext, metadata: { error_context: errorContext } } : { metadata: {} }),
+				...(options.errorContextVersion === 1
+					? { errorContext, metadata: { error_context: errorContext, result_display: failureText } }
+					: { metadata: { result_display: failureText } }),
 			});
 		}
 	}

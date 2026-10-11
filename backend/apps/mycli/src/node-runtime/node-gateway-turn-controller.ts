@@ -64,6 +64,7 @@ import type { AgentInteractiveRequestGateway } from "./agent-interactive-request
 import type {
 	NodeGatewayReviewRuntimeFactory,
 	NodeGatewayCredentialReadiness,
+	NodeGatewayIntegrations,
 	NodeGatewayRuntime,
 	NodeGatewayTraceCommands,
 } from "./node-gateway-types.ts";
@@ -130,6 +131,7 @@ interface NodeGatewayTurnControllerOptions {
 
 export interface NodeGatewayTurnDependencies {
 	readonly hasPendingGoalInteraction?: () => boolean;
+	readonly integrations?: NodeGatewayIntegrations;
 	readonly createReviewRuntime?: NodeGatewayReviewRuntimeFactory;
 	readonly validateSelectedSkills?: (sessionId: string, references: readonly SkillReference[]) => void;
 	readonly sessionCoordinator?: SessionCoordinator<NodeGatewayRuntime>;
@@ -178,6 +180,7 @@ export class NodeGatewayTurnController {
 	#activeTask: Promise<void> | null = null;
 	#admission: PendingAdmission | null = null;
 	#closed = false;
+	#toolLabels: { readonly manifest: unknown; readonly labels: ReadonlyMap<string, string> } | null = null;
 
 	constructor(options: NodeGatewayTurnControllerOptions) {
 		this.#dependencies = options.dependencies;
@@ -1442,12 +1445,15 @@ export class NodeGatewayTurnController {
 				active.visibleAgentOutput = true;
 				const callId = boundedString(event.callId, 256);
 				const toolName = boundedString(event.toolName, 128) || "Tool";
+				const displayLabel = this.#toolDisplayLabel(toolName);
 				this.#publish("tool.start", {
 					client_turn_id: active.clientTurnId,
 					tool_id: toolLifecycleId(callId, toolName),
 					call_id: callId,
 					name: toolName,
 					context: `Executing ${toolName}`,
+					...(displayLabel ? { display_label: displayLabel } : {}),
+					...(event.argumentsPreview ? { args_preview: event.argumentsPreview } : {}),
 					...(event.terminalInteraction ? { terminal_interaction: projectTerminalInteraction(event.terminalInteraction) } : {}),
 					...(event.agentInteraction ? { agent_interaction: projectAgentInteraction(event.agentInteraction) } : {}),
 				});
@@ -1512,6 +1518,23 @@ export class NodeGatewayTurnController {
 		this.#emitTurnEvent(active, "assistant_delta", "text_delta", text);
 	}
 
+	/**
+	 * MCP and plugin tools arrive as provider-safe names (`mcp_demo_run`). The integration
+	 * manifest still knows the origin, so the tool row can read `MCP demo.run` instead.
+	 */
+	#toolDisplayLabel(toolName: string): string | undefined {
+		const integrations = this.#dependencies.integrations;
+		if (!integrations?.toolManifest) return undefined;
+		const manifest = typeof integrations.toolManifest === "function"
+			? integrations.toolManifest()
+			: integrations.toolManifest;
+		if (!manifest) return undefined;
+		if (!this.#toolLabels || this.#toolLabels.manifest !== manifest) {
+			this.#toolLabels = { manifest, labels: extensionToolLabels(manifest) };
+		}
+		return this.#toolLabels.labels.get(toolName);
+	}
+
 	#emitToolFinished(
 		active: ActiveTurn,
 		event: Extract<RuntimeEvent, {
@@ -1529,11 +1552,18 @@ export class NodeGatewayTurnController {
 		const durationSeconds = durationMs / 1000;
 		const method = success ? "tool.complete" : "tool.failed";
 		const metadata = safeToolMetadata(event.metadata, success);
+		const displayLabel = this.#toolDisplayLabel(toolName);
+		const resultPreview = typeof event.metadata.result_display === "string"
+			? boundedString(event.metadata.result_display, 8192)
+			: "";
 		this.#publish(method, {
 			client_turn_id: active.clientTurnId,
 			tool_id: toolLifecycleId(callId, toolName),
 			call_id: callId,
 			name: toolName,
+			...(displayLabel ? { display_label: displayLabel } : {}),
+			...(event.argumentsPreview ? { args_preview: event.argumentsPreview } : {}),
+			...(resultPreview ? { result_preview: resultPreview } : {}),
 			duration_s: durationSeconds,
 			summary,
 			summary_chars: summary.length,
@@ -2106,6 +2136,27 @@ function nonNegativeMetric(value: unknown): number {
 
 function isObject(value: unknown): value is JsonObject {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Index the combined tool manifest so a provider-safe tool name can be shown with its
+ * integration origin. Non-extension tools are absent and keep their plain name.
+ */
+function extensionToolLabels(manifest: unknown): ReadonlyMap<string, string> {
+	const labels = new Map<string, string>();
+	if (!isObject(manifest) || !Array.isArray(manifest.tools)) return labels;
+	for (const entry of manifest.tools) {
+		if (!isObject(entry) || typeof entry.name !== "string" || !entry.name) continue;
+		const origin = isObject(entry.origin_metadata) ? entry.origin_metadata : undefined;
+		if (!origin) continue;
+		const tool = typeof origin.tool === "string" && origin.tool ? origin.tool : undefined;
+		if (!tool) continue;
+		const server = typeof origin.server === "string" && origin.server ? origin.server : undefined;
+		const plugin = typeof origin.plugin === "string" && origin.plugin ? origin.plugin : undefined;
+		if (server) labels.set(entry.name, `MCP ${server}.${tool}`);
+		else if (plugin) labels.set(entry.name, `Plugin ${plugin}.${tool}`);
+	}
+	return labels;
 }
 
 function numberRecord(value: JsonObject): Readonly<Record<string, number>> {

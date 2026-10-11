@@ -1,4 +1,5 @@
 import { deniedReadPath } from "./denied-read-policy.ts";
+import { formatArgumentPreview, parseToolArguments as parseArguments } from "./tool-arguments.ts";
 import {
 	isAbsolute,
 	posix,
@@ -419,7 +420,7 @@ export class ApprovalPolicy {
 			callId: call.callId,
 			toolName: call.name,
 			displayName: label.display,
-			preview: bounded(extensionArgumentPreview(call.argumentsJson) ?? label.short),
+			preview: bounded(formatArgumentPreview(parseArguments(call.argumentsJson)) ?? label.short),
 			reason: extensionApprovalReason(policy, label),
 			...(risk ? { risk: risk.risk, riskReason: risk.reason } : {}),
 			options: scope ? Object.freeze(["approve_once", "reject", "allow_session", "always_allow"] as const) : APPROVAL_OPTIONS,
@@ -682,20 +683,6 @@ function extensionToolRisk(
 	return undefined;
 }
 
-/** `key=value` pairs read better than raw JSON in a single-line approval preview. */
-function extensionArgumentPreview(argumentsJson: string): string | undefined {
-	const value = parseArguments(argumentsJson);
-	if (!value) return undefined;
-	const entries = Object.entries(value);
-	if (entries.length === 0) return undefined;
-	const parts = entries.slice(0, 4).map(([key, entry]) => {
-		const text = typeof entry === "string" ? entry : JSON.stringify(entry) ?? "";
-		return `${key}=${text.length > 48 ? `${text.slice(0, 47)}…` : text}`;
-	});
-	if (entries.length > 4) parts.push(`+${entries.length - 4} more`);
-	return parts.join(" · ");
-}
-
 function freezePattern(pattern: readonly string[]): readonly string[] {
 	if (pattern.length === 0 || pattern.length > 16
 		|| pattern.some((token) => typeof token !== "string" || !token.trim() || token.length > 256)
@@ -715,17 +702,6 @@ function boundedPattern(pattern: readonly string[]): readonly string[] | undefin
 
 function equalTokens(left: readonly string[], right: readonly string[]): boolean {
 	return left.length === right.length && left.every((token, index) => token === right[index]);
-}
-
-function parseArguments(value: string): Readonly<Record<string, unknown>> | undefined {
-	try {
-		const parsed = JSON.parse(value) as unknown;
-		return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
-			? parsed as Readonly<Record<string, unknown>>
-			: undefined;
-	} catch {
-		return undefined;
-	}
 }
 
 function boundedApprovalDetail(value: string): { readonly value: string; readonly truncated: boolean } {

@@ -95,6 +95,12 @@ export type MycliShellToolStatus = "running" | "success" | "error" | "cancelled"
 export type MycliShellTool = {
 	id: string;
 	name: string;
+	/** Readable label for MCP and plugin tools (`MCP demo.run`) instead of the provider-safe name. */
+	displayLabel?: string;
+	/** Compact `key=value` preview of the call arguments. */
+	argsPreview?: string;
+	/** Terminal-friendly result text, already stripped of base64 and raw resource blobs. */
+	resultPreview?: string;
 	terminalInteraction?: GatewayTerminalInteraction;
 	agentInteraction?: GatewayAgentInteraction;
 	args?: string;
