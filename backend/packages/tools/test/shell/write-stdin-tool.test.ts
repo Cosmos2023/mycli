@@ -75,7 +75,10 @@ test("WriteStdin records successful input even when it interrupts or completes t
 		processState: "interrupted", exitCode: 130, commandPreview: "node wait-input.cjs" };
 	const tool = new WriteStdinTool({ manager: new InteractionManager(snapshot) });
 	const result = await tool.execute({ session_id: snapshot.shellId, chars: "\u0003" }, executionOptions());
-	assert.equal(result.success, false);
+	// A caller-initiated Ctrl-C is a normal result; the exit code carries the outcome.
+	assert.equal(result.success, true);
+	assert.equal(result.errorKind, undefined);
+	assert.equal(result.summary, "Shell interrupted");
 	assert.deepEqual(result.metadata.terminal_interaction, {
 		shell_id: snapshot.shellId, kind: "input", input_preview: '"^C"',
 		command_preview: "node wait-input.cjs", interaction_succeeded: true, process_running: false,
@@ -114,6 +117,29 @@ test("WriteStdin rejects invalid ids, chars, and output budgets", async () => {
 	assert.equal(chars.errorKind, "invalid_chars");
 	assert.equal(budget.errorKind, "invalid_output_budget");
 	assert.equal(manager.interactions.length, 0);
+});
+
+test("WriteStdin reports an ended session as a result instead of a failure", async () => {
+	for (const [terminalState, summary] of [
+		["interrupted", "Shell interrupted"],
+		["timed_out", "Shell exited"],
+		["killed", "Shell exited"],
+		["completed", "Shell exited"],
+	] as const) {
+		const manager = new InteractionManager({
+			...runningSnapshot("bye\n"),
+			status: "exited",
+			processState: terminalState,
+			terminalState,
+			exitCode: 0,
+		});
+		const tool = new WriteStdinTool({ manager, createChunkId: () => "chunk-stdin" });
+		const result = await tool.execute({ session_id: "a1b2c3d4" }, executionOptions());
+		assert.equal(result.success, true, terminalState);
+		assert.equal(result.errorKind, undefined, terminalState);
+		assert.equal(result.summary, summary, terminalState);
+		assert.match(result.modelOutput, /Process exited with code 0/u);
+	}
 });
 
 class InteractionManager {

@@ -374,6 +374,22 @@ test("a blocking call keeps its absolute timeout budget", async () => {
 	await manager.close();
 });
 
+test("a caller Ctrl-C ends the session without an error snapshot", async () => {
+	const factory = new FakeShellTransportFactory();
+	const manager = new ShellSessionManager({
+		transportFactory: factory.create,
+		createShellId: () => "a1b2c3d4",
+	});
+	await manager.start(shellStart({ background: true, timeoutSeconds: 30 }));
+	const snapshot = await manager.interact(shellInteraction({ chars: "\u0003" }));
+	assert.equal(snapshot.success, true);
+	assert.equal(snapshot.terminalState, "interrupted");
+	assert.equal(snapshot.cleanupResult, "interrupted");
+	assert.equal(factory.transports[0]?.interruptCalls, 1);
+	assert.equal(factory.transports[0]?.terminateCalls, 0);
+	await manager.close();
+});
+
 test("owners cannot observe or interact with another session", async () => {
 	const factory = new FakeShellTransportFactory();
 	const manager = new ShellSessionManager({

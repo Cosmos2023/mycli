@@ -373,6 +373,7 @@ export function formatShellSnapshotResult(
 	snapshot: ShellSessionSnapshot,
 	maxOutputTokens: number,
 	createChunkId: () => string = defaultChunkId,
+	options: { readonly interaction?: boolean } = {},
 ): ToolAdapterResult {
 	if (!snapshot.success || !snapshot.shellId) {
 		return shellFailure(
@@ -389,7 +390,34 @@ export function formatShellSnapshotResult(
 		output: snapshot.output,
 		maxOutputTokens,
 	});
+	const metadata = Object.freeze({
+		shell_id: snapshot.shellId,
+		process_state: snapshot.processState,
+		terminal_state: snapshot.terminalState ?? null,
+		exit_code: snapshot.exitCode ?? null,
+		yielded: snapshot.yielded,
+		tty: snapshot.tty,
+		transport: snapshot.transport ?? null,
+		output_chars: snapshot.outputChars,
+		omitted_output_chars: snapshot.omittedOutputChars + formatted.omittedChars,
+		original_output_tokens: formatted.originalTokenCount,
+	});
 	const running = snapshot.terminalState === undefined;
+	if (options.interaction === true) {
+		// Polling or writing to an existing session reports the process state. A process that has
+		// already ended — including one the caller just interrupted with Ctrl-C — is a normal
+		// result whose exit code is data, not a tool failure.
+		return {
+			success: true,
+			modelOutput: formatted.modelOutput,
+			summary: running
+				? `Shell ${snapshot.shellId} is running`
+				: snapshot.terminalState === "interrupted"
+					? "Shell interrupted"
+					: "Shell exited",
+			metadata,
+		};
+	}
 	const success = running
 		|| (snapshot.terminalState === "completed" && snapshot.exitCode === 0);
 	const errorKind = success ? undefined : terminalErrorKind(snapshot);
@@ -402,18 +430,7 @@ export function formatShellSnapshotResult(
 				? "Shell completed"
 				: "Shell failed",
 		...(errorKind ? { errorKind } : {}),
-		metadata: Object.freeze({
-			shell_id: snapshot.shellId,
-			process_state: snapshot.processState,
-			terminal_state: snapshot.terminalState ?? null,
-			exit_code: snapshot.exitCode ?? null,
-			yielded: snapshot.yielded,
-			tty: snapshot.tty,
-			transport: snapshot.transport ?? null,
-			output_chars: snapshot.outputChars,
-			omitted_output_chars: snapshot.omittedOutputChars + formatted.omittedChars,
-			original_output_tokens: formatted.originalTokenCount,
-		}),
+		metadata,
 	};
 }
 

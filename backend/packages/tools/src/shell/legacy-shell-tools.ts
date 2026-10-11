@@ -77,7 +77,9 @@ abstract class LegacyOutputTool implements ToolAdapter {
 			yieldTimeMs: 0,
 			signal: options.signal,
 		});
-		return formatShellSnapshotResult(snapshot, LEGACY_OUTPUT_TOKENS, this.#createChunkId);
+		return formatShellSnapshotResult(snapshot, LEGACY_OUTPUT_TOKENS, this.#createChunkId, {
+			interaction: true,
+		});
 	}
 }
 

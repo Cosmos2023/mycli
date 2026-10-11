@@ -61,6 +61,22 @@ test("legacy output aliases poll immediately and KillShell terminates by owner",
 	assert.equal(killed.summary.includes("npm test"), false);
 });
 
+test("legacy output aliases report an ended session as a result instead of a failure", async () => {
+	const manager = new LegacyManager({
+		...runningSnapshot(),
+		status: "exited",
+		processState: "timed_out",
+		terminalState: "timed_out",
+		exitCode: 0,
+	});
+	const shellOutput = new ShellOutputTool({ manager, createChunkId: () => "chunk-output" });
+	const result = await shellOutput.execute({ shell_id: "a1b2c3d4" }, executionOptions());
+	assert.equal(result.success, true);
+	assert.equal(result.errorKind, undefined);
+	assert.equal(result.summary, "Shell exited");
+	assert.match(result.modelOutput, /Process exited with code 0/u);
+});
+
 class LegacyManager {
 	readonly starts: ShellStartRequest[] = [];
 	readonly interactions: ShellInteractionRequest[] = [];

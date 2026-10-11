@@ -83,7 +83,9 @@ export class WriteStdinTool implements ToolAdapter {
 				: clamp(requestedWait, MIN_POLL_WAIT_MS, MAX_POLL_WAIT_MS),
 			signal: options.signal,
 		});
-		const result = formatShellSnapshotResult(snapshot, outputBudget, this.#createChunkId);
+		const result = formatShellSnapshotResult(snapshot, outputBudget, this.#createChunkId, {
+			interaction: true,
+		});
 		const interaction = projectTerminalInteraction({
 			...terminalInteractionFromArguments(this.definition.name, { session_id: shellId, chars }),
 			command_preview: snapshot.commandPreview,
