@@ -52,6 +52,7 @@ export const LEGACY_TOOL_REASONS: Readonly<Record<string, ErrorReason>> = Object
 	unsupported_capability: "capability.unspecified",
 	permission_denied: "policy.access_denied", workspace_escape: "policy.access_denied",
 	sandbox_override_not_approved: "policy.access_denied", secret_like_content: "policy.access_denied",
+	sandbox_denied: "policy.access_denied",
 	permission_grant_not_approved: "policy.access_denied", tool_not_allowed_in_plan_mode: "policy.access_denied",
 	network_disabled: "policy.access_denied", network_domain_denied: "policy.access_denied",
 	unsafe_address: "policy.access_denied", unsafe_redirect: "policy.access_denied",

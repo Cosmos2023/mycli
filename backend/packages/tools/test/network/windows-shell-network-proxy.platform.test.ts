@@ -251,10 +251,9 @@ function assertExit(result: ToolAdapterResult, code: number): void {
 }
 
 /**
- * The sandbox denies egress by failing the command. The exit code is data rather than a tool
- * failure, so a denied command is a successful call with a nonzero exit code.
+ * A sandbox denial is a policy failure, distinct from a command that merely exited nonzero.
  */
 function assertCommandDenied(result: ToolAdapterResult): void {
-	assert.equal(result.success, true, result.modelOutput);
-	assert.notEqual(result.metadata?.exit_code, 0, result.modelOutput);
+	assert.equal(result.success, false, result.modelOutput);
+	assert.equal(result.errorKind, "sandbox_denied", result.modelOutput);
 }

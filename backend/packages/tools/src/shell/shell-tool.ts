@@ -19,6 +19,7 @@ import {
 import {
 	executionPolicy,
 	hasUnrestrictedFilesystem,
+	requiresProcessSandbox,
 } from "../policy/execution-policy.ts";
 import {
 	prepareSandboxedProcess,
@@ -287,6 +288,7 @@ export class ShellTool implements ToolAdapter {
 		let launch: SandboxedProcessLaunch;
 		let environment: ShellEnvironmentResult;
 		let networkProxy: NetworkProxyLease | undefined;
+		let blockedByPolicy = false;
 		try {
 			environment = createShellEnvironment({
 				cwd,
@@ -315,7 +317,13 @@ export class ShellTool implements ToolAdapter {
 				options.signal.throwIfAborted();
 				const interaction = this.#networkProxyInteraction?.({ sessionId: options.ownerSessionId, turnId: options.ownerTurnId, callId: options.callId });
 				networkProxy = await this.#networkProxyFactory(effectivePolicy.networkDomains, effectivePolicy.networkProxy, {
-					...interaction, ...(interaction?.requestApproval ? { requestApproval: (request, signal) =>
+					...interaction,
+					// The proxy knows exactly which requests the execution policy refused.
+					onBlocked: (details) => {
+						blockedByPolicy = true;
+						interaction?.onBlocked?.(details);
+					},
+					...(interaction?.requestApproval ? { requestApproval: (request, signal) =>
 						interaction.requestApproval!(request, AbortSignal.any([signal, options.signal])) } : {}),
 				});
 				options.signal.throwIfAborted();
@@ -365,6 +373,10 @@ export class ShellTool implements ToolAdapter {
 			snapshot,
 			invocation.maxOutputTokens,
 			this.#createChunkId,
+			{
+				sandboxed: requiresProcessSandbox(effectivePolicy),
+				blockedByPolicy,
+			},
 		);
 	}
 }
@@ -373,7 +385,13 @@ export function formatShellSnapshotResult(
 	snapshot: ShellSessionSnapshot,
 	maxOutputTokens: number,
 	createChunkId: () => string = defaultChunkId,
-	options: { readonly interaction?: boolean } = {},
+	options: {
+		readonly interaction?: boolean;
+		/** True when the command ran under a process sandbox that can refuse operations. */
+		readonly sandboxed?: boolean;
+		/** True when the managed network proxy refused a request during this call. */
+		readonly blockedByPolicy?: boolean;
+	} = {},
 ): ToolAdapterResult {
 	if (!snapshot.success || !snapshot.shellId) {
 		return shellFailure(
@@ -419,20 +437,24 @@ export function formatShellSnapshotResult(
 		};
 	}
 	// A command that ran to completion is a successful call whatever its exit code: the code is
-	// data the model reads from `Process exited with code N`. Only a process the runtime had to
-	// kill (timeout / kill / interrupt) is a failure.
-	const success = running
-		|| snapshot.terminalState === "completed"
-		|| snapshot.terminalState === "failed";
-	const errorKind = success ? undefined : terminalErrorKind(snapshot);
+	// data the model reads from `Process exited with code N`. Two cases stay failures: the runtime
+	// had to kill the process, or the sandbox refused the operation outright.
+	const finishedOnItsOwn = snapshot.terminalState === "completed" || snapshot.terminalState === "failed";
+	const denied = !running && finishedOnItsOwn
+		&& (options.blockedByPolicy === true
+			|| (options.sandboxed === true && sandboxDenied(snapshot)));
+	const success = running || (finishedOnItsOwn && !denied);
+	const errorKind = denied ? "sandbox_denied" : success ? undefined : terminalErrorKind(snapshot);
 	return {
 		success,
 		modelOutput: formatted.modelOutput,
 		summary: running
 			? `Shell ${snapshot.shellId} is running`
-			: success
-				? shellCompletionSummary(snapshot)
-				: "Shell failed",
+			: denied
+				? "Shell blocked by the sandbox"
+				: success
+					? shellCompletionSummary(snapshot)
+					: "Shell failed",
 		...(errorKind ? { errorKind } : {}),
 		metadata,
 	};
@@ -515,6 +537,26 @@ function terminalErrorKind(snapshot: ShellSessionSnapshot): string {
 function shellCompletionSummary(snapshot: ShellSessionSnapshot): string {
 	const code = snapshot.exitCode;
 	return code === undefined || code === 0 ? "Shell completed" : `Shell exited with code ${code}`;
+}
+
+/**
+ * A command can fail because the sandbox refused the operation instead of failing on its own.
+ * There is no deterministic signal, so — like Codex — we look for well-known denial phrases in
+ * the output, and only when the command actually ran under a sandbox.
+ */
+const SANDBOX_DENIED_KEYWORDS: readonly string[] = Object.freeze([
+	// macOS seatbelt and Linux sandboxes report refusals as EPERM/EROFS.
+	"operation not permitted",
+	"read-only file system",
+	"eperm",
+	// curl reports a refused connect with this token instead of the errno.
+	"couldn't connect to server",
+]);
+
+function sandboxDenied(snapshot: ShellSessionSnapshot): boolean {
+	if (snapshot.exitCode === undefined || snapshot.exitCode === 0) return false;
+	const output = snapshot.output.toLowerCase();
+	return SANDBOX_DENIED_KEYWORDS.some((keyword) => output.includes(keyword));
 }
 
 function stringValue(value: unknown): string | undefined {

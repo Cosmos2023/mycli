@@ -13,6 +13,7 @@ import {
 	type ShellSessionSnapshot,
 	type ShellStartRequest,
 } from "../../src/index.ts";
+import { formatShellSnapshotResult } from "../../src/shell/shell-tool.ts";
 
 test("Shell routes legacy display metadata without changing execution context", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-shell-tool-"));
@@ -669,6 +670,54 @@ test("a completed command reports its exit code instead of failing", async (t) =
 	}).execute({ command: "sleep 1000" }, executionOptions(root));
 	assert.equal(timedOut.success, false);
 	assert.equal(timedOut.errorKind, "timeout");
+});
+
+test("a sandbox refusal is a policy failure while a plain nonzero exit is data", () => {
+	const deniedSnapshot = {
+		...completedSnapshot("EPERM: operation not permitted, open '/outside/blocked.txt'\n"),
+		status: "exited" as const,
+		processState: "failed",
+		terminalState: "failed",
+		exitCode: 1,
+	};
+
+	const denied = formatShellSnapshotResult(deniedSnapshot, 2_000, () => "chunk", { sandboxed: true });
+	assert.equal(denied.success, false);
+	assert.equal(denied.errorKind, "sandbox_denied");
+	assert.equal(denied.summary, "Shell blocked by the sandbox");
+
+	// The same output outside a sandbox is an ordinary command failure.
+	const unsandboxed = formatShellSnapshotResult(deniedSnapshot, 2_000, () => "chunk", { sandboxed: false });
+	assert.equal(unsandboxed.success, true);
+	assert.equal(unsandboxed.errorKind, undefined);
+
+	// A sandboxed command that merely exited nonzero is still data.
+	const plain = formatShellSnapshotResult(
+		{ ...deniedSnapshot, output: "no match\n" },
+		2_000,
+		() => "chunk",
+		{ sandboxed: true },
+	);
+	assert.equal(plain.success, true);
+	assert.equal(plain.summary, "Shell exited with code 1");
+});
+
+test("a request refused by the managed proxy is a policy failure", () => {
+	const denied = formatShellSnapshotResult(
+		{
+			...completedSnapshot("curl: (22) The requested URL returned error: 403\n"),
+			status: "exited" as const,
+			processState: "failed",
+			terminalState: "failed",
+			exitCode: 22,
+		},
+		2_000,
+		() => "chunk",
+		{ sandboxed: true, blockedByPolicy: true },
+	);
+	assert.equal(denied.success, false);
+	assert.equal(denied.errorKind, "sandbox_denied");
+	assert.equal(denied.summary, "Shell blocked by the sandbox");
 });
 
 class StartManager {

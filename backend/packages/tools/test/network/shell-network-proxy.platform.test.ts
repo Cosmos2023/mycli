@@ -17,12 +17,11 @@ import type { ToolAdapterResult } from "../../src/types.ts";
 const macOS = { skip: process.platform !== "darwin", timeout: 15_000 };
 
 /**
- * The sandbox denies egress by failing the command. The exit code is data rather than a tool
- * failure, so a denied command is a successful call with a nonzero exit code.
+ * A sandbox denial is a policy failure, distinct from a command that merely exited nonzero.
  */
 function assertCommandDenied(result: ToolAdapterResult): void {
-	assert.equal(result.success, true, result.modelOutput);
-	assert.notEqual(result.metadata.exit_code, 0, result.modelOutput);
+	assert.equal(result.success, false, result.modelOutput);
+	assert.equal(result.errorKind, "sandbox_denied", result.modelOutput);
 }
 
 test("a real sandboxed Shell waits for one network approval after yield and stop revokes pending access", macOS, async (t) => {
@@ -256,9 +255,9 @@ async function shellFixture(t: TestContext, tls = false, limited = false): Promi
 		workspaceRoot: root, manager, timeoutSeconds: 5,
 		profile: resolveShellProfile({ platform: "darwin", shellPath: "/bin/sh" }),
 		env: { PATH: "/usr/bin:/bin", HTTP_PROXY: "http://127.0.0.1:1", HTTPS_PROXY: "http://127.0.0.1:1", NO_PROXY: "*" },
-		networkProxyFactory: async (domains, policy) => {
+		networkProxyFactory: async (domains, policy, interaction) => {
 			const proxy = await startNetworkProxy({
-				domains, policy,
+				domains, policy, ...interaction,
 				...(limited && tls ? { originCa: await readFile(join(root, "fixture.crt")) } : {}),
 				lookup: async () => [{ address: "93.184.216.34", family: 4 }],
 				connect: () => createConnection({ host: "127.0.0.1", port: address.port }),
