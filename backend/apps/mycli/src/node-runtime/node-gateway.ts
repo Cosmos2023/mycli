@@ -196,7 +196,6 @@ class InProcessNodeGateway implements NodeGateway {
 			...(options.controlCommands ? { controlCommands: options.controlCommands } : {}),
 			...(options.updateCommands ? { updateCommands: options.updateCommands } : {}),
 			...(options.workspaceTrust ? { workspaceTrust: options.workspaceTrust } : {}),
-			integrationsAvailable: options.integrations?.listResources !== undefined,
 			runtime: () => this.#sessionController.runtime(),
 			workspaceRoot: () => this.#sessionController.workspaceRoot(),
 			claimSessionControl: (message) => this.#sessionController.claimControl(message),

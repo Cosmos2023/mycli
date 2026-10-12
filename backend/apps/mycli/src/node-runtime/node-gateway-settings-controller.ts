@@ -56,7 +56,6 @@ interface NodeGatewaySettingsControllerOptions {
 	readonly controlCommands?: NodeGatewayControlCommands;
 	readonly updateCommands?: NodeGatewayUpdateCommands;
 	readonly workspaceTrust?: CreateNodeGatewayOptions["workspaceTrust"];
-	readonly integrationsAvailable: boolean;
 	readonly runtime: () => NodeGatewayRuntime;
 	readonly workspaceRoot: () => string;
 	readonly claimSessionControl: (message: string) => () => void;
@@ -539,7 +538,6 @@ export class NodeGatewaySettingsController {
 			catalog: buildNodeSettingsCatalog({
 				settings: snapshot.settings,
 				sources: settingsSources(snapshot.sources),
-				keymap: snapshot.keymap,
 				terminalCapabilities: snapshot.terminalCapabilities,
 				provider: this.#provider,
 				model: this.#model,
@@ -550,8 +548,6 @@ export class NodeGatewaySettingsController {
 				permissions: this.permissions(),
 				trust: this.trustStatus(),
 				context: this.#options.contextWindow(),
-				integrationsAvailable: this.#options.integrationsAvailable,
-				...(this.#visibleUpdateStatus ? { update: this.#visibleUpdateStatus } : {}),
 			}),
 		};
 	}

@@ -284,7 +284,6 @@ const BUILTIN_SLASH_COMMANDS: readonly SlashCommandSpec[] = Object.freeze([
 		tuiPolicy: tuiPolicy("open_hotkeys"),
 		surfaces: TUI_SURFACE,
 		presentation: "none",
-		visible: false,
 	}),
 	spec("copy", "/copy", "Copy the last assistant response, a numbered block, or the whole conversation", {
 		argumentHint: "[<n>|--all]",

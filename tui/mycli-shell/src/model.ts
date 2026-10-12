@@ -538,6 +538,8 @@ export type MycliShellSettingsItem = {
 
 export type MycliShellSettingsCatalog = {
 	version: 1;
+	/** Read-only one-line snapshot (model, permissions, trust, context) shown above the items. */
+	summary?: string;
 	categories: MycliShellSettingsCategory[];
 	items: MycliShellSettingsItem[];
 };

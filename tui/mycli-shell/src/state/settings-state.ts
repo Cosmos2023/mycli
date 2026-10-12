@@ -126,7 +126,8 @@ function settingsCatalogFromUnknown(value: unknown): MycliShellSettingsCatalog |
 	if (categories.length === 0 || categories.length !== catalog.categories.length || items.length !== catalog.items.length) {
 		return null;
 	}
-	return { version: 1, categories, items };
+	const summary = boundedCatalogText(catalog.summary, 512);
+	return { version: 1, ...(summary ? { summary } : {}), categories, items };
 }
 
 function settingsCategoryFromUnknown(value: unknown): MycliShellSettingsCategory | null {

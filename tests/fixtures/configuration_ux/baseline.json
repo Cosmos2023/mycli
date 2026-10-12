@@ -165,7 +165,7 @@
     {
       "id": "settings_catalog",
       "file": "backend/apps/mycli/test/node-settings-catalog.test.ts",
-      "test": "settings catalog projects seven bounded categories and canonical visual descriptors"
+      "test": "settings catalog exposes only the appearance preferences plus a session summary"
     },
     {
       "id": "gateway_contracts",

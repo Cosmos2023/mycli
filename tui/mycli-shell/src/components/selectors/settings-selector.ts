@@ -43,10 +43,6 @@ export type SettingsSelectorOptions = {
 	readonly onCancel: () => void;
 };
 
-const CATEGORY_ORDER: readonly (MycliShellSettingsCategoryId | "all")[] = [
-	"all", "model", "providers", "permissions", "appearance", "sessions", "integrations", "diagnostics",
-];
-
 const SCOPE_OPTIONS: readonly {
 	readonly id: SettingsChangeScope;
 	readonly label: string;
@@ -116,10 +112,16 @@ export class SettingsSelectorComponent extends Container implements Focusable {
 
 	replaceCatalog(catalog: MycliShellSettingsCatalog): void {
 		this.catalog = catalog;
+		this.categoryIndex = 0;
 		this.error = undefined;
 		this.submitting = false;
 		this.applyFilter();
 		this.options.tui.requestRender();
+	}
+
+	/** Tabs follow the catalog so a single-category panel never cycles through empty tabs. */
+	private get categoryOrder(): readonly (MycliShellSettingsCategoryId | "all")[] {
+		return ["all", ...this.catalog.categories.map((category) => category.id)];
 	}
 
 	override render(width: number): string[] {
@@ -157,7 +159,7 @@ export class SettingsSelectorComponent extends Container implements Focusable {
 
 	private handleListInput(data: string, kb: ReturnType<typeof getKeybindings>): void {
 		if (kb.matches(data, "tui.input.tab")) {
-			this.categoryIndex = (this.categoryIndex + 1) % CATEGORY_ORDER.length;
+			this.categoryIndex = (this.categoryIndex + 1) % this.categoryOrder.length;
 			this.applyFilter();
 			return;
 		}
@@ -233,12 +235,13 @@ export class SettingsSelectorComponent extends Container implements Focusable {
 	}
 
 	private renderListStage(width: number): string[] {
-		const category = CATEGORY_ORDER[this.categoryIndex] ?? "all";
+		const category = this.categoryOrder[this.categoryIndex] ?? "all";
 		const categoryLabel = category === "all"
 			? "all categories"
 			: this.catalog.categories.find((item) => item.id === category)?.label ?? category;
 		const lines = [
 			listPanelHeader("Settings", `${this.filteredItems.length} items ${uiGlyphs().separator} ${categoryLabel}`, width),
+			...(this.catalog.summary ? [`  ${theme.fg("muted", singleLine(this.catalog.summary))}`] : []),
 			listPanelRule(width),
 			this.searchLine(width),
 			listPanelRule(width),
@@ -356,7 +359,7 @@ export class SettingsSelectorComponent extends Container implements Focusable {
 	}
 
 	private applyFilter(): void {
-		const category = CATEGORY_ORDER[this.categoryIndex] ?? "all";
+		const category = this.categoryOrder[this.categoryIndex] ?? "all";
 		const query = this.searchInput.getValue().trim().toLowerCase();
 		const tokens = query.split(/\s+/u).filter(Boolean);
 		const categoryLabels = new Map(this.catalog.categories.map((item) => [item.id, `${item.label} ${item.description}`]));

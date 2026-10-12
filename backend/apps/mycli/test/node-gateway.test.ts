@@ -198,6 +198,7 @@ const TUI_BUILTIN_COMMAND_NAMES = [
 	"/rename",
 	"/init",
 	"/changes",
+	"/hotkeys",
 	"/help",
 	"/quit",
 ] as const;
@@ -1569,7 +1570,13 @@ test("canonical control RPCs use injected Node services and update active state"
 		"result" in loadedSettings
 			? loadedSettings.result.catalog.items.filter((item: { category: string }) => item.category === "appearance").length
 			: 0,
-		SHELL_SETTING_DESCRIPTORS.length + TUI_KEYMAP_ACTIONS.length + 2,
+		SHELL_SETTING_DESCRIPTORS.length + 2,
+	);
+	assert.equal(
+		"result" in loadedSettings
+			? loadedSettings.result.catalog.items.some((item: { id?: string }) => item.id.startsWith("keymap.") && item.id !== "keymap.reset")
+			: true,
+		false,
 	);
 	assert.deepEqual(
 		"result" in loadedSettings
@@ -1651,12 +1658,14 @@ test("cached update RPCs, slash commands, bootstrap, and settings share one boun
 	assert.equal("result" in bootstrap ? bootstrap.result.update.availability : null, "available");
 
 	const settings = await harness.send("settings.load");
-	const updateSetting = "result" in settings
-		? settings.result.catalog.items.find((item: { id?: string }) => item.id === "diagnostics.updates")
-		: undefined;
-	assert.equal(updateSetting?.value, "0.2.0 available");
-	assert.equal(updateSetting?.action_args, "/update");
-	assert.equal(updateSetting?.locked, false);
+	// `/settings` no longer mirrors other commands; the update status is surfaced by
+	// `session.bootstrap` above and by `/update` below instead.
+	assert.equal(
+		"result" in settings
+			? settings.result.catalog.items.some((item: { id?: string }) => item.id === "diagnostics.updates")
+			: true,
+		false,
+	);
 
 	const checked = await harness.send("command.run", { command: "/update check", surface: "tui" });
 	assert.equal("result" in checked ? checked.result.display.title : null, "Updates");
