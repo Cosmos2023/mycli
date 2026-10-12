@@ -24,7 +24,7 @@ mycli 使用两个工作区清单中精确固定的 `@earendil-works/pi-ai` 版�
 | --- | --- | --- | --- | --- |
 | OpenRouter | `openrouter` | `openrouter/auto` | `https://openrouter.ai/api/v1` | `medium` |
 | Groq | `groq` | `openai/gpt-oss-120b` | `https://api.groq.com/openai/v1` | `medium` |
-| Together | `together` | `moonshotai/Kimi-K2.7-Code` | `https://api.together.ai/v1` | `high` |
+| Together | `together` | `moonshotai/Kimi-K3` | `https://api.together.ai/v1` | `high` |
 | Moonshot AI | `moonshotai` | `kimi-k2.7-code` | `https://api.moonshot.ai/v1` | `high` |
 | NVIDIA | `nvidia` | `openai/gpt-oss-120b` | `https://integrate.api.nvidia.com/v1` | 禁用 |
 | Cerebras | `cerebras` | `gpt-oss-120b` | `https://api.cerebras.ai/v1` | `medium` |
@@ -205,7 +205,7 @@ pi-ai 的 `openai` provider 只提供 Responses（`openAIChatCompletions` 不适
 - 不在 pi-ai 目录里的模型需要显式 `model_policy: "subset"` 并在 `models` 中列出，否则会报 `native provider model or API is unsupported`。
 - 启用环境认证时，pi-ai 的 OpenAI provider 读取 `OPENAI_API_KEY`。mycli 自己的凭据仍然有效：`mycli login --with-api-key --provider openai` 会把密钥写在该路由的 `auth_ref` 下，`MYCLI_API_KEY` 也仍是显式来源。
 
-同样的写法适用于其它 Responses provider：`openai-codex` 对应 Codex 后端，`azure-openai-responses` 配合 `AZURE_OPENAI_BASE_URL` 或 `AZURE_OPENAI_RESOURCE_NAME`、`AZURE_OPENAI_API_VERSION` 以及可选的 `AZURE_OPENAI_DEPLOYMENT_NAME_MAP`。
+同样的写法适用于其它 Responses provider：`openai-codex` 对应 Codex 后端，`azure` 配合 `AZURE_OPENAI_BASE_URL` 或 `AZURE_OPENAI_RESOURCE_NAME`、`AZURE_OPENAI_API_VERSION` 以及可选的 `AZURE_OPENAI_DEPLOYMENT_NAME_MAP`。
 
 <a id="compatible-endpoints"></a>
 

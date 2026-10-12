@@ -38,7 +38,7 @@ test("resolves curated pi-ai provider profiles", () => {
 	const expected = [
 		["openrouter", "OpenRouter", "https://openrouter.ai/api/v1", "openrouter/auto"],
 		["groq", "Groq", "https://api.groq.com/openai/v1", "openai/gpt-oss-120b"],
-		["together", "Together", "https://api.together.ai/v1", "moonshotai/Kimi-K2.7-Code"],
+		["together", "Together", "https://api.together.ai/v1", "moonshotai/Kimi-K3"],
 		["moonshotai", "Moonshot AI", "https://api.moonshot.ai/v1", "kimi-k2.7-code"],
 		["nvidia", "NVIDIA", "https://integrate.api.nvidia.com/v1", "openai/gpt-oss-20b"],
 		["cerebras", "Cerebras", "https://api.cerebras.ai/v1", "gpt-oss-120b"],

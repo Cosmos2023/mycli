@@ -78,7 +78,7 @@ test("setup builds all provider rows, persists a successful result, and never re
 		[
 			["openrouter", "OpenRouter", "chat_completions", "openrouter/auto", "https://openrouter.ai/api/v1"],
 			["groq", "Groq", "chat_completions", "openai/gpt-oss-120b", "https://api.groq.com/openai/v1"],
-			["together", "Together", "chat_completions", "moonshotai/Kimi-K2.7-Code", "https://api.together.ai/v1"],
+			["together", "Together", "chat_completions", "moonshotai/Kimi-K3", "https://api.together.ai/v1"],
 			["moonshotai", "Moonshot AI", "chat_completions", "kimi-k2.7-code", "https://api.moonshot.ai/v1"],
 			["nvidia", "NVIDIA", "chat_completions", "openai/gpt-oss-20b", "https://integrate.api.nvidia.com/v1"],
 			["cerebras", "Cerebras", "chat_completions", "gpt-oss-120b", "https://api.cerebras.ai/v1"],
@@ -134,7 +134,7 @@ test("non-TTY setup resolves defaults and explicit values for every curated prov
 		["codex", "gpt-5.5", "https://api.openai.com/v1", "medium", "responses"],
 		["openrouter", "openrouter/auto", "https://openrouter.ai/api/v1", "medium"],
 		["groq", "openai/gpt-oss-120b", "https://api.groq.com/openai/v1", "medium"],
-		["together", "moonshotai/Kimi-K2.7-Code", "https://api.together.ai/v1", "high"],
+		["together", "moonshotai/Kimi-K3", "https://api.together.ai/v1", "high"],
 		["moonshotai", "kimi-k2.7-code", "https://api.moonshot.ai/v1", "high"],
 		["nvidia", "openai/gpt-oss-20b", "https://integrate.api.nvidia.com/v1", "none"],
 		["cerebras", "gpt-oss-120b", "https://api.cerebras.ai/v1", "medium"],

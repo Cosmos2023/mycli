@@ -66,7 +66,7 @@ test("Node backend round trips curated provider readiness rows and trace identit
 	const providers = [
 		["openrouter", "OpenRouter", "openrouter/auto"],
 		["groq", "Groq", "openai/gpt-oss-120b"],
-		["together", "Together", "moonshotai/Kimi-K2.7-Code"],
+		["together", "Together", "moonshotai/Kimi-K3"],
 		["moonshotai", "Moonshot AI", "kimi-k2.7-code"],
 		["nvidia", "NVIDIA", "openai/gpt-oss-20b"],
 		["cerebras", "Cerebras", "gpt-oss-120b"],
@@ -553,7 +553,7 @@ test("native Azure environment auth reaches in-process and Worker requests with 
 		assert(address && typeof address === "object");
 		const sessionId = `azure-${adapter}`;
 		const backend = await startNodeBackend({ cwd: workspace, args: ["--session", sessionId], env: {
-			HOME: home, MYCLI_PROVIDER: "azure-openai-responses", MYCLI_AGENT_EXECUTION_ADAPTER: adapter,
+			HOME: home, MYCLI_PROVIDER: "azure", MYCLI_AGENT_EXECUTION_ADAPTER: adapter,
 			MYCLI_REASONING_EFFORT: "low", MYCLI_REQUEST_MAX_RETRIES: "0", MYCLI_STREAM_MAX_RETRIES: "1",
 			AZURE_OPENAI_BASE_URL: `http://127.0.0.1:${address.port}/openai/v1`, AZURE_OPENAI_API_KEY: "fixture-azure-key",
 			AZURE_OPENAI_API_VERSION: "2025-04-01-preview", AZURE_OPENAI_DEPLOYMENT_NAME_MAP: "gpt-5.5=fixture-deployment",
@@ -5845,7 +5845,7 @@ test("Node backend filters and selects curated model catalog entries", async (t)
 				base_url: "https://api.deepseek.com",
 				auth_ref: "deepseek",
 				models: {
-					"deepseek-v4-flash": {},
+					"deepseek-flash": {},
 					"deepseek-v4-pro": {},
 				},
 			},
@@ -5901,7 +5901,7 @@ test("Node backend filters and selects curated model catalog entries", async (t)
 		}
 		if (provider === "deepseek") {
 			assert.equal(models.some((entry) => (
-				entry.model === "deepseek-v4-flash-vision-exp"
+				entry.model === "deepseek-flash"
 				&& entry.supports_images === true
 				&& entry.context_window_tokens === 1_000_000
 				&& entry.max_output_tokens === 384_000

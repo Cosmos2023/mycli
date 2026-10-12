@@ -24,6 +24,8 @@ const COMPLETIONS_BOOLEAN_KEYS = new Set<keyof OpenAICompletionsCompat>([
 	"zaiToolStream",
 	"supportsThinkingTokenBudget",
 	"supportsOpenAIGrammarTools",
+	"supportsMidConvoSystemMessages",
+	"supportsMidConvoToolAdditions",
 	"supportsStrictMode",
 	"sendSessionAffinityHeaders",
 	"supportsLongCacheRetention",
@@ -31,6 +33,7 @@ const COMPLETIONS_BOOLEAN_KEYS = new Set<keyof OpenAICompletionsCompat>([
 
 const RESPONSES_BOOLEAN_KEYS = new Set<keyof OpenAIResponsesCompat>([
 	"supportsDeveloperRole",
+	"supportsMidConvoSystemMessages",
 	"supportsLongCacheRetention",
 	"supportsStrictMode",
 	"supportsOpenAIGrammarTools",
@@ -50,7 +53,8 @@ const ANTHROPIC_BOOLEAN_KEYS = new Set<keyof AnthropicMessagesCompat>([
 	"allowEmptySignature",
 	"supportsStrictTools",
 	"supportsMidConvoEffort",
-	"supportsToolReferences",
+	"supportsMidConvoSystemMessages",
+	"supportsMidConvoToolChanges",
 ]);
 
 const THINKING_FORMATS = new Set([

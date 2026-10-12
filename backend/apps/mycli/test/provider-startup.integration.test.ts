@@ -17,7 +17,7 @@ test("compiled bootstrap loads only selected auth adapters and defers the comple
 		{ name: "ambient Groq key", env: { MYCLI_PROVIDER: "groq", GROQ_API_KEY: "test-key" }, ready: true, selected: "groq" },
 		{ name: "scoped reference ignores ambient key", env: { MYCLI_PROVIDER: "groq", MYCLI_AUTH_REF: "scoped", GROQ_API_KEY: "test-key" }, ready: false },
 		{ name: "stored scoped reference", env: { MYCLI_PROVIDER: "groq", MYCLI_AUTH_REF: "scoped" }, ready: true, stored: true },
-		{ name: "native Azure auth", env: { MYCLI_PROVIDER: "azure-openai-responses", AZURE_OPENAI_BASE_URL: "https://offline.invalid/openai/v1", AZURE_OPENAI_API_KEY: "test-key" }, ready: true, selected: "azure-openai-responses" },
+		{ name: "native Azure auth", env: { MYCLI_PROVIDER: "azure", AZURE_OPENAI_BASE_URL: "https://offline.invalid/openai/v1", AZURE_OPENAI_API_KEY: "test-key" }, ready: true, selected: "azure" },
 		{ name: "stored OAuth without refresh", env: { MYCLI_PROVIDER: "anthropic", MYCLI_AUTH_REF: "scoped" }, ready: true, oauth: true },
 	]) {
 		await t.test(scenario.name, async (t) => {
@@ -41,7 +41,7 @@ test("compiled bootstrap loads only selected auth adapters and defers the comple
 			};
 			assert.equal(output.auth.ready, scenario.ready);
 			assert(!output.startupModules.some((url) => url.endsWith("/providers/all.js")));
-			for (const provider of ["groq", "openrouter", "together", "moonshotai", "nvidia", "cerebras", "google", "azure-openai-responses"]) {
+			for (const provider of ["groq", "openrouter", "together", "moonshotai", "nvidia", "cerebras", "google", "azure"]) {
 				if (provider !== scenario.selected) assert(!output.startupModules.some((url) => url.endsWith(`/providers/${provider}.js`)), provider);
 			}
 			assert(output.catalogModules.some((url) => url.endsWith("/providers/all.js")));

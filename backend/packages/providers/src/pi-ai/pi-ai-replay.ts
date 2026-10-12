@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type {
 	AssistantMessage,
+	JsonObject,
 	ThinkingContent,
 	ToolCall,
 } from "@earendil-works/pi-ai";
@@ -16,7 +17,7 @@ import {
 	type ProviderNativeTransportSnapshot,
 } from "@mycli/core";
 import { ProviderFailure } from "../errors.ts";
-import { serializeJsonObject } from "./json-object.ts";
+import { isJsonObject, serializeJsonObject } from "./json-object.ts";
 import { invalidPiAiToolArguments } from "./pi-ai-failure.ts";
 import type { PiAiApi } from "./pi-ai-model.ts";
 
@@ -500,10 +501,11 @@ export function canonicalToolCallId(nativeId: string): string {
 	return separator === -1 ? nativeId : nativeId.slice(0, separator);
 }
 
-function parseArguments(value: string): Record<string, unknown> {
+function parseArguments(value: string): JsonObject {
 	try {
 		const parsed = JSON.parse(value) as unknown;
-		if (isRecord(parsed)) return parsed;
+		// JSON.parse only produces JSON values, so the shape is guaranteed by construction.
+		if (isJsonObject(parsed)) return parsed as JsonObject;
 	} catch {
 		// Canonical tool arguments are validated at the provider boundary below.
 	}

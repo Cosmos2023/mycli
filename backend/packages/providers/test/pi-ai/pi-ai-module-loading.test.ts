@@ -22,7 +22,7 @@ test("complete provider directory remains lazy until directory demand", async ()
 		const snapshot = await first;
 		console.log(JSON.stringify({ cached: first === second, count: snapshot.providers.length }));
 	`);
-	assert.deepEqual(JSON.parse(selected.stdout), { cached: true, count: 40 });
+	assert.deepEqual(JSON.parse(selected.stdout), { cached: true, count: 42 });
 	const loadedProviders = providerModules(selected.loaded);
 	assert(loadedProviders.includes("all"));
 	assert(loadedProviders.includes("radius"));

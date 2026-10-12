@@ -43,7 +43,7 @@
     "@peculiar/x509": "2.1.0",
     "reflect-metadata": "0.2.2",
     "@decimalturn/toml-patch": "^3.0.5",
-    "@earendil-works/pi-ai": "0.85.1",
+    "@earendil-works/pi-ai": "1.1.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "adm-zip": "^0.6.0",
     "ajv": "^8.17.1",

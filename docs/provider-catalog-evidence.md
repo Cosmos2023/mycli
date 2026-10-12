@@ -1,10 +1,10 @@
 # Builtin Provider Catalog Evidence
 
-Pinned SDK: `@earendil-works/pi-ai@0.85.1`. This report describes offline source and
+Pinned SDK: `@earendil-works/pi-ai@1.1.0`. This report describes offline source and
 mocked transport evidence, not verified live accounts.
 
-The actual `builtinProviders()` catalog contains 40 providers: 26 serviceable, 8 requiring
-configuration, and 6 unsupported. The 34 serviceable/configurable providers expose 44 supported
+The actual `builtinProviders()` catalog contains 42 providers: 27 serviceable, 8 requiring
+configuration, and 7 unsupported. The 35 serviceable/configurable providers expose 47 supported
 provider/protocol routes. Every route is exercised through `PiAiProvider` with its actual builtin
 provider identity, catalog model and native dispatch, an explicit offline endpoint, and a dummy
 request API key. No generic `pi_ai_declared` route substitutes for builtin evidence.
@@ -42,11 +42,11 @@ tested by the real SDK matrix in `test/pi-ai/pi-ai-builtin-routes.test.ts`.
 | amazon-bedrock | bedrock-converse-stream | api/bedrock-converse-stream.js; createProvider API dispatch | apiKey (AWS credentials or bearer token) | unsupported: unsupported_protocol | bedrock-converse-stream: fetch=ignored, onResponse=supported |
 | ant-ling | openai-completions | api/openai-completions.js; createProvider API dispatch | apiKey (Ant Ling API key) | serviceable: request_api_key | openai-completions: fetch=supported, onResponse=supported |
 | anthropic | anthropic-messages | api/anthropic-messages.js; createProvider API dispatch | apiKey (Anthropic API key), oauth | serviceable: request_api_key | anthropic-messages: fetch=supported, onResponse=supported |
-| azure-openai-responses | azure-openai-responses | api/azure-openai-responses.js; createProvider API dispatch | apiKey (Azure OpenAI API key) | configuration_required: endpoint_required | azure-openai-responses: fetch=supported, onResponse=supported |
+| azure | azure-openai-responses, openai-completions | api/azure-openai-responses.js, api/openai-completions.js; createProvider API dispatch | apiKey (Azure OpenAI API key) | configuration_required: endpoint_required, protocol_selection_required | azure-openai-responses: fetch=supported, onResponse=supported; openai-completions: fetch=supported, onResponse=supported |
 | baseten | openai-completions | api/openai-completions.js; createProvider API dispatch | apiKey (Baseten API key) | serviceable: request_api_key | openai-completions: fetch=supported, onResponse=supported |
 | cerebras | openai-completions | api/openai-completions.js; createProvider API dispatch | apiKey (Cerebras API key) | serviceable: request_api_key | openai-completions: fetch=supported, onResponse=supported |
 | cloudflare-ai-gateway | anthropic-messages, openai-completions, openai-responses | api/anthropic-messages.js, api/openai-completions.js, api/openai-responses.js; cloudflareStreams endpoint env substitution | apiKey (Cloudflare API key) | configuration_required: endpoint_required, protocol_selection_required | anthropic-messages: fetch=supported, onResponse=supported; openai-completions: fetch=supported, onResponse=supported; openai-responses: fetch=supported, onResponse=supported |
-| cloudflare-workers-ai | openai-completions | api/openai-completions.js; cloudflareStreams endpoint env substitution | apiKey (Cloudflare API key) | configuration_required: endpoint_required | openai-completions: fetch=supported, onResponse=supported |
+| cloudflare-workers-ai | openai-completions | api/cloudflare-workers-ai-system-one.js, api/openai-completions.js; cloudflareStreams endpoint env substitution | apiKey (Cloudflare API key) | configuration_required: endpoint_required | cloudflare-workers-ai-system-one: fetch=ignored, onResponse=absent; openai-completions: fetch=supported, onResponse=supported |
 | deepseek | openai-completions | api/openai-completions.js; createProvider API dispatch | apiKey (DeepSeek API key) | serviceable: request_api_key | openai-completions: fetch=supported, onResponse=supported |
 | fireworks | anthropic-messages, openai-completions | api/anthropic-messages.js, api/openai-completions.js; createProvider API dispatch | apiKey (Fireworks API key) | configuration_required: protocol_selection_required | anthropic-messages: fetch=supported, onResponse=supported; openai-completions: fetch=supported, onResponse=supported |
 | github-copilot | anthropic-messages, openai-completions, openai-responses | api/anthropic-messages.js, api/openai-completions.js, api/openai-responses.js; createProvider API dispatch | apiKey (GitHub Copilot token), oauth | configuration_required: protocol_selection_required | anthropic-messages: fetch=supported, onResponse=supported; openai-completions: fetch=supported, onResponse=supported; openai-responses: fetch=supported, onResponse=supported |
@@ -55,23 +55,25 @@ tested by the real SDK matrix in `test/pi-ai/pi-ai-builtin-routes.test.ts`.
 | groq | openai-completions | api/openai-completions.js; createProvider API dispatch | apiKey (Groq API key) | serviceable: request_api_key | openai-completions: fetch=supported, onResponse=supported |
 | huggingface | openai-completions | api/openai-completions.js; createProvider API dispatch | apiKey (Hugging Face token) | serviceable: request_api_key | openai-completions: fetch=supported, onResponse=supported |
 | kimi-coding | anthropic-messages | api/anthropic-messages.js; createProvider API dispatch | apiKey (Kimi API key), oauth | serviceable: request_api_key | anthropic-messages: fetch=supported, onResponse=supported |
+| meta | openai-responses | api/openai-responses.js; createProvider API dispatch | apiKey (Meta Model API key), oauth | serviceable: request_api_key | openai-responses: fetch=supported, onResponse=supported |
 | minimax | anthropic-messages | api/anthropic-messages.js; createProvider API dispatch | apiKey (MiniMax API key) | serviceable: request_api_key | anthropic-messages: fetch=supported, onResponse=supported |
 | minimax-cn | anthropic-messages | api/anthropic-messages.js; createProvider API dispatch | apiKey (MiniMax CN API key) | serviceable: request_api_key | anthropic-messages: fetch=supported, onResponse=supported |
 | mistral | mistral-conversations | api/mistral-conversations.js; createProvider API dispatch | apiKey (Mistral API key) | unsupported: unsupported_protocol | mistral-conversations: fetch=supported, onResponse=supported |
 | moonshotai | openai-completions | api/openai-completions.js; createProvider API dispatch | apiKey (Moonshot AI API key) | serviceable: request_api_key | openai-completions: fetch=supported, onResponse=supported |
 | moonshotai-cn | openai-completions | api/openai-completions.js; createProvider API dispatch | apiKey (Moonshot AI API key) | serviceable: request_api_key | openai-completions: fetch=supported, onResponse=supported |
 | nvidia | openai-completions | api/openai-completions.js; createProvider API dispatch | apiKey (NVIDIA API key) | serviceable: request_api_key | openai-completions: fetch=supported, onResponse=supported |
-| openai | openai-responses | api/openai-responses.js; createProvider API dispatch | apiKey (OpenAI API key) | serviceable: request_api_key | openai-responses: fetch=supported, onResponse=supported |
+| openai | openai-responses | api/openai-decisions.js, api/openai-responses.js; createProvider API dispatch | apiKey (OpenAI API key), oauth | serviceable: request_api_key | openai-decisions: fetch=ignored, onResponse=absent; openai-responses: fetch=supported, onResponse=supported |
 | openai-codex | openai-codex-responses | api/openai-codex-responses.js; createProvider API dispatch | oauth | unsupported: unsupported_auth | openai-codex-responses: fetch=sse_only, onResponse=sse_only |
-| opencode | anthropic-messages, google-generative-ai, openai-completions, openai-responses | api/anthropic-messages.js, api/google-generative-ai.js, api/openai-completions.js, api/openai-responses.js; createProvider API dispatch | apiKey (OpenCode API key) | configuration_required: endpoint_required, protocol_selection_required | anthropic-messages: fetch=supported, onResponse=supported; google-generative-ai: fetch=rejected, onResponse=absent; openai-completions: fetch=supported, onResponse=supported; openai-responses: fetch=supported, onResponse=supported |
+| opencode | anthropic-messages, google-generative-ai, openai-completions, openai-responses | api/anthropic-messages.js, api/google-generative-ai.js, api/openai-completions.js, api/openai-responses.js, api/typesafe-system-one.js; createProvider API dispatch | apiKey (OpenCode API key) | configuration_required: endpoint_required, protocol_selection_required | anthropic-messages: fetch=supported, onResponse=supported; google-generative-ai: fetch=rejected, onResponse=absent; openai-completions: fetch=supported, onResponse=supported; openai-responses: fetch=supported, onResponse=supported; typesafe-system-one: fetch=ignored, onResponse=absent |
 | opencode-go | anthropic-messages, openai-completions, openai-responses | api/anthropic-messages.js, api/openai-completions.js, api/openai-responses.js; createProvider API dispatch | apiKey (OpenCode API key) | configuration_required: endpoint_required, protocol_selection_required | anthropic-messages: fetch=supported, onResponse=supported; openai-completions: fetch=supported, onResponse=supported; openai-responses: fetch=supported, onResponse=supported |
-| openrouter | anthropic-messages, openai-completions | api/anthropic-messages.js, api/openai-completions.js; createProvider API dispatch | apiKey (OpenRouter API key), oauth | configuration_required: protocol_selection_required | anthropic-messages: fetch=supported, onResponse=supported; openai-completions: fetch=supported, onResponse=supported |
+| openrouter | anthropic-messages, openai-completions | api/anthropic-messages.js, api/openai-completions.js, api/openrouter-images.js, api/typesafe-system-one.js; createProvider API dispatch | apiKey (OpenRouter API key), oauth | configuration_required: protocol_selection_required | anthropic-messages: fetch=supported, onResponse=supported; openai-completions: fetch=supported, onResponse=supported; openrouter-images: fetch=supported, onResponse=supported; typesafe-system-one: fetch=ignored, onResponse=absent |
 | qwen-token-plan | openai-completions | api/openai-completions.js; createProvider API dispatch | apiKey (Qwen Token Plan API key) | serviceable: request_api_key | openai-completions: fetch=supported, onResponse=supported |
 | qwen-token-plan-cn | openai-completions | api/openai-completions.js; createProvider API dispatch | apiKey (Qwen Token Plan CN API key) | serviceable: request_api_key | openai-completions: fetch=supported, onResponse=supported |
 | qwen-token-plan-individual | openai-completions | api/openai-completions.js; createProvider API dispatch | apiKey (Qwen Token Plan Individual API key) | serviceable: request_api_key | openai-completions: fetch=supported, onResponse=supported |
-| radius | none (dynamic) | api/pi-messages.js; dynamic catalog refresh | apiKey (Radius API key), oauth | unsupported: no_supported_models | pi-messages: fetch=supported, onResponse=supported |
+| radius | pi-messages | api/pi-messages.js; dynamic catalog refresh | apiKey (Radius API key), oauth | unsupported: unsupported_protocol | pi-messages: fetch=supported, onResponse=supported |
 | together | openai-completions | api/openai-completions.js; createProvider API dispatch | apiKey (Together API key) | serviceable: request_api_key | openai-completions: fetch=supported, onResponse=supported |
-| vercel-ai-gateway | anthropic-messages | api/anthropic-messages.js; createProvider API dispatch | apiKey (Vercel AI Gateway API key) | serviceable: request_api_key | anthropic-messages: fetch=supported, onResponse=supported |
+| typesafe | none (dynamic) | api/typesafe-system-one.js; createProvider API dispatch | apiKey (TypeSafe API key) | unsupported: no_supported_models | typesafe-system-one: fetch=ignored, onResponse=absent |
+| vercel-ai-gateway | anthropic-messages | api/anthropic-messages.js, api/typesafe-system-one.js; createProvider API dispatch | apiKey (Vercel AI Gateway API key) | serviceable: request_api_key | anthropic-messages: fetch=supported, onResponse=supported; typesafe-system-one: fetch=ignored, onResponse=absent |
 | xai | openai-responses | api/openai-responses.js; createProvider API dispatch | apiKey (xAI API key), oauth | serviceable: request_api_key | openai-responses: fetch=supported, onResponse=supported |
 | xiaomi | openai-completions | api/openai-completions.js; createProvider API dispatch | apiKey (Xiaomi API key) | serviceable: request_api_key | openai-completions: fetch=supported, onResponse=supported |
 | xiaomi-token-plan-ams | openai-completions | api/openai-completions.js; createProvider API dispatch | apiKey (Xiaomi Token Plan AMS API key) | serviceable: request_api_key | openai-completions: fetch=supported, onResponse=supported |
@@ -87,6 +89,10 @@ tested by the real SDK matrix in `test/pi-ai/pi-ai-builtin-routes.test.ts`.
 - google-vertex: custom fetch rejected; native Google auth context
 - bedrock-converse-stream: AWS transport/auth; metadata middleware only
 - mistral-conversations: native conversation protocol not enabled
+- openrouter-images: image generation API; mycli does not expose image models
+- cloudflare-workers-ai-system-one: classifier API; no streaming, custom fetch or response hooks
+- openai-decisions: classifier API; no streaming, custom fetch or response hooks
+- typesafe-system-one: classifier API; no streaming, custom fetch or response hooks
 - openai-codex-responses: OAuth; WebSocket path needs separate observation
 - pi-messages: dynamic catalog requires native configuration refresh
 

@@ -118,7 +118,7 @@ test("uses pi-ai detection unless an explicit compat override is supplied", asyn
 const CURATED_DEFAULTS = [
 	["openrouter", "openrouter/auto", "openrouter"],
 	["groq", "openai/gpt-oss-120b", "openai"],
-	["together", "moonshotai/Kimi-K2.7-Code", "together"],
+	["together", "moonshotai/Kimi-K3", "together"],
 	["moonshotai", "kimi-k2.7-code", "deepseek"],
 	["nvidia", "openai/gpt-oss-20b", "openai"],
 	["cerebras", "gpt-oss-120b", "openai"],

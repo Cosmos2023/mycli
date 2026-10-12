@@ -23,7 +23,8 @@ for (const mode of ["supportsToolSearch", "supportsAdditionalTools", "fallback"]
 		t.after(server.close);
 		const provider = new PiAiProvider({ config: { provider: "compatible", protocol: "responses", model: "test-model",
 			apiBaseUrl: `${server.baseUrl}/v1`, apiKey: "fixture", supportsImages: false,
-			compat: { supportsToolSearch: false, supportsAdditionalTools: false, ...(mode === "fallback" ? {} : { [mode]: true }) } } });
+			compat: { supportsToolSearch: false, supportsAdditionalTools: false, supportsMidConvoSystemMessages: true,
+				...(mode === "fallback" ? {} : { [mode]: true }) } } });
 		for await (const event of provider.stream(request(), { signal: new AbortController().signal })) void event;
 		const body = server.requests[0]!.body;
 		const tools = body.tools as { name: string }[];
@@ -46,12 +47,16 @@ test("Anthropic emits native references; generic Chat keeps ordinary function sc
 		const req = request(protocol);
 		const provider = new PiAiProvider({ config: { provider: req.provider, protocol, model: req.model,
 			apiBaseUrl: protocol === "anthropic_messages" ? server.baseUrl : `${server.baseUrl}/v1`, apiKey: "fixture",
-			supportsImages: false, ...(protocol === "anthropic_messages" ? { compat: { supportsToolReferences: true } } : {}) } });
+			supportsImages: false, ...(protocol === "anthropic_messages"
+				? { compat: { supportsMidConvoSystemMessages: true, supportsMidConvoToolChanges: true } }
+				: {}) } });
 		for await (const event of provider.stream(req, { signal: new AbortController().signal })) void event;
 		const body = server.requests[0]!.body;
 		if (protocol === "anthropic_messages") {
-			assert.match(JSON.stringify(body.messages), /tool_reference/u);
-			assert.equal((body.tools as { name: string; defer_loading?: boolean }[]).find((tool) => tool.name === found.name)?.defer_loading, true);
+			// pi-ai 1.x declares mid-conversation additions in place instead of top-level tools.
+			assert.match(JSON.stringify(body.messages), /tool_addition/u);
+			assert.match(JSON.stringify(body.messages), /tool_definition/u);
+			assert.equal((body.tools as { name: string }[]).some((tool) => tool.name === found.name), false);
 		} else {
 			assert.equal((body.tools as unknown[]).length, 2);
 			assert.doesNotMatch(JSON.stringify(body.messages), /tool_reference|tool_search_output|additional_tools/u);
@@ -70,7 +75,7 @@ test("discovery replay rejects changed, removed, failed and spoofed definitions"
 		{ ...req, items: [...req.items!.slice(0, 2), { ...result, toolName: "other" }] },
 	]) {
 		const context = toPiAiContext(changed, "openai-responses").context;
-		const output = context.messages.find((item) => item.role === "toolResult");
-		assert.equal(output?.addedToolNames, undefined);
+		// No addition system message: the discovered tool stays in the leading declaration.
+		assert.equal(context.messages.some((item) => item.role === "system"), false);
 	}
 });

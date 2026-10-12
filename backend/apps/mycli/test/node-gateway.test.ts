@@ -1574,7 +1574,7 @@ test("canonical control RPCs use injected Node services and update active state"
 	);
 	assert.equal(
 		"result" in loadedSettings
-			? loadedSettings.result.catalog.items.some((item: { id?: string }) => item.id.startsWith("keymap.") && item.id !== "keymap.reset")
+			? loadedSettings.result.catalog.items.some((item: { id?: string }) => (item.id ?? "").startsWith("keymap.") && item.id !== "keymap.reset")
 			: true,
 		false,
 	);

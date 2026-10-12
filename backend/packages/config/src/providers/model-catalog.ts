@@ -234,12 +234,7 @@ export const BUILTIN_MODEL_CATALOG: readonly ModelCatalogEntry[] = Object.freeze
 		contextWindowTokens: 200_000,
 		maxOutputTokens: 100_000,
 	}),
-	builtinEntry("deepseek", "deepseek-chat", "DeepSeek chat model"),
-	builtinEntry("deepseek", "deepseek-reasoner", "DeepSeek reasoning model", {
-		efforts: DEEPSEEK_EFFORTS,
-		defaultEffort: "high",
-	}),
-	builtinEntry("deepseek", "deepseek-v4-flash", "DeepSeek V4 Flash fast reasoning model", {
+	builtinEntry("deepseek", "deepseek-flash", "DeepSeek V4.1 Flash fast reasoning model", {
 		efforts: DEEPSEEK_EFFORTS,
 		defaultEffort: "high",
 	}),
@@ -265,11 +260,11 @@ export const BUILTIN_MODEL_CATALOG: readonly ModelCatalogEntry[] = Object.freeze
 		contextWindowTokens: 131_072,
 		maxOutputTokens: 65_536,
 	}),
-	builtinEntry("together", "moonshotai/Kimi-K2.7-Code", "Together Kimi coding model", {
-		displayName: "Kimi K2.7 Code",
-		efforts: ["none", "high"],
+	builtinEntry("together", "moonshotai/Kimi-K3", "Together Kimi coding model", {
+		displayName: "Kimi K3",
+		efforts: ["high"],
 		defaultEffort: "high",
-		contextWindowTokens: 262_144,
+		contextWindowTokens: 1_048_576,
 		maxOutputTokens: 131_072,
 	}),
 	builtinEntry("moonshotai", "kimi-k2.7-code", "Moonshot AI Kimi coding model", {

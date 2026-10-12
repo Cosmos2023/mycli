@@ -152,7 +152,6 @@ test("lets pi-ai serialize compatible and Qwen Chat payloads", async () => {
 					properties: { file_path: { type: "string" } },
 					required: ["file_path"],
 				},
-				strict: false,
 			},
 		}], provider);
 	}
@@ -366,10 +365,10 @@ test("disables Anthropic thinking when the output cap cannot contain its budget"
 const CURATED_PAYLOAD_CASES = [
 	["openrouter", "openrouter/auto", "medium", "system", "max_completion_tokens", true],
 	["groq", "openai/gpt-oss-120b", "medium", "developer", "max_completion_tokens", true],
-	["together", "moonshotai/Kimi-K2.7-Code", "high", "system", "max_tokens", false],
+	["together", "moonshotai/Kimi-K3", "high", "system", "max_tokens", false],
 	["moonshotai", "kimi-k2.7-code", "high", "system", "max_tokens", false],
 	["nvidia", "openai/gpt-oss-20b", "none", "system", "max_tokens", false],
-	["cerebras", "gpt-oss-120b", "medium", "system", "max_completion_tokens", true],
+	["cerebras", "gpt-oss-120b", "medium", "system", "max_completion_tokens", false],
 ] as const satisfies readonly [
 	ProviderRequest["provider"],
 	string,
@@ -443,7 +442,7 @@ test("uses pi-ai detection for an uncatalogued curated model", async () => {
 	]);
 	assert.equal(
 		(records(body.tools)[0]?.function as Readonly<Record<string, unknown>> | undefined)?.strict,
-		false,
+		undefined,
 	);
 });
 

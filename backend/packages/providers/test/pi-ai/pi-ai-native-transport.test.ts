@@ -10,7 +10,7 @@ import { emptyPiAiUsage, piAiProviderStateEvent, piAiReplayTransportIdentity, re
 import { loadPiAiBuiltinProvider } from "../../src/registry/provider-directory.ts";
 import { providerStreamFixture, type StreamFixtureScenario } from "../support/provider-stream-fixtures.ts";
 
-const AZURE = parseProviderRouteId("azure-openai-responses");
+const AZURE = parseProviderRouteId("azure");
 const BASE_URL = "https://offline.invalid/openai/v1";
 
 test("native catalog snapshots fail closed on missing models, API mismatches and unsupported families", async () => {

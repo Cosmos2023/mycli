@@ -15,21 +15,21 @@ import {
 test("Azure derives its native endpoint and defaults only from the injected environment", async (t) => {
 	const { homeDir, workspaceRoot } = await configTree(t);
 	const resolved = await resolveConfig({ homeDir, workspaceRoot, env: {
-		MYCLI_PROVIDER: "azure-openai-responses", AZURE_OPENAI_RESOURCE_NAME: "fixture-resource",
+		MYCLI_PROVIDER: "azure", AZURE_OPENAI_RESOURCE_NAME: "fixture-resource",
 	} });
 	assert.equal(resolved.protocol, "responses");
 	assert.equal(resolved.model, "gpt-5.5");
 	assert.equal(resolved.apiBaseUrl, "https://fixture-resource.openai.azure.com/openai/v1");
 	assert.equal(resolved.allowAmbientAuth, true);
 	const explicit = await resolveConfig({ homeDir, workspaceRoot, env: {
-		MYCLI_PROVIDER: "azure-openai-responses", AZURE_OPENAI_BASE_URL: "https://azure.invalid/openai/v1/",
+		MYCLI_PROVIDER: "azure", AZURE_OPENAI_BASE_URL: "https://azure.invalid/openai/v1/",
 		MYCLI_AUTH_REF: "azure-openai-responses",
 	} });
 	assert.equal(explicit.apiBaseUrl, "https://azure.invalid/openai/v1");
 	assert.equal(explicit.allowAmbientAuth, false);
-	await assert.rejects(resolveConfig({ homeDir, workspaceRoot, env: { MYCLI_PROVIDER: "azure-openai-responses" } }), ConfigError);
+	await assert.rejects(resolveConfig({ homeDir, workspaceRoot, env: { MYCLI_PROVIDER: "azure" } }), ConfigError);
 	await assert.rejects(resolveConfig({ homeDir, workspaceRoot, env: {
-		MYCLI_PROVIDER: "azure-openai-responses", AZURE_OPENAI_RESOURCE_NAME: "invalid/private-resource",
+		MYCLI_PROVIDER: "azure", AZURE_OPENAI_RESOURCE_NAME: "invalid/private-resource",
 	} }), ConfigError);
 });
 
@@ -761,7 +761,7 @@ test("resolves curated provider defaults and explicit layered overrides", async 
 	const providers = [
 		["openrouter", "openrouter/auto", "https://openrouter.ai/api/v1"],
 		["groq", "openai/gpt-oss-120b", "https://api.groq.com/openai/v1"],
-		["together", "moonshotai/Kimi-K2.7-Code", "https://api.together.ai/v1"],
+		["together", "moonshotai/Kimi-K3", "https://api.together.ai/v1"],
 		["moonshotai", "kimi-k2.7-code", "https://api.moonshot.ai/v1"],
 		["nvidia", "openai/gpt-oss-20b", "https://integrate.api.nvidia.com/v1"],
 		["cerebras", "gpt-oss-120b", "https://api.cerebras.ai/v1"],

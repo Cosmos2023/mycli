@@ -72,7 +72,7 @@ test("cancelled native OAuth login never persists a late credential", async (t) 
 test("native readiness recognizes isolated ambient credentials and preserves explicit reference failures", async (t) => {
 	const homeDir = await temporaryHome(t);
 	for (const allowAmbientAuth of [true, false]) {
-		const status = await inspectNativeProviderAuth({ provider: "azure-openai-responses", homeDir, authRef: "azure-work",
+		const status = await inspectNativeProviderAuth({ provider: "azure", homeDir, authRef: "azure-work",
 			allowAmbientAuth, providerEnv: { AZURE_OPENAI_API_KEY: "offline-readiness-key" } });
 		assert.deepEqual(status, allowAmbientAuth
 			? { configured: true, source: "environment", credentialType: "api_key" }

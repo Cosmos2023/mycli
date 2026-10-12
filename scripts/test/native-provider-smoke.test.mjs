@@ -28,7 +28,7 @@ test("native live probe uses SDK ambient auth and canonical errors with one atte
 	const homeDir = await mkdtemp(join(tmpdir(), "mycli-native-smoke-"));
 	t.after(() => rm(homeDir, { recursive: true, force: true }));
 	let calls = 0;
-	const result = await runNativeProviderSmoke({ provider: "azure-openai-responses", live: true }, { homeDir, cwd: homeDir,
+	const result = await runNativeProviderSmoke({ provider: "azure", live: true }, { homeDir, cwd: homeDir,
 		env: { AZURE_OPENAI_API_KEY: "private-smoke-key", AZURE_OPENAI_BASE_URL: "https://offline.invalid/openai/v1" },
 		fetch: async (_url, init) => {
 			calls += 1;

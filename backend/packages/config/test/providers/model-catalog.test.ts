@@ -333,7 +333,7 @@ test("builtin catalog includes current GPT and DeepSeek V4 model choices", () =>
 		"nvidia",
 		"cerebras",
 	]);
-	for (const model of ["deepseek-v4-flash", "deepseek-v4-pro"]) {
+	for (const model of ["deepseek-flash", "deepseek-v4-pro"]) {
 		const entry = BUILTIN_MODEL_CATALOG.find((candidate) =>
 			candidate.provider === "deepseek" && candidate.model === model);
 		assert.ok(entry, `missing DeepSeek model ${model}`);
@@ -345,7 +345,7 @@ test("builtin catalog pins each curated provider default", () => {
 	const expected = [
 		["openrouter", "openrouter/auto", "Auto Router", ["none", "minimal", "low", "medium", "high"], "medium", 2_000_000, 4_096],
 		["groq", "openai/gpt-oss-120b", "GPT OSS 120B", ["low", "medium", "high"], "medium", 131_072, 65_536],
-		["together", "moonshotai/Kimi-K2.7-Code", "Kimi K2.7 Code", ["none", "high"], "high", 262_144, 131_072],
+		["together", "moonshotai/Kimi-K3", "Kimi K3", ["high"], "high", 1_048_576, 131_072],
 		["moonshotai", "kimi-k2.7-code", "Kimi K2.7 Code", ["high"], "high", 262_144, 131_072],
 		["nvidia", "openai/gpt-oss-20b", "GPT-OSS-20B", [], undefined, 128_000, 8_192],
 		["cerebras", "gpt-oss-120b", "GPT OSS 120B", ["low", "medium", "high"], "medium", 131_072, 40_960],
@@ -371,7 +371,7 @@ test("builtin model reasoning defaults fail closed for uncatalogued models", () 
 	assert.deepEqual(builtinModelReasoningDefaults({
 		provider: "together",
 		protocol: "chat_completions",
-		model: "moonshotai/Kimi-K2.7-Code",
+		model: "moonshotai/Kimi-K3",
 	}), { reasoningEffort: "high", thinkingEnabled: true });
 	assert.deepEqual(builtinModelReasoningDefaults({
 		provider: "nvidia",

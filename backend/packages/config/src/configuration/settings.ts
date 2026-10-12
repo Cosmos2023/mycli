@@ -312,7 +312,7 @@ async function resolveConfigFromSources(
 	)) ?? inferProviderFromBaseUrl(inferenceUrl);
 	const provider = providerRouteSetting(providerValue);
 	const stableProvider = isProviderId(provider);
-	const nativeAzure = provider === "azure-openai-responses";
+	const nativeAzure = provider === "azure";
 	const initialProfile = stableProvider ? providerProfileSetting(providerValue) : undefined;
 	const configuredProtocol = stringValue(firstTruthy(
 		options.overrides?.protocol,

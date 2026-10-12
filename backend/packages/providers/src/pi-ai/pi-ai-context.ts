@@ -42,6 +42,9 @@ export function toPiAiContext(
 	const replayDiagnostics: PiAiReplayDiagnostic[] = [];
 	const systemPrompt = authoritativePrompt(request);
 	const toolCallIds = new Map<string, string>();
+	// pi-ai 1.x carries mid-conversation tool changes as transcript system messages, so tools a
+	// successful `tool_search` activated are declared where they appear instead of up front.
+	const midConversationTools = midConversationToolNames(request);
 
 	if (request.items) {
 		for (const item of request.items) {
@@ -60,6 +63,13 @@ export function toPiAiContext(
 			}
 			if (projected?.role === "toolResult") {
 				messages.push({ ...projected, toolCallId: toolCallIds.get(projected.toolCallId) ?? projected.toolCallId });
+				if (item.type === "tool_result") {
+					const addedTools = toolAdditionTools(request, item);
+					if (addedTools.length > 0) {
+						messages.push(Object.freeze({ role: "system", content: "",
+							toolsAdded: [...addedTools], timestamp: 0 }));
+					}
+				}
 			} else if (projected) messages.push(projected);
 		}
 	} else {
@@ -79,13 +89,7 @@ export function toPiAiContext(
 			...(systemPrompt ? { systemPrompt } : {}),
 			messages,
 			...(request.tools.length > 0
-				? { tools: request.tools.map((tool) => {
-					if (tool.name !== "view_image" || canRequestOriginalImageDetail(request)) return piAiTool(tool);
-					const properties = tool.inputSchema.properties;
-					return piAiTool({ ...tool, inputSchema: { ...tool.inputSchema,
-						properties: isJsonObject(properties) ? Object.fromEntries(Object.entries(properties).filter(([key]) => key !== "detail")) : properties,
-					} });
-				}) }
+				? { tools: piAiRequestTools(request).filter((tool) => !midConversationTools.has(tool.name)) }
 				: {}),
 		}),
 		replayDiagnostics: Object.freeze(replayDiagnostics),
@@ -128,7 +132,6 @@ function conversationItem(
 				toolName: item.toolName,
 				content: [{ type: "text", text: item.output }, ...piAiImages(item.images)],
 				isError: !item.success,
-				...discoveryLoadPoint(request, item),
 				timestamp: 0,
 			});
 		case "context":
@@ -136,18 +139,33 @@ function conversationItem(
 	}
 }
 
-function discoveryLoadPoint(
+/**
+ * Tools a successful `tool_search` result makes available from that point on. The transcript
+ * keeps the declaration so providers with native tool additions can replay it.
+ */
+function toolAdditionTools(
 	request: ProviderRequest,
 	item: Extract<CanonicalConversationItem, { type: "tool_result" }>,
-): Pick<ToolResultMessage, "addedToolNames"> {
-	if (!item.success || item.toolName !== "tool_search") return {};
+): readonly Tool[] {
+	if (!item.success || item.toolName !== "tool_search") return [];
 	const current = new Map(request.tools.map((tool) => [tool.id, toolDiscovery(tool)]));
 	const names = parseToolDiscoveries({ version: 1, tools: item.toolDiscoveries }).flatMap((discovery) => {
 		const tool = current.get(discovery.id);
 		return tool?.name === discovery.name && tool.definitionSha256 === discovery.definitionSha256 ? [tool.name] : [];
 	});
-	// pi-ai decides whether this becomes native history or ordinary top-level tools.
-	return names.length ? { addedToolNames: [...new Set(names)] } : {};
+	if (names.length === 0) return [];
+	const discovered = new Set(names);
+	return piAiRequestTools(request).filter((tool) => discovered.has(tool.name));
+}
+
+/** Tool names added part-way through the transcript, which the leading declaration omits. */
+function midConversationToolNames(request: ProviderRequest): ReadonlySet<string> {
+	const names = new Set<string>();
+	for (const item of request.items ?? []) {
+		if (item.type !== "tool_result") continue;
+		for (const tool of toolAdditionTools(request, item)) names.add(tool.name);
+	}
+	return names;
 }
 
 function piAiAssistantMessage(
@@ -250,6 +268,19 @@ function authoritativePrompt(request: ProviderRequest): string {
 		...(request.items ?? []).flatMap((item) => item.type === "context"
 			&& item.metadata.role === "developer" ? [item.text] : []),
 	].filter(Boolean).join("\n\n");
+}
+
+/** Model-visible tool declarations, with the image-detail switch applied. */
+function piAiRequestTools(request: ProviderRequest): Tool[] {
+	return request.tools.map((tool) => {
+		if (tool.name !== "view_image" || canRequestOriginalImageDetail(request)) return piAiTool(tool);
+		const properties = tool.inputSchema.properties;
+		return piAiTool({ ...tool, inputSchema: { ...tool.inputSchema,
+			properties: isJsonObject(properties)
+				? Object.fromEntries(Object.entries(properties).filter(([key]) => key !== "detail"))
+				: properties,
+		} });
+	});
 }
 
 function piAiTool(tool: ProviderRequest["tools"][number]): Tool {

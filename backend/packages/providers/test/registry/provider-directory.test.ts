@@ -48,13 +48,12 @@ test("classifies supported, configurable, and unsupported catalog providers", as
 	assert.equal(deepseek.status, "serviceable");
 	assert.deepEqual(deepseek.protocols, ["chat_completions"]);
 	for (const modelId of [
-		"deepseek-v4-flash",
-		"deepseek-v4-flash-vision-exp",
+		"deepseek-flash",
 		"deepseek-v4-pro",
 	]) {
 		assert(deepseek.models.some((model) => model.id === modelId), modelId);
 	}
-	const vision = deepseek.models.find((model) => model.id === "deepseek-v4-flash-vision-exp");
+	const vision = deepseek.models.find((model) => model.id === "deepseek-flash");
 	assert(vision);
 	assert.deepEqual(vision.input, ["text", "image"]);
 	assert.deepEqual(vision.reasoningEfforts, ["low", "high", "max"]);
@@ -82,13 +81,13 @@ test("classifies supported, configurable, and unsupported catalog providers", as
 
 	const radius = requiredProvider(directory.providers, "radius");
 	assert.equal(radius.status, "unsupported");
-	assert.equal(radius.disabledReason, "no_supported_models");
+	assert.equal(radius.disabledReason, "unsupported_protocol");
 });
 
 test("keeps pi-ai wire compatibility private to provider construction", async () => {
 	const directory = await loadPiAiProviderDirectory();
 	const deepseek = requiredProvider(directory.providers, "deepseek");
-	const reasoner = deepseek.models.find((model) => model.id === "deepseek-v4-flash");
+	const reasoner = deepseek.models.find((model) => model.id === "deepseek-flash");
 	assert(reasoner);
 	assert(!Object.hasOwn(reasoner, "compatibility"));
 	assert.deepEqual(reasoner.reasoningEfforts, ["low", "high", "max"]);
@@ -100,7 +99,7 @@ test("keeps pi-ai wire compatibility private to provider construction", async ()
 
 	const together = requiredProvider(directory.providers, "together");
 	const togetherReasoner = together.models.find(
-		(model) => model.id === "moonshotai/Kimi-K2.7-Code",
+		(model) => model.id === "moonshotai/Kimi-K3",
 	);
 	assert(togetherReasoner);
 	assert.deepEqual(togetherReasoner.reasoningEfforts, ["high"]);

@@ -31,7 +31,7 @@ in mycli and validated against the workspace-pinned pi-ai release.
 | --- | --- | --- | --- | --- |
 | OpenRouter | `openrouter` | `openrouter/auto` | `https://openrouter.ai/api/v1` | `medium` |
 | Groq | `groq` | `openai/gpt-oss-120b` | `https://api.groq.com/openai/v1` | `medium` |
-| Together | `together` | `moonshotai/Kimi-K2.7-Code` | `https://api.together.ai/v1` | `high` |
+| Together | `together` | `moonshotai/Kimi-K3` | `https://api.together.ai/v1` | `high` |
 | Moonshot AI | `moonshotai` | `kimi-k2.7-code` | `https://api.moonshot.ai/v1` | `high` |
 | NVIDIA | `nvidia` | `openai/gpt-oss-20b` | `https://integrate.api.nvidia.com/v1` | disabled |
 | Cerebras | `cerebras` | `gpt-oss-120b` | `https://api.cerebras.ai/v1` | `medium` |
@@ -163,10 +163,10 @@ defaults are changed.
 
 These pi-ai Qwen routes are available in `/model` without a `models.json` declaration:
 
-| Provider | Route ID | Models in pi-ai 0.85.1 |
+| Provider | Route ID | Models in pi-ai 1.1.0 |
 | --- | --- | --- |
-| Qwen Token Plan | `qwen-token-plan` | 18 |
-| Qwen Token Plan CN | `qwen-token-plan-cn` | 18 |
+| Qwen Token Plan | `qwen-token-plan` | 20 |
+| Qwen Token Plan CN | `qwen-token-plan-cn` | 20 |
 | Qwen Token Plan Individual | `qwen-token-plan-individual` | 9 |
 
 Open `/model`, use Esc to open the provider list, and choose the appropriate Qwen Token Plan route.
@@ -282,7 +282,7 @@ needs an explicit route when you want the native transport instead of mycli's bu
   writes the key under the route's `auth_ref`, and `MYCLI_API_KEY` remains an explicit source.
 
 The same shape serves the other Responses providers: `openai-codex` for the Codex backend, and
-`azure-openai-responses` with `AZURE_OPENAI_BASE_URL` or `AZURE_OPENAI_RESOURCE_NAME`,
+`azure` with `AZURE_OPENAI_BASE_URL` or `AZURE_OPENAI_RESOURCE_NAME`,
 `AZURE_OPENAI_API_VERSION`, and the optional `AZURE_OPENAI_DEPLOYMENT_NAME_MAP`.
 
 ## Compatible Endpoints

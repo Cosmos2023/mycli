@@ -131,7 +131,7 @@ test("DeepSeek accepts a completed summary above 4096 tokens in one request with
 		return { text: summary, finish: "stop", tokens: 10876 };
 	});
 	const fixture = await createFixture(t, provider, { goalBudget: 100_000,
-		config: { provider: "deepseek", protocol: "chat_completions", model: "deepseek-v4-flash-vision-exp",
+		config: { provider: "deepseek", protocol: "chat_completions", model: "deepseek-flash",
 			reasoningEffort: "high", maxOutputTokens: 20_000 } });
 	const result = await fixture.compact();
 	assert.equal(result.status, "compressed");
@@ -160,7 +160,7 @@ test("SDK summary requests retain base instructions and tool messages with the h
 		{ type: "assistant_tool_calls", text: "Read findings.", calls: [{ callId: "read-1", name: "Read", argumentsJson: '{"file_path":"app.ts"}' }] },
 		{ type: "tool_result", callId: "read-1", toolName: "Read", success: true, output: "Recorded file contents." },
 	];
-	await summarizeCompactionWithProvider(provider, { ...fixture.config, provider: "deepseek", protocol: "chat_completions", model: "deepseek-v4-flash-vision-exp" }, {
+	await summarizeCompactionWithProvider(provider, { ...fixture.config, provider: "deepseek", protocol: "chat_completions", model: "deepseek-flash" }, {
 		items, instruction, baseInstructions: "You are a coding agent.", developerInstructions: ["Use TypeScript."], signal: new AbortController().signal,
 	});
 	const messages = bodies[0]!.messages as { role: string; content: string; tool_calls?: unknown; tool_call_id?: string }[];
@@ -448,6 +448,6 @@ function deepSeekProvider(reply: (body: Record<string, unknown>) => {
 		];
 		return new Response(frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join("") + "data: [DONE]\n\n",
 			{ headers: { "content-type": "text/event-stream" } });
-	} }).create({ provider: "deepseek", protocol: "chat_completions", model: "deepseek-v4-flash-vision-exp",
+	} }).create({ provider: "deepseek", protocol: "chat_completions", model: "deepseek-flash",
 		apiKey: "fixture", apiBaseUrl: "https://offline.invalid/v1", supportsImages: false, maxPromptTokens: 64_000 });
 }

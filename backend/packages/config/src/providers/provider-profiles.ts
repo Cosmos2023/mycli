@@ -43,7 +43,7 @@ const PROFILES: Readonly<Record<ProviderId, ProviderProfile>> = {
 		displayName: "DeepSeek",
 		defaultProtocol: "chat_completions",
 		defaultBaseUrl: "https://api.deepseek.com",
-		defaultModel: "deepseek-chat",
+		defaultModel: "deepseek-flash",
 	},
 	anthropic: {
 		provider: "anthropic",
@@ -71,7 +71,7 @@ const PROFILES: Readonly<Record<ProviderId, ProviderProfile>> = {
 		displayName: "Together",
 		defaultProtocol: "chat_completions",
 		defaultBaseUrl: "https://api.together.ai/v1",
-		defaultModel: "moonshotai/Kimi-K2.7-Code",
+		defaultModel: "moonshotai/Kimi-K3",
 	},
 	moonshotai: {
 		provider: "moonshotai",

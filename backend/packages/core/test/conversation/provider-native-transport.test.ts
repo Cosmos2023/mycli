@@ -3,7 +3,7 @@ import test from "node:test";
 import { parseProviderNativeTransportSnapshot, providerNativeEndpointSha256, providerNativeProtocol } from "../../src/index.ts";
 
 test("native transport snapshots retain a bounded API identity and frozen Azure deployment", () => {
-	const input = { version: 1, catalogProviderId: "azure-openai-responses", api: "azure-openai-responses",
+	const input = { version: 1, catalogProviderId: "azure", api: "azure-openai-responses",
 		modelId: "gpt-5.5", endpointSha256: providerNativeEndpointSha256("https://example.azure.com/openai/v1"),
 		azure: { apiVersion: "v1", deploymentName: "production" } };
 	const snapshot = parseProviderNativeTransportSnapshot(input);

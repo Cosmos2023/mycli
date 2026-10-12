@@ -5,7 +5,7 @@ import ts from "typescript";
 import { loadPiAiProviderDirectory } from "../../src/registry/provider-directory.ts";
 import type { ProviderDirectoryStatus } from "../../src/registry/provider-directory-types.ts";
 
-export const REVIEWED_PI_AI_VERSION = "0.85.1";
+export const REVIEWED_PI_AI_VERSION = "1.1.0";
 
 interface AdapterHooks {
 	readonly fetch: "supported" | "rejected" | "ignored" | "sse_only";
@@ -23,6 +23,10 @@ const ADAPTER_HOOKS: Readonly<Record<string, AdapterHooks>> = Object.freeze({
 	"google-vertex": { fetch: "rejected", onResponse: "absent", limitation: "custom fetch rejected; native Google auth context" },
 	"bedrock-converse-stream": { fetch: "ignored", onResponse: "supported", limitation: "AWS transport/auth; metadata middleware only" },
 	"mistral-conversations": { fetch: "supported", onResponse: "supported", limitation: "native conversation protocol not enabled" },
+	"openrouter-images": { fetch: "supported", onResponse: "supported", limitation: "image generation API; mycli does not expose image models" },
+	"cloudflare-workers-ai-system-one": { fetch: "ignored", onResponse: "absent", limitation: "classifier API; no streaming, custom fetch or response hooks" },
+	"openai-decisions": { fetch: "ignored", onResponse: "absent", limitation: "classifier API; no streaming, custom fetch or response hooks" },
+	"typesafe-system-one": { fetch: "ignored", onResponse: "absent", limitation: "classifier API; no streaming, custom fetch or response hooks" },
 	"openai-codex-responses": { fetch: "sse_only", onResponse: "sse_only", limitation: "OAuth; WebSocket path needs separate observation" },
 	"pi-messages": { fetch: "supported", onResponse: "supported", limitation: "dynamic catalog requires native configuration refresh" },
 });

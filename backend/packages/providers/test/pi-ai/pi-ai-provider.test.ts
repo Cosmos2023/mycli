@@ -5,6 +5,7 @@ import type {
 	AssistantMessageEvent,
 	Context,
 	SimpleStreamOptions,
+	ToolCall,
 } from "@earendil-works/pi-ai";
 import type {
 	ProviderEvent,
@@ -755,7 +756,8 @@ test("rejects invalid pi-ai terminal states", async (context) => {
 						type: "toolCall",
 						id: "call-1",
 						name: "Read",
-						arguments: { value: undefined },
+						// The SDK types restrict arguments to JSON values; a provider can still send more.
+						arguments: { value: undefined } as unknown as ToolCall["arguments"],
 					}],
 					stopReason: "toolUse",
 				}),

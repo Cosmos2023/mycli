@@ -617,7 +617,7 @@ test("rejects malformed nested provider results", () => {
 function nativeCommand(api: ProviderNativeApi = "openai-completions") {
 	const base = executeCommand();
 	const protocol = providerNativeProtocol(api);
-	const provider = parseProviderRouteId(api === "azure-openai-responses" ? "azure-openai-responses" : api === "anthropic-messages" ? "anthropic" : "openai");
+	const provider = parseProviderRouteId(api === "azure-openai-responses" ? "azure" : api === "anthropic-messages" ? "anthropic" : "openai");
 	const nativeTransport = {
 		version: 1 as const, catalogProviderId: provider, api, modelId: base.config.model, modelSource: "catalog" as const,
 		endpointSha256: providerNativeEndpointSha256(base.config.apiBaseUrl),
