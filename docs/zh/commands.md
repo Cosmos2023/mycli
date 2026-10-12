@@ -212,6 +212,9 @@ Node 运行时统一管理解析、发现、分发和错误的标准注册表。
 | `/diff` | 无 | 可滚动的暂存、未暂存和未跟踪 Git diff | 是 | 常用 |
 | `/review` | 无 | 只读审查未提交改动、基准分支、提交或自定义指令 | 否 | 常用 |
 | `/rename` | 可选 `[title]` | 修改当前会话标题 | 否 | 常用 |
+| `/archive` | 必填 `<session-id\|title>` | 按 id 或精确标题归档其它会话 | 否 | 常用 |
+| `/unarchive` | 必填 `<session-id\|title>` | 恢复已归档的会话 | 否 | 常用 |
+| `/delete` | 必填 `<session-id\|title>` | 按 id 或精确标题永久删除会话 | 否 | 常用 |
 | `/init` | 无 | 仅在 AGENTS.md 不存在时请求 Agent 创建 | 否 | 常用 |
 | `/changes` | 无 | 会话文件历史 | 是 | 常用 |
 | `/undo` | 无 | 由后端处理 | 是 | 仅搜索时显示 |

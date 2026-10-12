@@ -2042,6 +2042,11 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 							})(sessionService.resolve(sessionId), settings, signal);
 						},
 						rename: (sessionId, title) => sessionService.rename(sessionId, title),
+						archive: (reference, archived) => sessionService.archive(
+							sessionService.resolve(reference).id,
+							archived,
+						),
+						delete: (reference) => sessionService.delete(sessionService.resolve(reference).id),
 						list: (query) => sessionService.list(query),
 						inspect: (sessionId) => sessionService.inspect(sessionId),
 						previewResume: (sessionId) => sessionService.previewResume(sessionId),

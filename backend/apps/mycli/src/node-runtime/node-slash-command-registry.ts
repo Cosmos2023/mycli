@@ -256,6 +256,21 @@ const BUILTIN_SLASH_COMMANDS: readonly SlashCommandSpec[] = Object.freeze([
 	spec("diff", "/diff", "Show staged, unstaged and untracked Git changes", { tuiPolicy: tuiPolicy("open_diff"), presentation: "overlay", surfaces: TUI_SURFACE }),
 	spec("review", "/review", "Review changes, a branch, or a commit", { tuiPolicy: tuiPolicy("open_review"), presentation: "overlay", availableDuringTurn: false, surfaces: TUI_SURFACE }),
 	spec("rename", "/rename", "Rename the current session", { argumentHint: "[title]", argumentPolicy: "optional", tuiPolicy: hybridPolicy("open_rename"), availableDuringTurn: false }),
+	spec("archive", "/archive", "Archive a session by id or exact title", {
+		argumentHint: "<session-id|title>",
+		argumentPolicy: "required",
+		availableDuringTurn: false,
+	}),
+	spec("unarchive", "/unarchive", "Restore an archived session by id or exact title", {
+		argumentHint: "<session-id|title>",
+		argumentPolicy: "required",
+		availableDuringTurn: false,
+	}),
+	spec("delete", "/delete", "Permanently delete a session by id or exact title", {
+		argumentHint: "<session-id|title>",
+		argumentPolicy: "required",
+		availableDuringTurn: false,
+	}),
 	spec("init", "/init", "Create repository guidance in AGENTS.md", { availableDuringTurn: false, surfaces: TUI_SURFACE }),
 	spec("changes", "/changes", "Inspect session file history"),
 	spec("undo", "/undo", "Undo the last recoverable file change", {
@@ -455,7 +470,8 @@ function commandManifestItem(command: SlashCommandSpec): SlashCommandManifestIte
 function commandCategory(id: string): SlashCommandCategory {
 	if (["model", "mode", "plan"].includes(id)) return "model";
 	if (["permissions", "sandbox", "trust"].includes(id)) return "safety";
-	if (["goal", "new", "resume", "rename", "fork", "export", "session_search", "session_maintenance", "compact", "clear"].includes(id)) {
+	if (["goal", "new", "resume", "rename", "fork", "export", "archive", "unarchive", "delete",
+		"session_search", "session_maintenance", "compact", "clear"].includes(id)) {
 		return "session";
 	}
 	if (["skills", "mcp", "plugins", "hooks", "resources"].includes(id)) return "integrations";

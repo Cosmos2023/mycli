@@ -896,6 +896,30 @@ class InProcessNodeGateway implements NodeGateway {
 			this.#emitRuntime("status.changed", this.#status());
 			return noticeCommandResult(invocation, "Session renamed", summary.title ?? invocation.args, { extra: { session_title: summary.title ?? invocation.args } });
 		}
+		if (invocation.commandId === "archive" || invocation.commandId === "unarchive" || invocation.commandId === "delete") {
+			const reference = invocation.args.trim();
+			if (!reference) {
+				throw new GatewayFailure("invalid_params", `/${invocation.commandId} needs a session id or exact title.`);
+			}
+			const commands = this.#options.sessionCommands;
+			const summary = invocation.commandId === "delete"
+				? commands?.delete?.(reference)
+				: commands?.archive?.(reference, invocation.commandId === "archive");
+			if (!summary) {
+				throw new GatewayFailure("unavailable_feature", "Session lifecycle commands are unavailable.");
+			}
+			const label = invocation.commandId === "delete" ? "Deleted"
+				: invocation.commandId === "archive" ? "Archived" : "Restored";
+			this.#emitRuntime("status.changed", this.#status());
+			return noticeCommandResult(invocation, `${label} session`, summary.title ?? summary.id, {
+				severity: invocation.commandId === "delete" ? "warning" : "success",
+				extra: {
+					session_id: summary.id,
+					...(summary.title ? { session_title: summary.title } : {}),
+					lifecycle_status: summary.lifecycleStatus,
+				},
+			});
+		}
 		if (invocation.commandId === "init") {
 			if (!this.#options.workspaceCommands) throw new GatewayFailure("unavailable_feature", "Repository initialization is unavailable.");
 			const prompt = await this.#options.workspaceCommands.init(this.#sessionController.workspaceRoot());

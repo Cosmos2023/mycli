@@ -165,6 +165,9 @@ export interface NodeGatewayBackgroundTaskCommands {
 export interface NodeGatewaySessionCommands {
 	exportTraining?(sessionId: string, settings: SessionTrainingExportSettings, signal: AbortSignal): Promise<TrainingExportResult>;
 	rename?(sessionId: string, title: string): SessionSummary;
+	/** Resolve a session id or exact title, then archive (`archived: false` restores it). */
+	archive?(reference: string, archived?: boolean): SessionSummary;
+	delete?(reference: string): SessionSummary;
 	list?(query: SessionQuery): readonly SessionSummary[];
 	inspect?(sessionId: string): SessionSummary | undefined;
 	previewResume?(sessionId: string): Promise<ResumeRepairPreview>;

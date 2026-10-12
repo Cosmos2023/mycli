@@ -319,6 +319,9 @@ also clears the temporary override so the saved choice takes effect.
 | `/diff` | none | scrollable staged, unstaged and untracked Git diff | yes | common |
 | `/review` | none | read-only review of uncommitted changes, a base branch, a commit, or custom instructions | no | common |
 | `/rename` | optional `[title]` | edits the current session title | no | common |
+| `/archive` | required `<session-id\|title>` | archives another session by id or exact title | no | common |
+| `/unarchive` | required `<session-id\|title>` | restores an archived session | no | common |
+| `/delete` | required `<session-id\|title>` | permanently deletes a session by id or exact title | no | common |
 | `/init` | none | asks the agent to create AGENTS.md only when it does not exist | no | common |
 | `/changes` | none | session file history | yes | common |
 | `/undo` | none | backend | yes | search-only |

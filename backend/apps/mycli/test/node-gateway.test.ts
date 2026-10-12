@@ -196,6 +196,9 @@ const TUI_BUILTIN_COMMAND_NAMES = [
 	"/diff",
 	"/review",
 	"/rename",
+	"/archive",
+	"/unarchive",
+	"/delete",
 	"/init",
 	"/changes",
 	"/hotkeys",
@@ -393,6 +396,8 @@ function gatewayHarness(options: {
 		readonly list?: (query: SessionQuery) => readonly SessionSummary[];
 		readonly inspect?: (sessionId: string) => SessionSummary | undefined;
 		readonly rename?: (sessionId: string, title: string) => SessionSummary;
+		readonly archive?: (reference: string, archived?: boolean) => SessionSummary;
+		readonly delete?: (reference: string) => SessionSummary;
 		readonly previewResume?: (sessionId: string) => Promise<ResumeRepairPreview>;
 		readonly applyResumeRepair?: (
 			input: ApplyResumeRepairInput,
@@ -763,6 +768,18 @@ function gatewayHarness(options: {
 				rename: (sessionId: string, title: string) => {
 					sessionCommandCalls.push({ kind: "rename", sessionId, title });
 					return options.sessionService!.rename!(sessionId, title);
+				},
+			} : {}),
+			...(options.sessionService?.archive ? {
+				archive: (reference: string, archived?: boolean) => {
+					sessionCommandCalls.push({ kind: "archive", reference, archived });
+					return options.sessionService!.archive!(reference, archived);
+				},
+			} : {}),
+			...(options.sessionService?.delete ? {
+				delete: (reference: string) => {
+					sessionCommandCalls.push({ kind: "delete", reference });
+					return options.sessionService!.delete!(reference);
 				},
 			} : {}),
 			...(options.sessionService?.previewResume ? {
@@ -3788,6 +3805,44 @@ test("names an untitled session from its first prompt", async (t) => {
 		client_user_message_id: "user-name-2",
 	});
 	assert.deepEqual(kept, []);
+});
+
+test("archive, unarchive and delete resolve a session reference and report its lifecycle state", async (t) => {
+	const calls: string[] = [];
+	const harness = gatewayHarness({
+		sessions: {},
+		sessionService: {
+			archive: (reference, archived) => {
+				calls.push(`${reference}:${archived === false ? "unarchive" : "archive"}`);
+				return testSessionSummary("session-other", {
+					title: "Archived chat",
+					lifecycleStatus: archived === false ? "active" : "archived",
+				});
+			},
+			delete: (reference) => {
+				calls.push(`${reference}:delete`);
+				return testSessionSummary("session-other", { title: "Archived chat", lifecycleStatus: "deleted" });
+			},
+		},
+	});
+	t.after(async () => { harness.releaseTurn(); await harness.gateway.close(); });
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	const archivedResult = await harness.send("command.run", { command: "/archive Archived chat", surface: "tui" });
+	assert.equal("result" in archivedResult ? archivedResult.result.display.title : null, "Archived session");
+	assert.equal("result" in archivedResult ? archivedResult.result.display.summary : null, "Archived chat");
+	assert.equal("result" in archivedResult ? archivedResult.result.lifecycle_status : null, "archived");
+
+	const restored = await harness.send("command.run", { command: "/unarchive session-other", surface: "tui" });
+	assert.equal("result" in restored ? restored.result.display.title : null, "Restored session");
+
+	const deleted = await harness.send("command.run", { command: "/delete session-other", surface: "tui" });
+	assert.equal("result" in deleted ? deleted.result.display.title : null, "Deleted session");
+	assert.equal("result" in deleted ? deleted.result.display.severity : null, "warning");
+	assert.deepEqual(calls, ["Archived chat:archive", "session-other:unarchive", "session-other:delete"]);
+
+	const missing = await harness.send("command.run", { command: "/archive", surface: "tui" });
+	assert.equal("error" in missing ? missing.error.code : null, "invalid_arguments");
 });
 
 test("status and status command expose shared session lifecycle and ownership state", async () => {

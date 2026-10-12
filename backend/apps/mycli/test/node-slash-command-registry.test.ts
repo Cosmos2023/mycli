@@ -58,7 +58,10 @@ test("supported search-only commands retain their own routes", () => {
 	const common = new Set(commandManifest("tui").map((command) => command.name));
 	for (const command of commandDiscoveryManifest("tui")) {
 		assert.equal(common.has(command.name), !command.search_only);
-		assert.equal(resolveSlashCommand({ text: command.name, surface: "tui", turnRunning: false }).commandId, command.id);
+		const text = command.argument_policy === "required"
+			? `${command.name} sample-reference`
+			: command.name;
+		assert.equal(resolveSlashCommand({ text, surface: "tui", turnRunning: false }).commandId, command.id);
 	}
 	for (const text of ["/tmp", "/tasks/file", "/session/search"]) {
 		assert.throws(() => resolveSlashCommand({ text, surface: "tui", turnRunning: false }),
