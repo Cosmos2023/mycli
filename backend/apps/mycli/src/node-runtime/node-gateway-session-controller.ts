@@ -216,12 +216,12 @@ export class NodeGatewaySessionController {
 		return { sessions };
 	}
 
-	async startNew(): Promise<JsonObject> {
+	async startNew(options: { readonly workspaceRoot?: string } = {}): Promise<JsonObject> {
 		const coordinator = this.#requiredCoordinator("New session creation is unavailable.");
 		const claim = this.#claimTransition(coordinator);
 		let activated = false;
 		try {
-			const snapshot = await coordinator.startNew();
+			const snapshot = await coordinator.startNew(options);
 			await this.#activate(snapshot);
 			activated = true;
 			return await this.#transitionPayload(snapshot);

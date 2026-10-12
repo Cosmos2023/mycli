@@ -5,6 +5,13 @@ import { join } from "node:path";
 import type { ReviewSelection } from "@mycli/contracts";
 import { listGitReviewFiles, loadGitWorkspaceDiff as readGitWorkspaceDiff } from "../review/git-context.ts";
 import { prepareReview } from "../review/review.ts";
+import {
+	createWorkspaceWorktree,
+	listWorkspaceWorktrees,
+	removeWorkspaceWorktree,
+	WorktreeError,
+	type WorkspaceWorktree,
+} from "./workspace-worktree.ts";
 
 export async function loadGitWorkspaceDiff(cwd: string, signal: AbortSignal): ReturnType<typeof readGitWorkspaceDiff> {
 	try { return await readGitWorkspaceDiff(cwd, signal); }
@@ -17,6 +24,57 @@ export function workspaceWorkflowFailure(error: unknown): unknown {
 		: error.code === "review_git_failed" ? "Unable to read Git state. Check the repository and the requested branch or commit."
 		: "Unable to inspect this review target. Check its files and Git reference.";
 	return new GatewayFailure("invalid_params", detail, { additional_details: detail });
+}
+
+/**
+ * Managed worktrees fail with their own codes; the gateway only speaks its error catalog, so every
+ * user-actionable refusal becomes `invalid_params` and anything else stays an internal failure.
+ */
+export function worktreeFailure(error: unknown): unknown {
+	if (!(error instanceof WorktreeError)) return error;
+	const detail = error.message;
+	return error.code === "worktree_git_failed"
+		? new GatewayFailure("internal_error", detail, { additional_details: detail })
+		: new GatewayFailure("invalid_params", detail, { additional_details: detail });
+}
+
+/** Binds the managed-worktree commands to the session's live workspace and the mycli home. */
+export function workspaceWorktreeCommands(input: {
+	readonly workspaceRoot: () => string;
+	readonly homeDir: string;
+}): {
+	readonly list: (signal: AbortSignal) => Promise<readonly WorkspaceWorktree[]>;
+	readonly create: (request: { readonly name?: string; readonly signal: AbortSignal }) => Promise<WorkspaceWorktree>;
+	readonly remove: (path: string, signal: AbortSignal) => Promise<void>;
+} {
+	const source = (signal: AbortSignal): { workspaceRoot: string; homeDir: string; signal: AbortSignal } => ({
+		workspaceRoot: input.workspaceRoot(),
+		homeDir: input.homeDir,
+		signal,
+	});
+	return {
+		list: (signal) => withWorktreeFailure(signal, () => listWorkspaceWorktrees(source(signal))),
+		create: (request) => withWorktreeFailure(request.signal, () => createWorkspaceWorktree({
+			...source(request.signal),
+			...(request.name ? { name: request.name } : {}),
+		})),
+		remove: (path, signal) => withWorktreeFailure(
+			signal,
+			() => removeWorkspaceWorktree({ ...source(signal), path }),
+		),
+	};
+}
+
+async function withWorktreeFailure<Value>(
+	signal: AbortSignal,
+	operation: () => Promise<Value>,
+): Promise<Value> {
+	try {
+		return await operation();
+	} catch (error) {
+		signal.throwIfAborted();
+		throw worktreeFailure(error);
+	}
 }
 
 export async function prepareInteractiveReview(input: {

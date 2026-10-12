@@ -401,6 +401,47 @@ export interface GatewayRpcMethods {
     result: TranscriptPage;
     [k: string]: unknown;
   };
+  "worktree.list": {
+    params: EmptyParams;
+    result: {
+      worktrees: Worktree[];
+      [k: string]: unknown;
+    };
+    [k: string]: unknown;
+  };
+  "worktree.start": {
+    params: {
+      name?: Identity;
+      path?: Identity;
+      [k: string]: unknown;
+    };
+    result: {
+      session_id: string;
+      generation: number;
+      read_only: boolean;
+      lines: Strings;
+      background_shells: ShellSnapshot[];
+      auth_providers?: Objects;
+      auth_status?: {
+        [k: string]: unknown;
+      };
+      worktree: Worktree;
+      [k: string]: unknown;
+    };
+    [k: string]: unknown;
+  };
+  "worktree.remove": {
+    params: {
+      path: Identity;
+      [k: string]: unknown;
+    };
+    result: {
+      removed: boolean;
+      path: string;
+      [k: string]: unknown;
+    };
+    [k: string]: unknown;
+  };
   "provider.attempts.load": {
     params: {
       session_id?: string;
@@ -1229,6 +1270,16 @@ export interface GatewayAgentInteraction {
   kind: "spawn" | "message" | "followup" | "interrupt";
   target: string;
   message_preview?: string;
+}
+export interface Worktree {
+  path: string;
+  name: string;
+  branch?: string;
+  created: boolean;
+  current: boolean;
+  session_id?: string;
+  session_title?: string;
+  [k: string]: unknown;
 }
 export interface SubmitParams {
   message: string;

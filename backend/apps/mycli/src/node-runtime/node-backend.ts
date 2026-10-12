@@ -2,7 +2,7 @@ import { SessionGoalService, SessionGoalUsageTracker, sessionGoalContext } from 
 import { GoalTool } from "@mycli/tools";
 import { GatewayFailure } from "./node-gateway-errors.ts";
 import { GoalObjectiveFiles } from "./goal-objective-files.ts";
-import { loadGitWorkspaceDiff, repositoryInitPrompt, prepareInteractiveReview, workspaceWorkflowFailure } from "./workspace-slash-workflows.ts";
+import { loadGitWorkspaceDiff, repositoryInitPrompt, prepareInteractiveReview, workspaceWorkflowFailure, workspaceWorktreeCommands } from "./workspace-slash-workflows.ts";
 import { SelectedSkillContext } from "./selected-skill-context.ts";
 import { randomUUID } from "node:crypto";
 import { PluginCatalogService } from "@mycli/integrations";
@@ -1854,7 +1854,11 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			acquireSession: (sessionId) => store.acquireSessionLease(sessionId),
 			releaseSession: (sessionId) => store.releaseSessionLease(sessionId),
 			retainSourceSession: true,
-			create: (current) => virtualSession(randomUUID(), current.workspaceRoot, createRuntime),
+			create: (current, options) => virtualSession(
+				randomUUID(),
+				options.workspaceRoot ?? current.workspaceRoot,
+				createRuntime,
+			),
 			listSessions: (query) => listSessionsWithVirtualInitial(
 				store,
 				query ?? {},
@@ -2031,7 +2035,14 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 							return { runtime, close };
 						} catch (error) { await close(); throw error; }
 					},
-					workspaceCommands: { diff: loadGitWorkspaceDiff, init: repositoryInitPrompt },
+					workspaceCommands: {
+						diff: loadGitWorkspaceDiff,
+						init: repositoryInitPrompt,
+						worktrees: workspaceWorktreeCommands({
+							workspaceRoot: () => sessionCoordinator.snapshot().workspaceRoot,
+							homeDir,
+						}),
+					},
 					sessionCommands: {
 						exportTraining: async (sessionId, settings, signal) => {
 							const { createTrainingExportHandler } = await import("./session-training-export.ts");

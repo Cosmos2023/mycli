@@ -112,7 +112,12 @@ function runCommand(request: Request): void {
 		})}\n`);
 	} else {
 		const id = command.trim().split(/\s+/u)[0]!.slice(1);
-		const action = { view: "set_view_mode", resume: "open_session_selector", settings: "open_settings" }[id];
+		const action = {
+			view: "set_view_mode",
+			resume: "open_session_selector",
+			worktree: "open_worktree_selector",
+			settings: "open_settings",
+		}[id];
 		assert.ok(action, `Unexpected fixture command: ${command}`);
 		respond(request, { execution: "tui", command_id: id, client_action: action, args: slashCommandArguments(command, `/${id}`) ?? "" });
 	}

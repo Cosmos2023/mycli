@@ -635,6 +635,17 @@ export type MycliShellSessionTree = {
 	nodes: MycliShellSessionTreeNode[];
 };
 
+/** One managed Git checkout of the current repository, as reported by the gateway. */
+export type MycliShellWorktree = {
+	path: string;
+	name: string;
+	branch?: string;
+	created?: boolean;
+	current?: boolean;
+	sessionId?: string;
+	sessionTitle?: string;
+};
+
 export type MycliShellResource = {
 	id: string;
 	type: "hook" | "mcp" | "plugin" | "skill" | "prompt" | "theme";

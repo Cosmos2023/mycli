@@ -96,6 +96,7 @@ export interface SessionCoordinatorOptions<Binding> {
 	readonly retainSourceSession?: boolean;
 	readonly create?: (
 		current: ActiveSessionSnapshot<Binding>,
+		options: { readonly workspaceRoot?: string },
 	) => PreparedSession<Binding> | Promise<PreparedSession<Binding>>;
 	readonly listSessions: (query?: SessionListQuery) => readonly SessionOverview[];
 	readonly loadSessionLineage: (sessionId: string) => readonly SessionLineageNode[];
@@ -293,7 +294,9 @@ export class SessionCoordinator<Binding> {
 		}
 	}
 
-	async startNew(): Promise<ActiveSessionSnapshot<Binding>> {
+	async startNew(
+		options: { readonly workspaceRoot?: string } = {},
+	): Promise<ActiveSessionSnapshot<Binding>> {
 		if (!this.#createSession) {
 			throw new SessionTransitionError("session_state_invalid", "new session creation is unavailable");
 		}
@@ -309,7 +312,7 @@ export class SessionCoordinator<Binding> {
 		let targetAcquired = false;
 		let committed = false;
 		try {
-			const prepared = freezePrepared(await this.#createSession(this.#snapshot));
+			const prepared = freezePrepared(await this.#createSession(this.#snapshot, options));
 			this.#failpoint("session_after_prepare");
 			if (prepared.sessionId === this.#snapshot.sessionId) {
 				throw new SessionTransitionError(

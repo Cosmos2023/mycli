@@ -17,6 +17,9 @@
     "session.resume",
     "session.resume.preview",
     "session.tree",
+    "worktree.list",
+    "worktree.start",
+    "worktree.remove",
     "transcript.load",
     "provider.attempts.load",
     "turn.submit",
@@ -453,6 +456,127 @@
         },
         "result": {
           "$ref": "#/$defs/TranscriptPage"
+        }
+      }
+    },
+    "worktree.list": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "$ref": "#/$defs/EmptyParams"
+        },
+        "result": {
+          "type": "object",
+          "required": [
+            "worktrees"
+          ],
+          "properties": {
+            "worktrees": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Worktree"
+              }
+            }
+          }
+        }
+      }
+    },
+    "worktree.start": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "$ref": "#/$defs/Identity"
+            },
+            "path": {
+              "$ref": "#/$defs/Identity"
+            }
+          }
+        },
+        "result": {
+          "type": "object",
+          "required": [
+            "session_id",
+            "generation",
+            "read_only",
+            "lines",
+            "background_shells",
+            "worktree"
+          ],
+          "properties": {
+            "session_id": {
+              "type": "string"
+            },
+            "generation": {
+              "type": "integer"
+            },
+            "read_only": {
+              "type": "boolean"
+            },
+            "lines": {
+              "$ref": "#/$defs/Strings"
+            },
+            "background_shells": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ShellSnapshot"
+              }
+            },
+            "auth_providers": {
+              "$ref": "#/$defs/Objects"
+            },
+            "auth_status": {
+              "type": "object"
+            },
+            "worktree": {
+              "$ref": "#/$defs/Worktree"
+            }
+          }
+        }
+      }
+    },
+    "worktree.remove": {
+      "type": "object",
+      "required": [
+        "params",
+        "result"
+      ],
+      "properties": {
+        "params": {
+          "type": "object",
+          "required": [
+            "path"
+          ],
+          "properties": {
+            "path": {
+              "$ref": "#/$defs/Identity"
+            }
+          }
+        },
+        "result": {
+          "type": "object",
+          "required": [
+            "removed",
+            "path"
+          ],
+          "properties": {
+            "removed": {
+              "type": "boolean"
+            },
+            "path": {
+              "type": "string"
+            }
+          }
         }
       }
     },
@@ -1789,6 +1913,38 @@
     },
     "EmptyParams": {
       "type": "object"
+    },
+    "Worktree": {
+      "type": "object",
+      "required": [
+        "path",
+        "name",
+        "created",
+        "current"
+      ],
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "branch": {
+          "type": "string"
+        },
+        "created": {
+          "type": "boolean"
+        },
+        "current": {
+          "type": "boolean"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "session_title": {
+          "type": "string"
+        }
+      }
     },
     "Permission": {
       "enum": [

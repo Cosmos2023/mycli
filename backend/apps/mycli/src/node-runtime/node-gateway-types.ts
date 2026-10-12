@@ -162,6 +162,23 @@ export interface NodeGatewayBackgroundTaskCommands {
 	interruptAll(parentSessionId: string): Promise<number>;
 }
 
+export interface NodeGatewayWorktree {
+	readonly path: string;
+	readonly name: string;
+	readonly branch?: string;
+	/** True when this call created the checkout. */
+	readonly created: boolean;
+	/** True when the checkout owns the session the gateway is running. */
+	readonly current?: boolean;
+}
+
+/** Managed Git checkouts for the active repository; all of them run git in the workspace. */
+export interface NodeGatewayWorktreeCommands {
+	list(signal: AbortSignal): Promise<readonly NodeGatewayWorktree[]>;
+	create(input: { readonly name?: string; readonly signal: AbortSignal }): Promise<NodeGatewayWorktree>;
+	remove(path: string, signal: AbortSignal): Promise<void>;
+}
+
 export interface NodeGatewaySessionCommands {
 	exportTraining?(sessionId: string, settings: SessionTrainingExportSettings, signal: AbortSignal): Promise<TrainingExportResult>;
 	rename?(sessionId: string, title: string): SessionSummary;
@@ -306,6 +323,7 @@ export interface CreateNodeGatewayOptions {
 	readonly workspaceCommands?: {
 		diff(workspaceRoot: string, signal: AbortSignal): Promise<{ readonly text: string; readonly truncated: boolean }>;
 		init(workspaceRoot: string): Promise<string | undefined>;
+		worktrees?: NodeGatewayWorktreeCommands;
 	};
 	readonly fileHistoryCommands?: NodeGatewayFileHistoryCommands;
 	readonly controlCommands?: NodeGatewayControlCommands;

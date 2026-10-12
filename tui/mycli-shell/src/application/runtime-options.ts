@@ -23,6 +23,7 @@ import type {
 	MycliShellSettingsSnapshot,
 	MycliShellState,
 	MycliShellVisualSettings,
+	MycliShellWorktree,
 	TranscriptUpdateKind,
 } from "../model.ts";
 import type { Terminal } from "../tui-core/terminal.ts";
@@ -95,6 +96,11 @@ export type MycliShellRuntimeOptions = {
 	) => MycliShellVisualSettings | MycliShellSettingsSnapshot | Promise<MycliShellVisualSettings | MycliShellSettingsSnapshot>;
 	onSettingsKeymapReset?: () => MycliShellSettingsSnapshot | Promise<MycliShellSettingsSnapshot>;
 	onResourceLoad?: () => MycliShellResource[] | Promise<MycliShellResource[]>;
+	onWorktreeLoad?: () => readonly MycliShellWorktree[] | Promise<readonly MycliShellWorktree[]>;
+	onWorktreeStart?: (
+		request: { readonly name?: string; readonly path?: string },
+	) => void | Promise<void>;
+	onWorktreeRemove?: (path: string) => void | Promise<void>;
 	onTranscriptHistoryLoad?: (before: string) => void | Promise<void>;
 	onApprovalRespond?: (
 		decisionId: string,

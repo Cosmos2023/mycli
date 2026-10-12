@@ -181,6 +181,7 @@ const TUI_BUILTIN_COMMAND_NAMES = [
 	"/settings",
 	"/new",
 	"/resume",
+	"/worktree",
 	"/fork",
 	"/status",
 	"/export",
@@ -3845,6 +3846,64 @@ test("archive, unarchive and delete resolve a session reference and report its l
 	assert.equal("error" in missing ? missing.error.code : null, "invalid_arguments");
 });
 
+test("worktree commands create a managed checkout and move the session onto it", async (t) => {
+	const created: string[] = [];
+	const removed: string[] = [];
+	const harness = gatewayHarness({
+		sessions: {},
+		workspaceCommands: {
+			diff: async () => ({ text: "", truncated: false }),
+			init: async () => undefined,
+			worktrees: {
+				list: async () => [
+					{ path: "/checkouts/repo-feature", name: "feature", branch: "feature", created: false },
+				],
+				create: async ({ name }) => {
+					const resolved = name ?? "wt-generated";
+					created.push(resolved);
+					return {
+						path: `/checkouts/repo-${resolved}`,
+						name: resolved,
+						branch: resolved,
+						created: true,
+					};
+				},
+				remove: async (path) => { removed.push(path); },
+			},
+		},
+	});
+	t.after(async () => { harness.releaseTurn(); await harness.gateway.close(); });
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	const listed = await harness.send("worktree.list");
+	assert.equal(
+		"result" in listed ? (listed.result.worktrees as { current?: boolean }[])[0]?.current : null,
+		false,
+	);
+
+	const started = await harness.send("worktree.start", { name: "feature" });
+	assert.deepEqual(created, ["feature"]);
+	assert.equal("result" in started ? started.result.session_id : null, "fresh-1");
+	assert.equal(
+		"result" in started ? (started.result.worktree as { path?: string }).path : null,
+		"/checkouts/repo-feature",
+	);
+	assert.equal(harness.sessionCoordinator?.snapshot().workspaceRoot, "/checkouts/repo-feature");
+
+	// The inline command runs the same flow and marks the session as mutated for the shell.
+	const inline = await harness.send("command.run", { command: "/worktree fix-bug", surface: "tui" });
+	assert.equal("result" in inline ? inline.result.mutated_session : false, true);
+	assert.equal("result" in inline ? inline.result.worktree_name : null, "fix-bug");
+	assert.equal(harness.sessionCoordinator?.snapshot().workspaceRoot, "/checkouts/repo-fix-bug");
+
+	const unknown = await harness.send("worktree.start", { path: "/checkouts/repo-missing" });
+	assert.equal("error" in unknown ? unknown.error.code : null, "invalid_params");
+
+	const removal = await harness.send("worktree.remove", { path: "/checkouts/repo-feature" });
+	assert.equal("result" in removal ? removal.result.removed : null, true);
+	assert.deepEqual(removed, ["/checkouts/repo-feature"]);
+});
+
 test("status and status command expose shared session lifecycle and ownership state", async () => {
 	const summary = testSessionSummary("session-node", {
 		lifecycleStatus: "interrupted",
@@ -6180,9 +6239,18 @@ function gatewaySessionCoordinator(
 				options.targetPendingClarification ?? false,
 			);
 		},
-		create: () => {
+		create: (_current, options: { readonly workspaceRoot?: string }) => {
 			freshSessionSequence += 1;
-			return preparedGatewaySession(`fresh-${freshSessionSequence}`, runtime, false, emptyQueue(`fresh-${freshSessionSequence}`));
+			return preparedGatewaySession(
+				`fresh-${freshSessionSequence}`,
+				runtime,
+				false,
+				emptyQueue(`fresh-${freshSessionSequence}`),
+				false,
+				undefined,
+				false,
+				options.workspaceRoot ?? "/repo",
+			);
 		},
 		listSessions: () => [
 			sessionOverview("target", "2026-08-04T00:00:01.000Z"),
@@ -6205,10 +6273,11 @@ function preparedGatewaySession(
 	pendingApproval = false,
 	approvalOptions: readonly PendingApprovalChoice[] = ["approve_once", "reject"],
 	pendingClarification = false,
+	workspaceRoot = "/repo",
 ): PreparedSession<NodeGatewayRuntime> {
 	return {
 		sessionId,
-		workspaceRoot: "/repo",
+		workspaceRoot,
 		threadId: sessionId,
 		transcript: [transcriptItem(sessionId)],
 		queue,

@@ -11,6 +11,7 @@ import type {
 	MycliShellSession,
 	MycliShellSessionTree,
 	MycliShellSessionTreeNode,
+	MycliShellWorktree,
 } from "../model.ts";
 import {
 	booleanValue,
@@ -40,6 +41,27 @@ export function resourcesFromResult(payload: Record<string, unknown>): MycliShel
 export function sessionsFromResult(result: Record<string, unknown>): MycliShellSession[] {
 	const raw = Array.isArray(result.sessions) ? result.sessions : Array.isArray(result.items) ? result.items : [];
 	return raw.map(sessionFromUnknown).filter((session): session is MycliShellSession => session !== null);
+}
+
+export function worktreesFromResult(result: Record<string, unknown>): MycliShellWorktree[] {
+	const raw = Array.isArray(result.worktrees) ? result.worktrees : [];
+	return raw.map(worktreeFromUnknown).filter((worktree): worktree is MycliShellWorktree => worktree !== null);
+}
+
+function worktreeFromUnknown(value: unknown): MycliShellWorktree | null {
+	const record = recordValue(value);
+	const path = stringValue(record.path);
+	const name = stringValue(record.name);
+	if (!path || !name) return null;
+	return {
+		path,
+		name,
+		branch: stringValue(record.branch) ?? undefined,
+		created: booleanValue(record.created) ?? undefined,
+		current: booleanValue(record.current) ?? undefined,
+		sessionId: stringValue(record.session_id ?? record.sessionId) ?? undefined,
+		sessionTitle: stringValue(record.session_title ?? record.sessionTitle) ?? undefined,
+	};
 }
 
 export function sessionResumePreviewFromResult(

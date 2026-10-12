@@ -299,6 +299,7 @@ also clears the temporary override so the saved choice takes effect.
 | `/settings` | none | opens the categorized settings center | yes | common |
 | `/new` | none | creates and switches to a fresh backend session | no | common |
 | `/resume` | optional `[session-id]` | picker when bare; backend when inline | no | common |
+| `/worktree` | optional `[name]` | picker when bare; inline creates the checkout and starts a session there | no | common |
 | `/fork` | optional `[source] [new-session] [message-index]` | backend | no | common |
 | `/export` | none required | exports the complete current conversation to an automatically named JSONL file in the workspace; displays the file path and message/tool/reasoning/image counts | no | common |
 | `/status` | none | backend | yes | common |

@@ -101,6 +101,10 @@ export const LEGACY_GATEWAY_REASONS: Readonly<Record<string, ErrorReason>> = Obj
 	turn_id_mismatch: "gateway.state_conflict", message_id_conflict: "gateway.state_conflict",
 	repair_not_available: "gateway.state_conflict", repair_unavailable: "storage.session_unavailable",
 	repair_failed: "storage.write_failed", persistence_error: "storage.failure_unclassified",
+	worktree_not_a_repository: "gateway.invalid_request", worktree_invalid_name: "gateway.invalid_request",
+	worktree_path_exists: "gateway.invalid_request", worktree_not_managed: "gateway.invalid_request",
+	worktree_current: "gateway.invalid_request", worktree_local_changes: "gateway.invalid_request",
+	worktree_git_failed: "gateway.failure_unclassified",
 	unavailable_platform: "policy.sandbox_unavailable", internal_error: "gateway.failure_unclassified",
 });
 

@@ -29,6 +29,7 @@ import { ResourceSelectorComponent } from "../components/selectors/resource-sele
 import { PluginSelectorComponent } from "../components/selectors/plugin-selector.ts";
 import { SessionRepairSelectorComponent } from "../components/selectors/session-repair-selector.ts";
 import { SessionSelectorComponent } from "../components/selectors/session-selector.ts";
+import { WorktreeSelectorComponent } from "../components/selectors/worktree-selector.ts";
 import { SessionTreeSelectorComponent } from "../components/selectors/session-tree-selector.ts";
 import {
 	SettingsSelectorComponent,
@@ -1013,6 +1014,7 @@ export class MycliShellRuntime {
 			open_permissions: () => this.showPermissionSelector(),
 			open_settings: () => this.showSettingsSelector(),
 			open_session_selector: () => this.showSessionSelector(),
+			open_worktree_selector: () => this.showWorktreeSelector(),
 			open_resources: () => this.showResourceSelector(),
 			open_review: () => this.showReviewSelector(),
 			open_diff: () => this.showWorkspaceDiff(),
@@ -1307,6 +1309,36 @@ export class MycliShellRuntime {
 		const load = this.options.onWorkspaceDiffLoad;
 		if (!load) { this.addSystemNotice("Git diff is unavailable."); return; }
 		this.showTextViewer("Git diff", load, true);
+	}
+
+	/** `/worktree` without arguments: create or reopen a managed checkout, Codex-style. */
+	showWorktreeSelector(): void {
+		const load = this.options.onWorktreeLoad;
+		const start = this.options.onWorktreeStart;
+		if (!load || !start) { this.addSystemNotice("Managed worktrees are unavailable."); return; }
+		if (this.isTurnRunning()) { this.addSystemNotice("Wait for the current turn before switching checkouts."); return; }
+		this.showSelector((done) => {
+			const component = new WorktreeSelectorComponent({
+				...this.decisionPanelOptions(),
+				onCancel: done,
+				onLoad: async () => load(),
+				onStart: async (request) => {
+					await start(request);
+					done();
+				},
+				onResume: async (sessionId) => {
+					const preview = await this.selectSession(sessionId);
+					done();
+					if (preview) this.showSessionRepairSelector(preview);
+				},
+				onRemove: async (path) => {
+					const remove = this.options.onWorktreeRemove;
+					if (!remove) throw new Error("Removing a worktree is unavailable in this runtime.");
+					await remove(path);
+				},
+			});
+			return { component, focus: component, dispose: () => component.dispose() };
+		});
 	}
 
 	private showTextViewer(title: string, load: (signal: AbortSignal) => Promise<string>, diff = false): void {

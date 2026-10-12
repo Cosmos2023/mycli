@@ -27,7 +27,7 @@ import {
 	runtimeStateWithSessionCommandNotice,
 } from "../state/session-state.ts";
 import { runtimeStateWithCommandResult } from "../state/command-state.ts";
-import { generationValue, stringValue } from "../state/payload-values.ts";
+import { generationValue, recordValue, stringValue } from "../state/payload-values.ts";
 import { SessionTransitionController, type SessionMutationContext } from "./session-transition.ts";
 import {
 	runtimeStateFromTranscript,
@@ -47,6 +47,7 @@ import {
 	sessionResumePreviewFromResult,
 	sessionsFromResult,
 	sessionTreeFromResult,
+	worktreesFromResult,
 } from "../state/catalog-state.ts";
 import {
 	runtimeStateWithPendingSteer,
@@ -80,6 +81,7 @@ import type {
 	MycliShellSettingsSnapshot,
 	MycliShellSettingChange,
 	MycliShellState,
+	MycliShellWorktree,
 } from "../model.ts";
 import type {
 	MycliShellLocalImageAttachment,
@@ -1306,6 +1308,34 @@ async function loadResources() {
 	return resources;
 }
 
+async function loadWorktrees(): Promise<readonly MycliShellWorktree[]> {
+	const result = await send("worktree.list", {}, { recordErrors: false });
+	return worktreesFromResult(result);
+}
+
+/** Creates or reopens a managed checkout and moves the shell onto the session that lives there. */
+async function startWorktree(
+	request: { readonly name?: string; readonly path?: string },
+): Promise<void> {
+	const source = currentSessionMutationContext();
+	const result = await send("worktree.start", {
+		...(request.name ? { name: request.name } : {}),
+		...(request.path ? { path: request.path } : {}),
+	}, { recordErrors: false });
+	if (shuttingDown) return;
+	const destination = stringValue(result.session_id);
+	if (!destination) throw new Error("Gateway returned a worktree session without a session ID.");
+	const worktree = recordValue(result.worktree);
+	const title = stringValue(worktree?.name) ?? undefined;
+	if (!await sessionTransitions.resume(result, title, source)) return;
+	await loadRetryHistory();
+	await loadSessions().catch(() => undefined);
+}
+
+async function removeWorktree(path: string): Promise<void> {
+	await send("worktree.remove", { path }, { recordErrors: false });
+}
+
 async function saveSettings(change: MycliShellSettingChange): Promise<MycliShellSettingsSnapshot> {
 	const result = await send("settings.save", {
 		setting_id: change.settingId,
@@ -1493,6 +1523,9 @@ async function main(): Promise<void> {
 		onSettingsChange: saveSettings,
 		onSettingsKeymapReset: resetSettingsKeymap,
 		onResourceLoad: loadResources,
+		onWorktreeLoad: loadWorktrees,
+		onWorktreeStart: startWorktree,
+		onWorktreeRemove: removeWorktree,
 		onWorkspaceDiffLoad: async (signal) => {
 			signal.throwIfAborted();
 			const result = await send("workspace.diff", parseGatewayParams("workspace.diff", sessionMutationFields(currentSessionMutationContext())), { recordErrors: false });

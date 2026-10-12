@@ -3,6 +3,7 @@ import type { SessionGoal } from "@mycli/contracts";
 import { parseTrainingExportSettings, type SessionTrainingExportSettings } from "./session-training-export-options.ts";
 import { TrainingExportError, type TrainingExportResult } from "./session-training-export.ts";
 import { randomUUID } from "node:crypto";
+import { resolve as resolvePath } from "node:path";
 import { publishCompactionEvent } from "./node-gateway-compaction.ts";
 import { applyGoalControl, describeGoal, parseGoalCommand, type GoalControl } from "./node-goal-commands.ts";
 import { goalInstructionItem } from "./goal-instruction.ts";
@@ -92,6 +93,8 @@ import type {
 	NodeGateway,
 	NodeGatewayCompactionResult,
 	NodeGatewayIntegrations,
+	NodeGatewayWorktree,
+	NodeGatewayWorktreeCommands,
 } from "./node-gateway-types.ts";
 export type {
 	CreateNodeGatewayOptions,
@@ -109,6 +112,8 @@ export type {
 	NodeGatewaySessionCommands,
 	NodeGatewayTraceCommands,
 	NodeGatewayUpdateCommands,
+	NodeGatewayWorktree,
+	NodeGatewayWorktreeCommands,
 } from "./node-gateway-types.ts";
 
 type JsonObject = Record<string, unknown>;
@@ -421,6 +426,12 @@ class InProcessNodeGateway implements NodeGateway {
 				return this.#sessionController.resume(request.params);
 			case "session.tree":
 				return this.#sessionController.tree(request.params);
+			case "worktree.list":
+				return this.#worktreeList();
+			case "worktree.start":
+				return this.#worktreeStart(request.params);
+			case "worktree.remove":
+				return this.#worktreeRemove(request.params);
 			case "shell.list":
 				return this.#shellController.list();
 			case "shell.output.load":
@@ -924,6 +935,25 @@ class InProcessNodeGateway implements NodeGateway {
 			if (!this.#options.workspaceCommands) throw new GatewayFailure("unavailable_feature", "Repository initialization is unavailable.");
 			const prompt = await this.#options.workspaceCommands.init(this.#sessionController.workspaceRoot());
 			return noticeCommandResult(invocation, "Repository guide", prompt ? "Preparing AGENTS.md" : "AGENTS.md already exists.", { extra: prompt ? { submit_prompt: prompt } : {} });
+		}
+		if (invocation.commandId === "worktree") {
+			const { worktree, session } = await this.#startWorktreeSession({ name: invocation.args });
+			return {
+				...session,
+				...noticeCommandResult(
+					invocation,
+					worktree.created ? "Worktree created" : "Worktree reused",
+					worktree.path,
+					{
+						extra: {
+							mutated_session: true,
+							worktree_path: worktree.path,
+							worktree_name: worktree.name,
+							...(worktree.branch ? { worktree_branch: worktree.branch } : {}),
+						},
+					},
+				),
+			};
 		}
 		if (invocation.commandId === "new" || invocation.commandId === "clear") {
 			const created = await this.#sessionController.startNew();
@@ -1703,6 +1733,92 @@ class InProcessNodeGateway implements NodeGateway {
 	#emitDirect(method: GatewayEventMethod, params: JsonObject): void {
 		this.#eventProjector.emitDirect(method, params);
 	}
+
+	/**
+	 * Managed checkouts are listed with their owning session so the picker can resume work that
+	 * already ran in a worktree instead of always starting from scratch.
+	 */
+	async #worktreeList(): Promise<JsonObject> {
+		const worktrees = await this.#worktreeCommands().list(new AbortController().signal);
+		return {
+			worktrees: worktrees.map((worktree) => this.#worktreePayload(worktree)),
+		};
+	}
+
+	async #worktreeStart(params: JsonObject): Promise<JsonObject> {
+		const name = optionalString(params.name);
+		const path = optionalString(params.path);
+		const { worktree, session } = await this.#startWorktreeSession({
+			...(name ? { name } : {}),
+			...(path ? { path } : {}),
+		});
+		return { ...session, worktree: this.#worktreePayload(worktree) };
+	}
+
+	async #worktreeRemove(params: JsonObject): Promise<JsonObject> {
+		const path = optionalString(params.path);
+		if (!path) throw new GatewayFailure("invalid_params", "worktree.remove needs the path of a managed worktree.");
+		await this.#worktreeCommands().remove(path, new AbortController().signal);
+		return { removed: true, path };
+	}
+
+	/** Creates or reuses a managed checkout, then moves the session onto it. */
+	async #startWorktreeSession(input: { readonly name?: string; readonly path?: string }): Promise<{
+		readonly worktree: NodeGatewayWorktree;
+		readonly session: JsonObject;
+	}> {
+		const commands = this.#worktreeCommands();
+		const signal = new AbortController().signal;
+		let worktree: NodeGatewayWorktree;
+		if (input.path) {
+			const requested = input.path;
+			const listed = await commands.list(signal);
+			const match = listed.find((candidate) => samePath(candidate.path, requested));
+			if (!match) {
+				throw new GatewayFailure(
+					"invalid_params",
+					"That path is not a managed worktree of this repository.",
+				);
+			}
+			worktree = match;
+		} else {
+			worktree = await commands.create({
+				...(input.name ? { name: input.name } : {}),
+				signal,
+			});
+		}
+		const session = await this.#sessionController.startNew({ workspaceRoot: worktree.path });
+		return { worktree, session };
+	}
+
+	#worktreeCommands(): NodeGatewayWorktreeCommands {
+		const commands = this.#options.workspaceCommands?.worktrees;
+		if (!commands) {
+			throw new GatewayFailure("unavailable_feature", "Managed Git worktrees are unavailable.");
+		}
+		return commands;
+	}
+
+	#worktreePayload(worktree: NodeGatewayWorktree): JsonObject {
+		const owner = this.#options.sessionCommands?.list?.({
+			workspaceRoot: worktree.path,
+			limit: 1,
+		})[0];
+		return {
+			path: worktree.path,
+			name: worktree.name,
+			...(worktree.branch ? { branch: worktree.branch } : {}),
+			created: worktree.created,
+			current: worktree.current === true
+				|| samePath(worktree.path, this.#sessionController.workspaceRoot()),
+			...(owner
+				? {
+					session_id: owner.id,
+					...(owner.title ? { session_title: owner.title } : {}),
+				}
+				: {}),
+		};
+	}
 }
 
 interface CompactionCommandPresentation {
@@ -2014,6 +2130,11 @@ function slashCommandSurface(value: unknown): SlashCommandSurface {
 
 function optionalString(value: unknown): string | undefined {
 	return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+/** Compares workspace paths the way the session coordinator stores them. */
+function samePath(left: string, right: string): boolean {
+	return resolvePath(left) === resolvePath(right);
 }
 
 function aggregateUsage(rollouts: readonly JsonObject[]): Readonly<Record<string, number>> {

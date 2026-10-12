@@ -185,6 +185,13 @@ const BUILTIN_SLASH_COMMANDS: readonly SlashCommandSpec[] = Object.freeze([
 		tuiPolicy: hybridPolicy("open_session_selector"),
 		availableDuringTurn: false,
 	}),
+	spec("worktree", "/worktree", "Start a session in a new Git worktree", {
+		argumentHint: "[name]",
+		argumentPolicy: "optional",
+		tuiPolicy: hybridPolicy("open_worktree_selector"),
+		availableDuringTurn: false,
+		surfaces: TUI_SURFACE,
+	}),
 	spec("fork", "/fork", "Fork a saved session", {
 		argumentHint: "[source] [new-session] [message-index]",
 		argumentPolicy: "optional",
@@ -470,7 +477,7 @@ function commandManifestItem(command: SlashCommandSpec): SlashCommandManifestIte
 function commandCategory(id: string): SlashCommandCategory {
 	if (["model", "mode", "plan"].includes(id)) return "model";
 	if (["permissions", "sandbox", "trust"].includes(id)) return "safety";
-	if (["goal", "new", "resume", "rename", "fork", "export", "archive", "unarchive", "delete",
+	if (["goal", "new", "resume", "rename", "fork", "export", "worktree", "archive", "unarchive", "delete",
 		"session_search", "session_maintenance", "compact", "clear"].includes(id)) {
 		return "session";
 	}

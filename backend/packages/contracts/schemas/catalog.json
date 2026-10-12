@@ -154,7 +154,10 @@
     "turn.steer",
     "turn.submit",
     "workspace.trust.set",
-    "workspace.trust.status"
+    "workspace.trust.status",
+    "worktree.list",
+    "worktree.start",
+    "worktree.remove"
   ],
   "terminalTurnStates": [
     "waiting_approval",
