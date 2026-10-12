@@ -16,6 +16,15 @@ import type { ToolAdapterResult } from "../../src/types.ts";
 
 const macOS = { skip: process.platform !== "darwin", timeout: 15_000 };
 
+/**
+ * The sandbox denies egress by failing the command. The exit code is data rather than a tool
+ * failure, so a denied command is a successful call with a nonzero exit code.
+ */
+function assertCommandDenied(result: ToolAdapterResult): void {
+	assert.equal(result.success, true, result.modelOutput);
+	assert.notEqual(result.metadata.exit_code, 0, result.modelOutput);
+}
+
 test("a real sandboxed Shell waits for one network approval after yield and stop revokes pending access", macOS, async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-shell-network-approval-"));
 	t.after(() => rm(root, { recursive: true, force: true }));
@@ -89,11 +98,11 @@ test("macOS workspace Shell reaches the network while outside writes and explici
 	const script = `require("node:fs").writeFileSync(${JSON.stringify(blockedPath)}, "unexpected")`;
 	const write = await tool.execute({ command: `${quote(process.execPath)} -e ${quote(script)}`, yield_time_ms: 5_000 },
 		{ ...options, callId: "outside-write" });
-	assert.equal(write.success, false);
+	assertCommandDenied(write);
 	await assert.rejects(readFile(blockedPath), { code: "ENOENT" });
 	const offline = await tool.execute({ command, yield_time_ms: 5_000 }, { ...options, callId: "offline",
 		executionPolicy: { ...options.executionPolicy, network: "disabled" } });
-	assert.equal(offline.success, false);
+	assertCommandDenied(offline);
 	assert.equal(hits, 1);
 });
 
@@ -105,7 +114,7 @@ test("macOS Shell reaches allowed HTTP through its owned proxy and rejects denie
 	assert.equal(fixture.hits(), 1);
 	await assertClosed(fixture.proxy());
 	const denied = await fixture.run("/usr/bin/curl --fail --silent --show-error --max-time 3 http://denied.example.com/");
-	assert.equal(denied.success, false);
+	assertCommandDenied(denied);
 	assert.equal(fixture.hits(), 1);
 });
 
@@ -158,7 +167,7 @@ test("macOS limited Shell uses scoped CA trust for HTTPS and SOCKS while blockin
 		const bundle = fixture.proxy().env.CURL_CA_BUNDLE!;
 		await assert.rejects(readFile(bundle), { code: "ENOENT" });
 		const post = await fixture.run(`/usr/bin/curl ${proxy} --fail --silent --show-error --max-time 3 -X POST https://api.example.com/`);
-		assert.equal(post.success, false, post.modelOutput);
+		assertCommandDenied(post);
 		assert.match(post.modelOutput, /403/u);
 	}
 	assert.equal(fixture.hits(), 2);
@@ -167,12 +176,12 @@ test("macOS limited Shell uses scoped CA trust for HTTPS and SOCKS while blockin
 test("macOS denies proxy bypass, foreign proxy ports, UDP and Unix socket egress", macOS, async (t) => {
 	const fixture = await shellFixture(t);
 	const ignored = await fixture.run(`/usr/bin/curl --noproxy '*' --silent --show-error --max-time 3 http://127.0.0.1:${fixture.originPort}/`);
-	assert.equal(ignored.success, false);
+	assertCommandDenied(ignored);
 	assert.equal(fixture.hits(), 0);
 	const foreign = await startNetworkProxy({ domains: ["foreign.example.com"] });
 	t.after(() => foreign.close());
 	const other = await fixture.run(`/usr/bin/curl --proxy http://127.0.0.1:${foreign.port} --silent --show-error --max-time 3 http://foreign.example.com/`);
-	assert.equal(other.success, false);
+	assertCommandDenied(other);
 	const socketPath = join(fixture.root, "bypass.sock");
 	let unixConnections = 0;
 	const local = createServer((socket) => { unixConnections += 1; socket.end(); });

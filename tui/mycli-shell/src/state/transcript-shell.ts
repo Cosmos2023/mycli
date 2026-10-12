@@ -148,7 +148,7 @@ export function applyShellLifecycle(
 	} else {
 		delete backgroundShells[shellId];
 	}
-	const successful = incomingTerminalState === "completed" && (process.exitCode === undefined || process.exitCode === 0);
+	const successful = shellFinishedOnItsOwn(incomingTerminalState);
 	const metadata: Record<string, unknown> = {
 		...existingMetadata,
 		...params,
@@ -394,6 +394,14 @@ function mergeShellOutputText(existing: string, incoming: string): string {
 	return `${existing}${incoming}`;
 }
 
+/**
+ * A process that finished on its own ran successfully whatever its exit code; the code is data.
+ * Only a process the runtime had to kill (interrupted / killed / timed_out) is a failure.
+ */
+function shellFinishedOnItsOwn(terminalState: string | undefined): boolean {
+	return terminalState === "completed" || terminalState === "failed";
+}
+
 function shellDisplayEnvelope(options: {
 	metadata: Record<string, unknown>;
 	shellId: string;
@@ -404,9 +412,7 @@ function shellDisplayEnvelope(options: {
 }): Record<string, unknown> {
 	const existing = recordValue(options.metadata.display);
 	const metrics = recordValue(existing.metrics);
-	const successful =
-		options.terminalState === "completed" &&
-		(options.exitCode === undefined || options.exitCode === 0);
+	const successful = shellFinishedOnItsOwn(options.terminalState);
 	const status = options.terminalState ? (successful ? "success" : "error") : "running";
 	const summary = options.terminalState
 		? options.exitCode === undefined

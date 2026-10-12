@@ -5715,7 +5715,8 @@ test("terminal shell state rejects later running events", () => {
 	});
 
 	const bash = projectRuntimeState(state).bash[0];
-	assert.equal(bash?.status, "error");
+	// A nonzero exit code is data, not a failure; the row still rejects later running events.
+	assert.equal(bash?.status, "success");
 	assert.equal(bash?.terminalState, "failed");
 	assert.doesNotMatch(bash?.outputPreview ?? "", /late output/);
 });

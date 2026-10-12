@@ -418,8 +418,12 @@ export function formatShellSnapshotResult(
 			metadata,
 		};
 	}
+	// A command that ran to completion is a successful call whatever its exit code: the code is
+	// data the model reads from `Process exited with code N`. Only a process the runtime had to
+	// kill (timeout / kill / interrupt) is a failure.
 	const success = running
-		|| (snapshot.terminalState === "completed" && snapshot.exitCode === 0);
+		|| snapshot.terminalState === "completed"
+		|| snapshot.terminalState === "failed";
 	const errorKind = success ? undefined : terminalErrorKind(snapshot);
 	return {
 		success,
@@ -427,7 +431,7 @@ export function formatShellSnapshotResult(
 		summary: running
 			? `Shell ${snapshot.shellId} is running`
 			: success
-				? "Shell completed"
+				? shellCompletionSummary(snapshot)
 				: "Shell failed",
 		...(errorKind ? { errorKind } : {}),
 		metadata,
@@ -505,6 +509,12 @@ function terminalErrorKind(snapshot: ShellSessionSnapshot): string {
 	if (snapshot.terminalState === "timed_out") return "timeout";
 	if (snapshot.terminalState === "killed") return "killed";
 	return "nonzero_exit";
+}
+
+/** The exit code is reported, not judged: a nonzero code is not a failed tool call. */
+function shellCompletionSummary(snapshot: ShellSessionSnapshot): string {
+	const code = snapshot.exitCode;
+	return code === undefined || code === 0 ? "Shell completed" : `Shell exited with code ${code}`;
 }
 
 function stringValue(value: unknown): string | undefined {

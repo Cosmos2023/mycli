@@ -632,6 +632,45 @@ test("Shell advertises timeout and maps it to the blocking and background budget
 	assert.ok(properties.timeout, "Shell must advertise the timeout parameter");
 });
 
+test("a completed command reports its exit code instead of failing", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-shell-exit-"));
+	t.after(() => import("node:fs/promises").then(({ rm }) => rm(root, { recursive: true, force: true })));
+	const build = (snapshot: ShellSessionSnapshot) => new ShellTool({
+		workspaceRoot: root,
+		manager: new StartManager(snapshot),
+		profile: resolveShellProfile({ platform: "linux", shellPath: "/bin/bash" }),
+		platform: "linux",
+		env: { PATH: "/usr/bin" },
+	});
+
+	// `grep` with no match exits 1: the exit code is data, not a tool failure.
+	const nonzero = await build({
+		...completedSnapshot("no match\n"),
+		status: "exited",
+		processState: "failed",
+		terminalState: "failed",
+		exitCode: 1,
+	}).execute({ command: "grep x file" }, executionOptions(root));
+	assert.equal(nonzero.success, true);
+	assert.equal(nonzero.errorKind, undefined);
+	assert.equal(nonzero.summary, "Shell exited with code 1");
+	assert.match(nonzero.modelOutput, /Process exited with code 1/u);
+
+	const clean = await build(completedSnapshot("ok\n")).execute({ command: "true" }, executionOptions(root));
+	assert.equal(clean.success, true);
+	assert.equal(clean.summary, "Shell completed");
+
+	// A process the runtime had to kill is still a failure.
+	const timedOut = await build({
+		...completedSnapshot("partial\n"),
+		status: "exited",
+		processState: "timed_out",
+		terminalState: "timed_out",
+	}).execute({ command: "sleep 1000" }, executionOptions(root));
+	assert.equal(timedOut.success, false);
+	assert.equal(timedOut.errorKind, "timeout");
+});
+
 class StartManager {
 	readonly starts: ShellStartRequest[] = [];
 

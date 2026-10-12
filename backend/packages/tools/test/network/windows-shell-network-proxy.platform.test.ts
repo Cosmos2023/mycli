@@ -61,7 +61,7 @@ test("a real sandboxed Windows Shell reaches an allowed host over SOCKS5 and ref
 	assert.match(allowed.modelOutput, /proxy:200:windows-network-fixture/u);
 	assert.equal(fixture.hits(), 1);
 	const denied = await fixture.run(["proxy-socks", "http://denied.example.com/"], { policy });
-	assert.equal(denied.success, false, denied.modelOutput);
+	assertCommandDenied(denied);
 	assert.equal(fixture.hits(), 1, "a denied host must never reach the origin");
 });
 
@@ -91,7 +91,7 @@ test("a real sandboxed Windows Shell uses scoped CA trust for limited HTTPS and 
 	assert.ok(bundle, "limited mode must declare the public bundle as a readable root");
 	assert.equal(bundle, fixture.proxy().env.NODE_EXTRA_CA_CERTS);
 	const post = await fixture.run(["proxy-post", "https://api.example.com/"], { policy });
-	assert.equal(post.success, false, post.modelOutput);
+	assertCommandDenied(post);
 	assert.match(post.modelOutput, /proxy:403/u);
 	assert.equal(fixture.hits(), 1, "a blocked method must never reach the origin");
 	await fixture.proxy().close();
@@ -248,4 +248,13 @@ function portOf(server: Server): number {
 
 function assertExit(result: ToolAdapterResult, code: number): void {
 	assert.equal(result.metadata?.exit_code, code, result.modelOutput);
+}
+
+/**
+ * The sandbox denies egress by failing the command. The exit code is data rather than a tool
+ * failure, so a denied command is a successful call with a nonzero exit code.
+ */
+function assertCommandDenied(result: ToolAdapterResult): void {
+	assert.equal(result.success, true, result.modelOutput);
+	assert.notEqual(result.metadata?.exit_code, 0, result.modelOutput);
 }
