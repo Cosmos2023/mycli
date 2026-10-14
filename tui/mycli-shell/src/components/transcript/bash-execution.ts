@@ -12,7 +12,7 @@ import { shellContextActivity } from "../../transcript/context-activity.ts";
 import {
 	shellOutputViewHasMore,
 	shellOutputViewRemaining,
-	type MycliShellShellOutputView,
+	type MycliShellShellOutputState,
 } from "../../transcript/shell-output-view.ts";
 import { ExplorationSummaryComponent } from "./exploration-summary.ts";
 import { keyHint } from "../shared/keybinding-hints.ts";
@@ -26,11 +26,7 @@ const SHELL_CELL_PADDING_X = TRANSCRIPT_HEADER_INDENT;
 const DETAIL_PREVIEW_LINES = 3;
 
 /** The stored output an expanded row renders instead of the bounded transcript preview. */
-export interface BashExecutionShellOutput {
-	readonly view?: MycliShellShellOutputView;
-	readonly loading?: boolean;
-	readonly error?: string;
-}
+export type BashExecutionShellOutput = MycliShellShellOutputState;
 
 export class BashExecutionComponent extends Container {
 	private bash: MycliShellBash;

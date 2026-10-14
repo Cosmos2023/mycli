@@ -263,12 +263,11 @@ is still executing or waiting for output. Modern `Shell` retains its normal
 `tool.complete` closes the invocation, which may leave a running process.
 Use `shell.output` and `shell.completed` for process progress, `shell.list` and
 `shell.stop` for process control, and `transcript.load` for stored history.
-The TUI's `Ctrl+T` viewer expands output already retained in its transcript. Opening
-or scrolling it does not fetch additional Shell output. Expanding a single Shell row
-does: the row reads its stored chunks through `shell.output.load` up to a bounded
-budget and offers the next page when the store still holds more. Long output retains
-its truncation markers, and the RPC remains available to clients that page stored
-chunks themselves.
+The TUI reads stored Shell output on demand. Opening `Ctrl+T`, or expanding a single
+Shell row, fetches that block's chunks through `shell.output.load` up to a bounded
+budget; the row then offers `+ N chars (click to load more)` and the viewer offers
+`r load more` while the store still holds more. Long output keeps explicit omission
+markers, and the RPC remains available to clients that page stored chunks themselves.
 The agent uses `WriteStdin` to await completion before work that depends on the
 command's exit. The foreground yield window remains in effect for ordinary
 Shell calls; legacy `Bash` retains its existing waiting behavior.

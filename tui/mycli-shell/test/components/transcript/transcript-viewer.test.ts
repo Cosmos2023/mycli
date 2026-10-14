@@ -188,6 +188,59 @@ test("transcript viewer expands retained Shell output with a truncation notice",
 	assert.match(output, /saved tail/u);
 });
 
+test("transcript viewer renders stored Shell output and pages it with r", () => {
+	const requests: { shellId: string; append: boolean }[] = [];
+	const block = storedBash();
+	const viewer = new TranscriptViewerComponent({
+		blocks: [block],
+		rows: () => 14,
+		onClose: () => {},
+		shellOutput: () => ({
+			view: {
+				text: "stored body\n",
+				omittedBefore: 90,
+				omittedInside: 0,
+				cursor: 4_880,
+				outputChars: 5_000,
+				loadedChars: 12,
+				nextAfterSequence: 4,
+			},
+		}),
+		onShellOutputRequest: (block, append) => {
+			requests.push({ shellId: block.shellId ?? "", append });
+		},
+	});
+	const output = stripAnsi(viewer.render(80).join("\n"));
+
+	assert.match(output, /stored body/u);
+	assert.match(output, /90 chars omitted before this output/u);
+	assert.match(output, /\+ 120 chars not loaded \(r to load more\)/u);
+	assert.match(output, /r load more/u);
+	assert.doesNotMatch(output, /preview only/u);
+	assert.deepEqual(requests, []);
+
+	viewer.handleInput("r");
+	assert.deepEqual(requests, [{ shellId: "shell-stored", append: true }]);
+});
+
+test("transcript viewer requests stored output for a visible truncated block", () => {
+	const requests: { shellId: string; append: boolean }[] = [];
+	const block = storedBash();
+	const viewer = new TranscriptViewerComponent({
+		blocks: [block],
+		rows: () => 14,
+		onClose: () => {},
+		shellOutput: () => undefined,
+		onShellOutputRequest: (block, append) => {
+			requests.push({ shellId: block.shellId ?? "", append });
+		},
+	});
+
+	const output = stripAnsi(viewer.render(80).join("\n"));
+	assert.match(output, /Output truncated. Showing retained output/u);
+	assert.deepEqual(requests, [{ shellId: "shell-stored", append: false }]);
+});
+
 test("transcript viewer closes with escape, q and Ctrl+C", () => {
 	let closeCount = 0;
 	const viewer = new TranscriptViewerComponent({
@@ -211,6 +264,23 @@ function messageBlock(index: number, text: string): MycliShellTranscriptBlock {
 		id: `message-${index}`,
 		kind: "message",
 		message: { id: `message-${index}`, role: index % 2 === 0 ? "user" : "assistant", text },
+	};
+}
+
+/** A Shell block whose transcript preview is only a fraction of its stored output. */
+function storedBash(): Extract<MycliShellTranscriptBlock, { kind: "bash" }> {
+	return {
+		id: "shell-stored",
+		kind: "bash",
+		bash: {
+			id: "shell-stored",
+			command: "npm test",
+			status: "success",
+			shellId: "shell-stored",
+			outputPreview: "preview only",
+			hiddenLineCount: 40,
+			outputChars: 5_000,
+		},
 	};
 }
 

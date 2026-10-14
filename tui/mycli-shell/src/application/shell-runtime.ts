@@ -1019,6 +1019,8 @@ export class MycliShellRuntime {
 			onLoadOlder: () => this.loadOlderTranscriptHistory(),
 			isToggleKey: (data) => this.keybindings.matches(data, "app.transcript.open"),
 			onClose: () => this.closeTranscriptViewer(),
+			shellOutput: (bash) => this.shellOutputStateFor(bash),
+			onShellOutputRequest: (bash, append) => this.startShellOutputLoad(bash, append),
 		});
 		const handle = this.ui.showOverlay(component, {
 			width: "100%",
@@ -2927,6 +2929,7 @@ export class MycliShellRuntime {
 			if (!(component instanceof BashExecutionComponent)) continue;
 			component.setShellOutput(this.shellOutputStateFor(block.bash));
 		}
+		this.transcriptViewer?.component.refreshShellOutput();
 		this.ui.requestRender();
 	}
 

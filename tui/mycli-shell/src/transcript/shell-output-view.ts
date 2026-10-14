@@ -10,6 +10,8 @@
 export const SHELL_OUTPUT_VIEW_PAGE_CHARS = 65_536;
 /** Characters a single expanded row is allowed to hold. */
 export const SHELL_OUTPUT_VIEW_MAX_CHARS = 262_144;
+/** Round trips one view may spend filling that budget, so a tiny-chunk store cannot spin. */
+const SHELL_OUTPUT_VIEW_MAX_PAGES = 16;
 
 export interface MycliShellShellOutputChunk {
 	readonly sequence: number;
@@ -39,6 +41,13 @@ export interface MycliShellShellOutputView {
 	readonly loadedChars: number;
 	/** Sequence to continue from; null when the store had nothing newer at load time. */
 	readonly nextAfterSequence: number | null;
+}
+
+/** What a row or the transcript viewer knows about one shell's stored output. */
+export interface MycliShellShellOutputState {
+	readonly view?: MycliShellShellOutputView;
+	readonly loading?: boolean;
+	readonly error?: string;
 }
 
 export interface MycliShellShellOutputLoadRequest {
@@ -103,8 +112,11 @@ export async function loadShellOutputView(
 	// Only the very first chunk of the whole view describes the store's evicted head; every later
 	// gap is an omission inside the text and has to be marked where it happened.
 	let leading = input.previous === undefined;
+	let pages = 0;
 	for (;;) {
 		input.signal?.throwIfAborted();
+		pages += 1;
+		if (pages > SHELL_OUTPUT_VIEW_MAX_PAGES) break;
 		const requestedAfterSequence = nextAfterSequence;
 		const page = await input.load({
 			shellId: input.shellId,

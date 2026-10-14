@@ -67,6 +67,80 @@ test("large transcripts navigate retained Shell output and keep main-view foldin
 	assert.deepEqual(runtime.getState().transcript, blocks);
 });
 
+test("the transcript viewer loads stored Shell output and pages it with r", async (t) => {
+	const terminal = new HeadlessTerminal({ rows: 30 });
+	const requests: { shellId: string; afterSequence?: number }[] = [];
+	const pageBody = `${"y".repeat(65_000)}\n`;
+	const runtime = new MycliShellRuntime({
+		initialState: shellState([{
+			id: "shell-big",
+			kind: "bash",
+			bash: {
+				id: "shell-big",
+				shellId: "shell-big",
+				callId: "call-big",
+				command: "npm test",
+				status: "success",
+				outputPreview: "preview only",
+				hiddenLineCount: 40,
+				outputChars: 400_000,
+			},
+		}]),
+		terminal,
+		onShellOutputLoad: async (request) => {
+			requests.push({
+				shellId: request.shellId,
+				...(request.afterSequence === undefined ? {} : { afterSequence: request.afterSequence }),
+			});
+			const after = request.afterSequence ?? 0;
+			if (after >= 5) {
+				return {
+					chunks: [{ sequence: 6, output: "final stored page\n", omittedBefore: 0, cursorEnd: 400_000 }],
+					nextAfterSequence: null,
+					outputChars: 400_000,
+				};
+			}
+			const sequence = after + 1;
+			return {
+				chunks: [{
+					sequence,
+					output: `stored page ${sequence}\n${pageBody}`,
+					omittedBefore: 0,
+					cursorEnd: sequence * 65_030,
+				}],
+				nextAfterSequence: sequence,
+				outputChars: 400_000,
+			};
+		},
+	});
+	t.after(async () => { await runtime.shutdown(); await terminal.flush(); terminal.dispose(); });
+	runtime.start();
+	runtime.showTranscriptViewer();
+
+	// Opening the viewer reads stored output for the block on screen, up to the row budget.
+	await waitUntil(() => requests.length === 5);
+	await terminal.flush();
+	assert.deepEqual(requests.map((entry) => entry.afterSequence ?? 0), [0, 1, 2, 3, 4]);
+
+	terminal.sendInput("g");
+	await waitUntil(() => terminal.visibleLines().some((line) => line.includes("r to load more")));
+	await terminal.flush();
+	assert.match(terminal.visibleLines().join("\n"), /75K chars not loaded \(r to load more\)/u);
+	assert.match(terminal.visibleLines().join("\n"), /stored page 1/u);
+
+	// `r` reads the next page; the marker disappears once the store runs out.
+	terminal.sendInput("r");
+	await waitUntil(() => requests.length === 6);
+	terminal.sendInput("G");
+	await waitUntil(() => terminal.visibleLines().some((line) => line.includes("final stored page")));
+	await terminal.flush();
+	assert.deepEqual(requests.map((entry) => entry.afterSequence ?? 0), [0, 1, 2, 3, 4, 5]);
+	terminal.sendInput("g");
+	await waitUntil(() => terminal.visibleLines().some((line) => line.includes("stored page 1")));
+	await terminal.flush();
+	assert.doesNotMatch(terminal.visibleLines().join("\n"), /r to load more/u);
+});
+
 test("changing sessions closes the viewer and reopening uses the new retained output", async (t) => {
 	const terminal = new HeadlessTerminal();
 	const runtime = new MycliShellRuntime({

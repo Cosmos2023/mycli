@@ -3,6 +3,11 @@ import type {
 	MycliShellTranscriptBlock,
 } from "../../model.ts";
 import {
+	shellOutputViewHasMore,
+	shellOutputViewRemaining,
+	type MycliShellShellOutputState,
+} from "../../transcript/shell-output-view.ts";
+import {
 	renderTranscriptWithRanges,
 	type TranscriptBlockRange,
 } from "./transcript-renderer.ts";
@@ -14,6 +19,7 @@ import { theme } from "../../theme/theme.ts";
 
 export class TranscriptViewerComponent implements Component {
 	private blocks: MycliShellTranscriptBlock[];
+	private bashBlocks = new Map<string, MycliShellBash>();
 	private revision = 0;
 	private contentRevision = -1;
 	private contentWidth = 0;
@@ -37,8 +43,15 @@ export class TranscriptViewerComponent implements Component {
 		readonly onLoadOlder?: () => void;
 		readonly isToggleKey?: (data: string) => boolean;
 		readonly onClose: () => void;
+		/**
+		 * Stored command output for a Shell block. The transcript only carries a bounded preview, so
+		 * the viewer asks for the rest while the block is on screen.
+		 */
+		readonly shellOutput?: (bash: MycliShellBash) => MycliShellShellOutputState | undefined;
+		readonly onShellOutputRequest?: (bash: MycliShellBash, append: boolean) => void;
 	}) {
-		this.blocks = [...options.blocks];
+		this.blocks = [];
+		this.setBlocks(options.blocks);
 		this.hasOlderHistory = options.hasOlderHistory === true;
 		this.hasOlderAttempts = options.hasOlderAttempts === true;
 	}
@@ -47,7 +60,7 @@ export class TranscriptViewerComponent implements Component {
 		blocks: readonly MycliShellTranscriptBlock[],
 		options: { readonly preserveScrollOffset?: boolean } = {},
 	): void {
-		this.blocks = [...blocks];
+		this.setBlocks(blocks);
 		this.preserveScrollOffsetOnNextUpdate = options.preserveScrollOffset === true;
 		this.revision += 1;
 	}
@@ -63,6 +76,11 @@ export class TranscriptViewerComponent implements Component {
 
 	setError(error: string | undefined): void {
 		this.error = error;
+		this.revision += 1;
+	}
+
+	/** Re-renders after stored output arrived without moving the reader's position. */
+	refreshShellOutput(): void {
 		this.revision += 1;
 	}
 
@@ -100,6 +118,8 @@ export class TranscriptViewerComponent implements Component {
 		} else if (matchesKey(data, "end") || data === "G") {
 			this.followingTail = true;
 			this.scrollOffset = 0;
+		} else if (data === "r") {
+			this.loadMoreShellOutput();
 		}
 	}
 
@@ -136,6 +156,7 @@ export class TranscriptViewerComponent implements Component {
 			: Math.min(this.scrollOffset, maxOffset);
 		this.followingTail = this.scrollOffset === 0;
 		const start = Math.max(0, this.contentLines.length - viewportRows - this.scrollOffset);
+		this.requestVisibleShellOutput(start, viewportRows);
 		const visible = this.contentLines.slice(start, start + viewportRows);
 		while (visible.length < viewportRows) visible.push("");
 		this.previousViewportRows = viewportRows;
@@ -144,6 +165,12 @@ export class TranscriptViewerComponent implements Component {
 			...visible.map((line) => padLine(line, frameWidth)),
 			padLine(this.footerLine(), frameWidth),
 		];
+	}
+
+	private setBlocks(blocks: readonly MycliShellTranscriptBlock[]): void {
+		this.blocks = [...blocks];
+		this.bashBlocks = new Map(this.blocks.flatMap((block) =>
+			block.kind === "bash" && block.bash.shellId ? [[block.id, block.bash] as const] : []));
 	}
 
 	private scrollBy(delta: number): void {
@@ -174,17 +201,73 @@ export class TranscriptViewerComponent implements Component {
 	}
 
 	private expandedBash(bash: MycliShellBash): MycliShellBash {
-		const truncated = (bash.omittedOutputChars ?? 0) > 0 || (bash.hiddenLineCount ?? 0) > 0;
-		const notice = truncated ? "[Output truncated. Showing retained output.]" : undefined;
-		const preview = notice
-			? `${notice}${bash.outputPreview ? `\n${bash.outputPreview}` : ""}`
-			: bash.outputPreview;
+		const state = this.options.shellOutput?.(bash);
+		const view = state?.view;
+		const notices: string[] = [];
+		if (view) {
+			if (view.omittedBefore > 0) {
+				notices.push(`… ${formatChars(view.omittedBefore)} chars omitted before this output`);
+			}
+			if (shellOutputViewHasMore(view, bash.outputChars ?? view.outputChars)) {
+				notices.push(`+ ${formatChars(shellOutputViewRemaining(view, bash.outputChars ?? view.outputChars))} chars not loaded (r to load more)`);
+			}
+		} else if (state?.error) {
+			notices.push(`Unable to load the full output: ${state.error}`);
+		} else if (state?.loading) {
+			notices.push("Loading full output…");
+		} else if (shellBlockIsTruncated(bash)) {
+			notices.push("[Output truncated. Showing retained output.]");
+		}
+		const body = view ? view.text : bash.outputPreview;
+		const preview = notices.length > 0
+			? `${notices.join("\n")}${body ? `\n${body}` : ""}`
+			: body;
 		return {
 			...bash,
 			...(preview ? { outputPreview: preview } : {}),
 			hiddenLineCount: 0,
 			expanded: true,
 		};
+	}
+
+	/**
+	 * Reads stored output for the Shell blocks the reader can see. The viewer owns no session state,
+	 * so it asks for one block at a time and lets the caller decide what to keep.
+	 */
+	private requestVisibleShellOutput(start: number, viewportRows: number): void {
+		const request = this.options.onShellOutputRequest;
+		if (!request || !this.options.shellOutput) return;
+		const from = Math.max(0, start - viewportRows);
+		const to = start + viewportRows * 2;
+		for (const range of this.blockRanges) {
+			if (range.end < from || range.start > to) continue;
+			const bash = this.bashBlocks.get(range.id);
+			if (!bash || !shellBlockIsTruncated(bash)) continue;
+			const state = this.options.shellOutput(bash);
+			if (state?.view || state?.loading || state?.error) continue;
+			request(bash, false);
+		}
+	}
+
+	/** `r` reads the next page for the nearest Shell block that still has stored output left. */
+	private loadMoreShellOutput(): void {
+		const request = this.options.onShellOutputRequest;
+		if (!request || !this.options.shellOutput) return;
+		const viewportRows = Math.max(1, this.previousViewportRows);
+		const start = Math.max(0, this.contentLines.length - viewportRows - this.scrollOffset);
+		const candidates = this.blockRanges
+			.map((range) => ({ range, bash: this.bashBlocks.get(range.id) }))
+			.filter((entry): entry is { range: TranscriptBlockRange; bash: MycliShellBash } =>
+				entry.bash !== undefined && this.shellOutputHasMore(entry.bash))
+			.sort((left, right) => distanceFromViewport(left.range, start, viewportRows)
+				- distanceFromViewport(right.range, start, viewportRows));
+		const target = candidates[0]?.bash;
+		if (target) request(target, true);
+	}
+
+	private shellOutputHasMore(bash: MycliShellBash): boolean {
+		const view = this.options.shellOutput?.(bash)?.view;
+		return view !== undefined && shellOutputViewHasMore(view, bash.outputChars ?? view.outputChars);
 	}
 
 	private headerLine(start: number, visibleRows: number): string {
@@ -202,7 +285,13 @@ export class TranscriptViewerComponent implements Component {
 				: this.hasOlderAttempts ? theme.fg("muted", "Earlier retries: Home")
 				: "";
 		const separator = ` ${uiGlyphs().separator} `;
-		const keys = theme.fg("dim", ["up/down scroll", "pgup/pgdn page", "home/end jump", "esc/q close"].join(separator));
+		const keys = theme.fg("dim", [
+			"up/down scroll",
+			"pgup/pgdn page",
+			"home/end jump",
+			...(this.options.onShellOutputRequest ? ["r load more"] : []),
+			"esc/q close",
+		].join(separator));
 		return status ? `${status}  ${keys}` : keys;
 	}
 }
@@ -210,4 +299,25 @@ export class TranscriptViewerComponent implements Component {
 function padLine(line: string, width: number): string {
 	const fitted = visibleWidth(line) > width ? truncateToWidth(line, width, "...") : line;
 	return `${fitted}${" ".repeat(Math.max(0, width - visibleWidth(fitted)))}`;
+}
+
+function shellBlockIsTruncated(bash: MycliShellBash): boolean {
+	return (bash.omittedOutputChars ?? 0) > 0
+		|| (bash.hiddenLineCount ?? 0) > 0
+		|| (bash.outputChars ?? 0) > (bash.outputPreview?.length ?? 0);
+}
+
+/** How far a block sits from the visible window; negative means it is on screen. */
+function distanceFromViewport(range: TranscriptBlockRange, start: number, rows: number): number {
+	const end = start + rows;
+	if (range.end < start) return start - range.end;
+	if (range.start > end) return range.start - end;
+	return 0;
+}
+
+/** Compact character counts for the stored-output markers. */
+function formatChars(count: number): string {
+	if (count < 1_000) return String(count);
+	if (count < 1_000_000) return `${(count / 1_000).toFixed(count < 10_000 ? 1 : 0)}K`;
+	return `${(count / 1_000_000).toFixed(1)}M`;
 }
