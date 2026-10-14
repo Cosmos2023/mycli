@@ -24,6 +24,7 @@ import {
 	type ProviderRouteDescriptor,
 } from "@mycli/providers";
 import { DEFAULT_ACTIVE_CATALOG_PROVIDERS } from "./provider-activation.ts";
+import { createErrorContext, type ErrorContext } from "@mycli/contracts";
 
 type ProviderModelOrigin =
 	| "current_custom"
@@ -77,10 +78,21 @@ interface AssembleProviderModelDirectoryInput {
 
 class ProviderModelDirectoryError extends Error {
 	readonly code = "provider_model_directory_error";
+	readonly errorContext: ErrorContext;
 
-	constructor(message: string) {
+	constructor(
+		message: string,
+		details?: { readonly provider?: string; readonly model?: string; readonly setting?: string },
+	) {
 		super(message);
 		this.name = "ProviderModelDirectoryError";
+		this.errorContext = createErrorContext({
+			reason: details?.model === undefined ? "config.invalid" : "config.model_unavailable",
+			source: "config",
+			scope: { kind: "application", id: "configuration" },
+			outcome: { state: "not_started", effects: "none" },
+			...(details === undefined ? {} : { details }),
+		});
 	}
 }
 
@@ -454,7 +466,7 @@ function catalogRouteModels(input: {
 	const current = currentModelEntry(input.descriptor, input.currentConfig, input.profile);
 	const resolveDeclaration = (
 		declaration: ModelCatalogModelDeclaration,
-	): ProviderScopedModelEntry => {
+	): ProviderScopedModelEntry | undefined => {
 		const catalogModel = catalogById.get(declaration.model);
 		if (catalogModel !== undefined) {
 			return mergeModelDeclaration(
@@ -470,11 +482,14 @@ function catalogRouteModels(input: {
 				origin: "current_custom" as const,
 			});
 		}
-		assertCompleteUncataloguedModel(declaration);
+		// A declaration the catalog does not know about has to carry its own limits. Skipping an
+		// incomplete one keeps every other model of this provider usable; failing the whole directory
+		// (which is what this used to do) turns one stale entry into "every turn is broken".
+		if (missingUncataloguedFields(declaration).length > 0) return undefined;
 		return declaredModelEntry(declaration, declaredDescriptor, input.profile);
 	};
 	if (input.descriptor.modelPolicy.kind === "subset") {
-		return declaredModels.map(resolveDeclaration);
+		return declaredModels.map(resolveDeclaration).filter(isDefined);
 	}
 	const declarationsById = new Map(declaredModels.map((declaration) => [declaration.model, declaration]));
 	return [
@@ -483,10 +498,11 @@ function catalogRouteModels(input: {
 			return declaration === undefined
 				? catalogModelEntry(model, declaredDescriptor, input.profile)
 				: resolveDeclaration(declaration);
-		}),
+		}).filter(isDefined),
 		...declaredModels
 			.filter((declaration) => !catalogById.has(declaration.model))
-			.map(resolveDeclaration),
+			.map(resolveDeclaration)
+			.filter(isDefined),
 	];
 }
 
@@ -692,12 +708,17 @@ function stableFallbackModelIds(
 	return Object.freeze(ids);
 }
 
-function assertCompleteUncataloguedModel(model: ModelCatalogModelDeclaration): void {
-	if (model.contextWindowTokens === undefined
-		|| model.maxOutputTokens === undefined
-		|| model.supportsImages === undefined) {
-		throw directoryError("An uncatalogued model declaration is incomplete.");
-	}
+/** Fields a model needs when neither the SDK catalog nor the built-in catalog describes it. */
+function missingUncataloguedFields(model: ModelCatalogModelDeclaration): readonly string[] {
+	return [
+		...(model.contextWindowTokens === undefined ? ["limits.context_window_tokens"] : []),
+		...(model.maxOutputTokens === undefined ? ["limits.max_output_tokens"] : []),
+		...(model.supportsImages === undefined ? ["capabilities.images"] : []),
+	];
+}
+
+function isDefined<Value>(value: Value | undefined): value is Value {
+	return value !== undefined;
 }
 
 function sameModelIdentity(
@@ -730,6 +751,9 @@ function supportsStableHostedSearch(descriptor: ProviderRouteDescriptor): boolea
 		&& (descriptor.routeId === "openai" || descriptor.routeId === "codex");
 }
 
-function directoryError(message: string): ProviderModelDirectoryError {
-	return new ProviderModelDirectoryError(message);
+function directoryError(
+	message: string,
+	details?: { readonly provider?: string; readonly model?: string; readonly setting?: string },
+): ProviderModelDirectoryError {
+	return new ProviderModelDirectoryError(message, details);
 }

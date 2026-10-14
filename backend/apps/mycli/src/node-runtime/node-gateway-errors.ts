@@ -2,8 +2,10 @@ import { randomBytes } from "node:crypto";
 import { isConfigError } from "@mycli/config";
 import {
 	errorDefinition,
+	errorSummary,
 	createErrorContext,
 	legacyGatewayReason,
+	readErrorContext,
 	type DiagnosticCategory,
 	type DiagnosticRecoveryActionId,
 } from "@mycli/contracts";
@@ -126,6 +128,18 @@ export function gatewayFailure(error: unknown): GatewayFailure {
 			"clarification_not_pending",
 			"No pending clarification is available.",
 		);
+	}
+	// Errors that already describe themselves (configuration, policy, integration) keep their reason
+	// and recovery actions instead of being flattened into an anonymous internal failure.
+	if (isObject(error)) {
+		const context = readErrorContext(error.errorContext);
+		if (context) {
+			return new GatewayFailure(
+				context.reason.startsWith("config.") ? "config_error" : "internal_error",
+				errorSummary(context),
+				{ error_context: context },
+			);
+		}
 	}
 	return new GatewayFailure("internal_error", "Gateway request failed.");
 }

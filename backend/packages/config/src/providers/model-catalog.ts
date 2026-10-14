@@ -234,6 +234,18 @@ export const BUILTIN_MODEL_CATALOG: readonly ModelCatalogEntry[] = Object.freeze
 		contextWindowTokens: 200_000,
 		maxOutputTokens: 100_000,
 	}),
+	// Names carried by configurations written before the pi-ai 1.1.0 catalog refresh. They stay in the
+	// built-in catalog so an existing `~/.mycli/models.json` declaration of one of them keeps
+	// resolving from these limits instead of being treated as an incomplete custom model.
+	builtinEntry("deepseek", "deepseek-chat", "DeepSeek chat model"),
+	builtinEntry("deepseek", "deepseek-reasoner", "DeepSeek reasoning model", {
+		efforts: DEEPSEEK_EFFORTS,
+		defaultEffort: "high",
+	}),
+	builtinEntry("deepseek", "deepseek-v4-flash", "DeepSeek V4 Flash fast reasoning model", {
+		efforts: DEEPSEEK_EFFORTS,
+		defaultEffort: "high",
+	}),
 	builtinEntry("deepseek", "deepseek-flash", "DeepSeek V4.1 Flash fast reasoning model", {
 		efforts: DEEPSEEK_EFFORTS,
 		defaultEffort: "high",

@@ -77,6 +77,52 @@ test("assembles catalog-backed stable routes with sparse provider-local override
 	assert.ok(models.every(Object.isFrozen));
 });
 
+test("skips an incomplete uncatalogued declaration instead of failing the whole directory", () => {
+	const declaration: ModelProviderDeclaration = {
+		provider: "deepseek",
+		protocol: "chat_completions",
+		baseUrl: "https://api.deepseek.com",
+		authRef: "deepseek",
+		models: [
+			{ model: "deepseek-v4-pro" },
+			{ model: "user-model-without-limits" },
+		],
+	};
+	const deepseekCatalog = catalog([
+		provider("deepseek", "DeepSeek", "https://api.deepseek.com", [
+			model("deepseek", "deepseek-v4-pro", "chat_completions"),
+		]),
+	]);
+
+	const snapshot = assemble([declaration], deepseekCatalog);
+
+	assert.deepEqual(snapshot.models("deepseek").map((entry) => entry.model), ["deepseek-v4-pro"]);
+});
+
+test("keeps resolving model names that left the SDK catalog in the pi-ai 1.1.0 refresh", () => {
+	const declaration: ModelProviderDeclaration = {
+		provider: "deepseek",
+		protocol: "chat_completions",
+		baseUrl: "https://api.deepseek.com",
+		authRef: "deepseek",
+		models: [{ model: "deepseek-v4-flash" }],
+	};
+	const deepseekCatalog = catalog([
+		provider("deepseek", "DeepSeek", "https://api.deepseek.com", [
+			model("deepseek", "deepseek-flash", "chat_completions"),
+		]),
+	]);
+
+	const snapshot = assemble([declaration], deepseekCatalog);
+	const models = snapshot.models("deepseek");
+
+	// The declaration needs no limits of its own: the built-in catalog still describes this name.
+	assert.deepEqual(models.map((entry) => entry.model), ["deepseek-flash", "deepseek-v4-flash"]);
+	const stale = models.find((entry) => entry.model === "deepseek-v4-flash");
+	assert.equal(stale?.origin, "user");
+	assert.deepEqual(stale?.supportedReasoningEfforts, ["high", "max"]);
+});
+
 test("inherits new DeepSeek catalog models unless an explicit subset is configured", () => {
 	const declaration: ModelProviderDeclaration = {
 		provider: "deepseek",
