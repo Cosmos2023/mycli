@@ -13,6 +13,17 @@ export function errorPublicDetails(context: ErrorContext): string | undefined {
 	const details = context.details;
 	const parts: string[] = [];
 	if (details && "model" in details && details.model) parts.push(`Model: ${details.model}.`);
+	if (details && "provider" in details && details.provider) parts.push(`Provider: ${details.provider}.`);
+	if (details && "setting" in details && details.setting) parts.push(`Setting: ${details.setting}.`);
+	if (details && "method" in details && details.method) parts.push(`Method: ${details.method}.`);
+	// Integration errors render their operation inside their own block so the public text keeps a
+	// stable order for existing reports.
+	if (context.source !== "integration" && details && "operation" in details && details.operation) {
+		parts.push(`Operation: ${details.operation}.`);
+	}
+	if (details && "tool" in details && details.tool) parts.push(`Tool: ${details.tool}.`);
+	if (details && "legacy_code" in details && details.legacy_code) parts.push(`Failure: ${details.legacy_code}.`);
+	if (details && "storage_code" in details && details.storage_code) parts.push(`Storage: ${details.storage_code}.`);
 	if (context.reason === "capability.image_input_unsupported" && details && "input_origin" in details) {
 		parts.push(context.scope.kind === "tool_call" && context.outcome.state === "not_started"
 			? "This tool requires image-input support."

@@ -29,7 +29,13 @@ function diagnosticLines(message: NoticeMessage): readonly string[] {
 	const recoveryText = recovery
 		? `${recovery.label}${recovery.command ? ` (${recovery.command})` : ""}`
 		: undefined;
-	const values = [diagnostic?.details, diagnostic?.hint ?? recoveryText];
+	// The reason code is the machine-readable identity of the failure: keep it visible without
+	// opening the technical line, so a report can be matched against the error catalog.
+	const values = [
+		diagnostic?.errorContext?.reason ? `Code: ${diagnostic.errorContext.reason}` : undefined,
+		diagnostic?.details,
+		diagnostic?.hint ?? recoveryText,
+	];
 	const visibleValues = values.filter((value): value is string => Boolean(value));
 	if (diagnostic?.expanded) {
 		const context = diagnostic.errorContext;

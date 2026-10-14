@@ -99,6 +99,38 @@ test("constructors omit unsafe details without losing reason or execution eviden
 	}));
 });
 
+test("configuration, gateway and tool details stay publicly readable", () => {
+	const configContext = createErrorContext({
+		reason: "config.model_unavailable", source: "config",
+		scope: { kind: "application", id: "configuration" },
+		outcome: { state: "not_started", effects: "none" },
+		details: { provider: "deepseek", model: "deepseek-v4-flash-vision-exp", setting: "models.json" },
+	});
+	assert.match(
+		errorPublicDetails(configContext) ?? "",
+		/Model: deepseek-v4-flash-vision-exp\. Provider: deepseek\. Setting: models\.json\./u,
+	);
+
+	const gatewayContext = createErrorContext({
+		reason: "gateway.invalid_request", source: "gateway",
+		scope: { kind: "request", id: "request:1" },
+		outcome: { state: "not_started", effects: "none" },
+		details: { method: "turn.submit", legacy_code: "invalid_params" },
+	});
+	assert.match(
+		errorPublicDetails(gatewayContext) ?? "",
+		/Method: turn\.submit\. Failure: invalid_params\./u,
+	);
+
+	const toolContext = createErrorContext({
+		reason: "tool.path_not_found", source: "tool",
+		scope: { kind: "tool_call", id: "call:1" },
+		outcome: { state: "failed", effects: "none" },
+		details: { tool: "Read" },
+	});
+	assert.match(errorPublicDetails(toolContext) ?? "", /Tool: Read\./u);
+});
+
 test("integration diagnostics validate HTTP, RPC and phase evidence and render it publicly", () => {
 	const context = createErrorContext({ reason: "integration.unavailable", source: "integration", scope: { kind: "tool_call", id: "mcp:call" },
 		outcome: { state: "not_started", effects: "none" }, details: { integration: "remote", operation: "tools/call", phase: "request",

@@ -1,7 +1,15 @@
 import { WorkStatusComponent } from "../../src/components/composer/work-status.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { GOAL_RESTORED_STOP_REASON, TUI_KEYMAP_ACTIONS, turnFailedNoticeId, turnFailureNotice } from "@mycli/contracts";
+import {
+	createErrorContext,
+	errorPublicDetails,
+	errorSummary,
+	GOAL_RESTORED_STOP_REASON,
+	TUI_KEYMAP_ACTIONS,
+	turnFailedNoticeId,
+	turnFailureNotice,
+} from "@mycli/contracts";
 import { setTimeout } from "node:timers/promises";
 import { homedir } from "node:os";
 import { join, relative } from "node:path";
@@ -579,6 +587,40 @@ test("mycli shell renders promoted shell surfaces", () => {
 	assert.match(output, /Waiting for approval/);
 	assert.match(output, /^ ~\/Desktop\/mycli/m);
 	assert.match(output, /deepseek-v4-flash/);
+});
+
+test("error notices show the reason code and the public details of their context", () => {
+	const context = createErrorContext({
+		reason: "config.model_unavailable",
+		source: "config",
+		scope: { kind: "application", id: "configuration" },
+		outcome: { state: "not_started", effects: "none" },
+		details: { provider: "deepseek", model: "deepseek-v4-flash-vision-exp", setting: "models.json" },
+	});
+	const output = stripAnsi(renderMycliShell({
+		...sampleState(),
+		messages: [],
+		tools: [],
+		bash: [],
+		pendingNotice: undefined,
+		transcript: [{
+			id: "error-context",
+			kind: "message",
+			message: {
+				id: "error-context",
+				role: "error",
+				text: errorSummary(context),
+				diagnostic: { errorContext: context, details: errorPublicDetails(context) },
+			},
+		}],
+	}, 100).join("\n"));
+
+	assert.match(output, /The selected model is unavailable in the configured catalog\./u);
+	assert.match(output, /Code: config\.model_unavailable/u);
+	assert.match(
+		output,
+		/Model: deepseek-v4-flash-vision-exp\. Provider: deepseek\. Setting: models\.json\./u,
+	);
 });
 
 test("mycli shell renders semantic error and warning notices", () => {
