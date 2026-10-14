@@ -281,6 +281,8 @@ export type MycliShellCommandResult = {
 export type MycliShellBackgroundProcess = {
 	shellId: string;
 	commandPreview: string;
+	/** `running_foreground` while the agent waits on it, `running_background` once it outlived its yield. */
+	processState?: string;
 	recentOutput: string[];
 };
 

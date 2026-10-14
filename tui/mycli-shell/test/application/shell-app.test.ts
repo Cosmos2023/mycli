@@ -1784,7 +1784,14 @@ test("mycli shell renders ps history with empty and multiline background termina
 						{
 							shellId: "shell-1",
 							commandPreview: "uv run dev",
+							processState: "running_foreground",
 							recentOutput: ["starting", "ready"],
+						},
+						{
+							shellId: "shell-2",
+							commandPreview: "npm run watch",
+							processState: "running_background",
+							recentOutput: [],
 						},
 					],
 				},
@@ -1808,10 +1815,13 @@ test("mycli shell renders ps history with empty and multiline background termina
 
 	assert.match(populated, /\/ps/);
 	assert.match(populated, /Background terminals/);
+	// `/ps` lists the command the agent is waiting on too, so each row says which kind it is.
+	assert.match(populated, /uv run dev.*foreground/u);
+	assert.match(populated, /npm run watch.*background/u);
 	assert.match(populated, /• uv run dev/);
 	assert.match(populated, /↳ starting/);
 	assert.match(populated, /↳ ready/);
-	assert.match(empty, /No background terminals running\./);
+	assert.match(empty, /No terminals running\./);
 });
 
 test("ps history bounds long commands and caps the process list at sixteen", () => {

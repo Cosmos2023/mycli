@@ -24,12 +24,13 @@ test("work summaries stay bounded and reserve room for omitted extension counts"
 	});
 	for (const width of [24, 40, 80, 160]) {
 		const lines = work.render(width).map(stripAnsi);
-		assert.equal(lines.length, 3);
-		assert.match(lines[1]!, /Goal active/);
+		// The goal owns its own row; the shell counter and extension summary follow it.
+		assert.equal(lines.length, 4);
+		assert.match(lines[1]!, /Pursuing goal/);
 		assert.doesNotMatch(lines[1]!, /Tasks/);
-		assert.match(lines[2]!, /\+\d+ more$/);
-		if (width >= 40) assert.match(lines[1]!, /2 shells/);
-		if (width >= 80) assert.match(lines[1]!, /\/ps/);
+		assert.match(lines[3]!, /\+\d+ more$/);
+		if (width >= 40) assert.match(lines[2]!, /2 shells/);
+		if (width >= 80) assert.match(lines[2]!, /\/ps/);
 		assert.ok(lines.every((line) => visibleWidth(line) < width));
 	}
 	const longExtension = new WorkStatusComponent({ cwd: "/repo", extensionStatuses: ["x".repeat(1000), "second"] });
@@ -37,25 +38,57 @@ test("work summaries stay bounded and reserve room for omitted extension counts"
 	assert.deepEqual(new WorkStatusComponent({ cwd: "/repo", extensionStatuses: ["", "\n\t"] }).render(80), []);
 });
 
-test("goal summaries keep an appropriate control and preserve incomplete usage", () => {
-	assert.match(stripAnsi(renderGoalStatus(goal, 100)), /1\.25K \/ 50K.*\/goal pause/);
-	for (const status of ["paused", "blocked", "usage_limited"] as const) {
-		assert.match(stripAnsi(renderGoalStatus({ ...goal, status }, 100)), /\/goal resume$/);
+test("goal summaries follow Codex wording and keep the objective while it fits", () => {
+	// Wide enough for the objective; narrower rows drop it, then the usage, then the qualifier.
+	assert.equal(stripAnsi(renderGoalStatus(goal, 200)), "Pursuing goal (1.25K / 50K) · 修复文档渲染");
+	assert.equal(stripAnsi(renderGoalStatus(goal, 40)), "Pursuing goal (1.25K / 50K)");
+	assert.equal(stripAnsi(renderGoalStatus(goal, 24)), "Pursuing goal");
+	assert.match(stripAnsi(renderGoalStatus({ ...goal, usage_incomplete: true }, 60)), /1\.25K\+ \/ 50K/);
+
+	for (const [status, text] of [
+		["paused", "Goal paused (/goal resume) · 修复文档渲染"],
+		["blocked", "Goal stalled (/goal resume) · 修复文档渲染"],
+		["usage_limited", "Goal hit usage limits (/goal resume) · 修复文档渲染"],
+	] as const) {
+		assert.equal(stripAnsi(renderGoalStatus({ ...goal, status }, 200)), text);
 	}
-	for (const status of ["budget_limited", "complete"] as const) {
-		assert.match(stripAnsi(renderGoalStatus({ ...goal, status }, 100)), /\/goal$/);
-	}
-	assert.match(stripAnsi(renderGoalStatus({ ...goal, usage_incomplete: true }, 100)), /1\.25K\+ \/ 50K/);
-	assert.match(stripAnsi(renderGoalStatus({ ...goal, status: "budget_limited" }, 100)), /1\.25K \/ 50K tokens/);
+	assert.equal(
+		stripAnsi(renderGoalStatus({ ...goal, status: "budget_limited" }, 200)),
+		"Goal unmet (1.25K / 50K tokens) · 修复文档渲染",
+	);
+	assert.equal(
+		stripAnsi(renderGoalStatus({ ...goal, status: "complete" }, 200)),
+		"Goal achieved (1.25K tokens) · 修复文档渲染",
+	);
 	// Codex reports elapsed time while a goal has no token budget to report.
-	assert.match(stripAnsi(renderGoalStatus({ ...goal, token_budget: null, elapsed_ms: 90_000 }, 100)), /Goal active · 1m · \/goal pause/);
-	assert.match(stripAnsi(renderGoalStatus({ ...goal, token_budget: null, elapsed_ms: 90_000, status: "complete" }, 100)), /Goal complete · 1m/);
-	// The control keeps priority; the compact usage is the fallback when it no longer fits.
-	assert.equal(stripAnsi(renderGoalStatus(goal, 28)), "Goal active · /goal pause");
-	assert.equal(stripAnsi(renderGoalStatus(goal, 24)), "Goal active");
-	assert.equal(stripAnsi(renderGoalStatus({ ...goal, token_budget: null, elapsed_ms: 90_000 }, 24)), "Goal active · 1m");
-	assert.equal(stripAnsi(renderGoalStatus(goal, 14)), "Goal active");
+	assert.equal(
+		stripAnsi(renderGoalStatus({ ...goal, token_budget: null, elapsed_ms: 90_000 }, 200)),
+		"Pursuing goal (1m) · 修复文档渲染",
+	);
+	assert.equal(
+		stripAnsi(renderGoalStatus({ ...goal, token_budget: null, elapsed_ms: 90_000, status: "complete" }, 24)),
+		"Goal achieved (1m)",
+	);
 	assert.doesNotMatch(stripAnsi(renderGoalStatus(goal, 160)), /continuations/);
+});
+
+test("the goal clock advances only inside a running turn", () => {
+	const idle = { ...goal, token_budget: null, elapsed_ms: 0 };
+	// Snapshot arrived 1s ago, the turn started 3s ago: only the 7s after the turn started counts.
+	assert.equal(
+		stripAnsi(renderGoalStatus(idle, 200, { now: 10_000, observedAtMs: 1_000, turnStartedAtMs: 3_000 })),
+		"Pursuing goal (7s) · 修复文档渲染",
+	);
+	// A snapshot that arrives mid-turn restarts the increment from its own moment.
+	assert.equal(
+		stripAnsi(renderGoalStatus(idle, 200, { now: 10_000, observedAtMs: 8_000, turnStartedAtMs: 3_000 })),
+		"Pursuing goal (2s) · 修复文档渲染",
+	);
+	// Without a running turn the snapshot is authoritative.
+	assert.equal(
+		stripAnsi(renderGoalStatus(idle, 200, { now: 10_000, observedAtMs: 1_000, turnStartedAtMs: null })),
+		"Pursuing goal (0s) · 修复文档渲染",
+	);
 });
 
 test("footer reserves mode and context before reasoning or a long model name", () => {
@@ -99,10 +132,11 @@ test("composer status remains readable in ASCII without color", () => {
 	try {
 		setUiGlyphMode("ascii");
 		theme.setColorMode("none");
-		const data: MycliShellFooterData = { cwd: "/repo", model: "model", collaborationMode: "plan", contextPercent: 92, goal, backgroundShellCount: 2 };
+		// The objective is user text; keep it ASCII so this case only proves the footer itself is.
+		const data: MycliShellFooterData = { cwd: "/repo", model: "model", collaborationMode: "plan", contextPercent: 92, goal: { ...goal, objective: "fix docs rendering" }, backgroundShellCount: 2 };
 		const lines = [...new WorkStatusComponent(data).render(100), ...new FooterComponent(data).render(100)];
 		const output = lines.join("\n");
-		assert.match(output, /Goal active.*\/goal pause/);
+		assert.match(output, /Pursuing goal/);
 		assert.match(output, /plan.*model.*92% ctx/);
 		assert.match(output, /2 shells.*\/ps/);
 		assert.doesNotMatch(output, /\x1b|[^\x00-\x7f]/u);

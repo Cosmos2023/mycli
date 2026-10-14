@@ -2,14 +2,20 @@ import type { MycliShellFooterData } from "../../model.ts";
 import { theme } from "../../theme/theme.ts";
 import type { Component } from "../../tui-core/tui.ts";
 import { visibleWidth } from "../../tui-core/utils.ts";
-import { goalStatusLabel, renderGoalStatus } from "./goal-status.ts";
+import { renderGoalStatus, type GoalStatusTiming } from "./goal-status.ts";
 import { alignStatusColumns, insetStatusLine, joinStatusParts, sanitizeStatusText, statusLineWidth } from "./status-line.ts";
 
 /** Bounded work summaries, separate from transcript history and session context. */
 export class WorkStatusComponent implements Component {
 	constructor(
 		private readonly data: MycliShellFooterData,
-		private readonly options: { readonly leadingSpace?: boolean } = {},
+		private readonly options: {
+			readonly leadingSpace?: boolean;
+			readonly now?: () => number;
+			/** When the current goal snapshot arrived, so the goal clock can keep moving. */
+			readonly goalObservedAtMs?: number | null;
+			readonly turnStartedAtMs?: number | null;
+		} = {},
 	) {}
 
 	invalidate(): void {}
@@ -18,8 +24,12 @@ export class WorkStatusComponent implements Component {
 		if (width <= 0) return [];
 		const contentWidth = statusLineWidth(width);
 		const rows: string[] = [];
-		const work = this.workRow(contentWidth);
-		if (visibleWidth(work) > 0) rows.push(work);
+		// The goal owns its own row: sharing one line with the background-terminal counter squeezed
+		// both of them and hid the objective.
+		const goal = this.goalRow(contentWidth);
+		if (goal) rows.push(goal);
+		const shells = this.shellRow(contentWidth);
+		if (shells) rows.push(shells);
 		const extensions = [...new Set((this.data.extensionStatuses ?? []).map(sanitizeStatusText).filter(Boolean))];
 		if (extensions.length > 0) rows.push(this.extensionRow(extensions, contentWidth));
 		if (rows.length === 0) return [];
@@ -40,15 +50,26 @@ export class WorkStatusComponent implements Component {
 		return theme.fg("dim", text);
 	}
 
-	private workRow(width: number): string {
+	private goalRow(width: number): string {
 		const goal = this.data.goal;
+		if (!goal) return "";
+		return renderGoalStatus(goal, width, this.goalTiming());
+	}
+
+	private goalTiming(): GoalStatusTiming | undefined {
+		const now = this.options.now;
+		if (!now) return undefined;
+		return {
+			now: now(),
+			observedAtMs: this.options.goalObservedAtMs ?? null,
+			turnStartedAtMs: this.options.turnStartedAtMs ?? null,
+		};
+	}
+
+	private shellRow(width: number): string {
 		const count = this.data.backgroundShellCount ?? 0;
-		let shells = count > 0 ? joinStatusParts([`${count} ${count === 1 ? "shell" : "shells"}`, "/ps"]) : "";
-		const primaryLabel = goal ? goalStatusLabel(goal) : "";
-		if (shells && visibleWidth(primaryLabel) + 2 + visibleWidth(shells) > width) shells = `${count} ${count === 1 ? "shell" : "shells"}`;
-		if (goal && shells && visibleWidth(primaryLabel) + 2 + visibleWidth(shells) > width) shells = "";
-		const leftWidth = shells ? Math.max(0, width - visibleWidth(shells) - 2) : width;
-		const left = goal ? renderGoalStatus(goal, leftWidth) : "";
-		return alignStatusColumns(left, theme.fg("muted", shells), width);
+		if (count === 0) return "";
+		const label = joinStatusParts([`${count} ${count === 1 ? "shell" : "shells"}`, "/ps"]);
+		return alignStatusColumns("", theme.fg("muted", label), width);
 	}
 }

@@ -19,12 +19,16 @@ export class BackgroundTerminalsComponent implements Component {
 		const lines = ["", this.line(theme.fg("dim", "/ps"), width), "", this.line(theme.bold("Background terminals"), width), ""];
 		const visibleProcesses = this.backgroundTerminals.processes.slice(0, PROCESS_LIMIT);
 		if (visibleProcesses.length === 0) {
-			lines.push(this.line(theme.fg("muted", "  No background terminals running."), width));
+			lines.push(this.line(theme.fg("muted", "  No terminals running."), width));
 			return lines;
 		}
 
 		for (const process of visibleProcesses) {
-			lines.push(this.line(`${theme.fg("accent", `  ${uiGlyphs().bullet}`)} ${sanitizeLine(process.commandPreview) || "command"}`, width));
+			const state = processStateLabel(process.processState);
+			lines.push(this.line(
+				`${theme.fg("accent", `  ${uiGlyphs().bullet}`)} ${sanitizeLine(process.commandPreview) || "command"}${state ? theme.fg("muted", ` ${uiGlyphs().separator} ${state}`) : ""}`,
+				width,
+			));
 			for (const output of process.recentOutput) {
 				lines.push(this.line(theme.fg("muted", `    ${uiGlyphs().continuation} ${sanitizeLine(output)}`), width));
 			}
@@ -43,4 +47,11 @@ export class BackgroundTerminalsComponent implements Component {
 
 function sanitizeLine(text: string): string {
 	return text.replace(/[\r\n\t]/g, " ").replace(/ +/g, " ").trim();
+}
+
+/** `/ps` now lists the command the agent is waiting on too, so say which kind each one is. */
+function processStateLabel(state: string | undefined): string | undefined {
+	if (state === "running_foreground") return "foreground";
+	if (state === "running_background") return "background";
+	return state ? state.replaceAll("_", " ") : undefined;
 }

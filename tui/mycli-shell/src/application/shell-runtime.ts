@@ -183,7 +183,9 @@ export class MycliShellRuntime {
 	readonly transcriptArea: TranscriptAreaComponent;
 	readonly pendingMessagesContainer = new FrameCachedContainer(() => this.ui.activeRenderFrameId);
 	readonly statusContainer = new FrameCachedContainer(() => this.ui.activeRenderFrameId);
-	readonly workStatusContainer = new FrameCachedContainer(() => this.ui.activeRenderFrameId, true);
+	// The goal row carries its own clock, so this container re-renders once per frame instead of
+	// caching across frames; the row is a couple of lines.
+	readonly workStatusContainer = new FrameCachedContainer(() => this.ui.activeRenderFrameId);
 	readonly editorContainer = new FrameCachedContainer(() => this.ui.activeRenderFrameId);
 	readonly subagentTaskContainer = new FrameCachedContainer(() => this.ui.activeRenderFrameId, true);
 	readonly footerContainer = new FrameCachedContainer(() => this.ui.activeRenderFrameId, true);
@@ -201,6 +203,9 @@ export class MycliShellRuntime {
 	private transcriptProjection: TranscriptProjectionState | null = null;
 	private turnActivity: TurnActivityComponent | null = null;
 	private turnStartedAtMs: number | null = null;
+	/** Moment the current goal snapshot arrived, so the goal clock can keep moving between updates. */
+	private goalObservedAtMs: number | null = null;
+	private goalSnapshotKey: string | null = null;
 	private operationStartedAtMs: number | null = null;
 	private exitHintTimer: NodeJS.Timeout | null = null;
 	private exitHintVisible = false;
@@ -405,6 +410,7 @@ export class MycliShellRuntime {
 			this.userTurnPendingStart = false;
 		}
 		this.updateStatusTiming(previousState, effectiveState);
+		this.updateGoalTiming(effectiveState);
 		if (settingsChanged) {
 			applyMycliKeymap(this.keybindings, effectiveState.keymap?.bindings);
 		}
@@ -2308,6 +2314,18 @@ export class MycliShellRuntime {
 		}
 	}
 
+	/**
+	 * A goal snapshot's `elapsed_ms` is authoritative when it arrives; remember that moment so the
+	 * goal row can add the time the running turn spends after it (Codex does the same).
+	 */
+	private updateGoalTiming(state: MycliShellState): void {
+		const goal = state.footer.goal ?? null;
+		const key = goal ? `${goal.goal_id}:${goal.revision}` : null;
+		if (key === this.goalSnapshotKey) return;
+		this.goalSnapshotKey = key;
+		this.goalObservedAtMs = key === null ? null : this.now();
+	}
+
 	private isRunningLiveState(
 		liveState: string | undefined,
 		liveStateKind?: string,
@@ -2384,6 +2402,9 @@ export class MycliShellRuntime {
 		this.workStatusContainer.clear();
 		this.workStatusContainer.addChild(new WorkStatusComponent(this.state.footer, {
 			leadingSpace: !this.isTurnActivityVisible(this.state),
+			now: this.now,
+			goalObservedAtMs: this.goalObservedAtMs,
+			turnStartedAtMs: this.turnStartedAtMs,
 		}));
 	}
 

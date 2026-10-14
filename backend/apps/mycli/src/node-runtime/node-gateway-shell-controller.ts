@@ -66,6 +66,22 @@ export class NodeGatewayShellController {
 		return this.activeSnapshots().map((snapshot) => shellSnapshotPayload(snapshot, context));
 	}
 
+	/**
+	 * `/ps` reports every terminal this session still runs. A command the agent is waiting on is
+	 * still `running_foreground`, so filtering to background shells alone made `/ps` look empty
+	 * during a turn.
+	 */
+	runningSnapshots(): readonly ShellSessionSnapshot[] {
+		const ownerSessionId = this.#options.context().sessionId;
+		return this.#options.manager?.list(ownerSessionId).filter((snapshot) =>
+			snapshot.ownerSessionId === ownerSessionId && snapshot.status === "running") ?? [];
+	}
+
+	runningPayloads(): readonly JsonObject[] {
+		const context = this.#options.context();
+		return this.runningSnapshots().map((snapshot) => shellSnapshotPayload(snapshot, context));
+	}
+
 	list(): JsonObject {
 		const context = this.#options.context();
 		return {
@@ -117,7 +133,7 @@ export class NodeGatewayShellController {
 	}
 
 	psCommandResult(): JsonObject {
-		return shellPsCommandResult(this.activePayloads());
+		return shellPsCommandResult(this.runningPayloads());
 	}
 
 	async stopAllCommandResult(): Promise<JsonObject> {

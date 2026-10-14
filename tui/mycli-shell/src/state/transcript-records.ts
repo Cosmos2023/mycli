@@ -34,9 +34,11 @@ function backgroundProcessFromUnknown(value: unknown): MycliShellBackgroundProce
 	if (!shellId) return null;
 	const output = stringValue(record.output) ?? "";
 	const recentOutput = stringArrayValue(record.recentOutput ?? record.recent_output);
+	const processState = stringValue(record.process_state) ?? stringValue(record.processState);
 	return {
 		shellId,
 		commandPreview: stringValue(record.command_preview) ?? stringValue(record.commandPreview) ?? "command",
+		...(processState ? { processState } : {}),
 		recentOutput: (recentOutput.length > 0 ? recentOutput : output.split(/\r?\n/))
 			.map((line) => line.replace(/[\r\n\t]/g, " ").trim())
 			.filter(Boolean)

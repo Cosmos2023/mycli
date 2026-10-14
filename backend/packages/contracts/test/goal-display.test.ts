@@ -3,6 +3,8 @@ import test from "node:test";
 import {
 	formatGoalElapsed,
 	formatGoalTokensCompact,
+	goalStatusHeadline,
+	goalStatusLabel,
 	goalStatusUsage,
 	goalSummaryLines,
 	parseSessionGoal,
@@ -39,6 +41,28 @@ test("goal status usage reports budget, elapsed time and stop states", () => {
 	assert.equal(goalStatusUsage({ ...goal, status: "budget_limited", tokens_used: 63_876 }), "63.9K / 50K tokens");
 	assert.equal(goalStatusUsage({ ...goal, status: "complete", tokens_used: 40_000 }), "40K tokens");
 	assert.equal(goalStatusUsage({ ...goal, status: "paused" }), undefined);
+});
+
+test("goal status labels follow Codex wording and keep the recovery hint inline", () => {
+	assert.equal(goalStatusLabel(goal), "Pursuing goal (12.5K / 50K)");
+	assert.equal(goalStatusHeadline(goal), "Pursuing goal");
+	assert.equal(goalStatusLabel({ ...goal, token_budget: null }), "Pursuing goal (1m)");
+	assert.equal(goalStatusLabel({ ...goal, status: "paused" }), "Goal paused (/goal resume)");
+	assert.equal(goalStatusLabel({ ...goal, status: "blocked" }), "Goal stalled (/goal resume)");
+	assert.equal(goalStatusLabel({ ...goal, status: "usage_limited" }), "Goal hit usage limits (/goal resume)");
+	assert.equal(
+		goalStatusLabel({ ...goal, status: "budget_limited", tokens_used: 63_876 }),
+		"Goal unmet (63.9K / 50K tokens)",
+	);
+	assert.equal(
+		goalStatusLabel({ ...goal, status: "budget_limited", token_budget: null }),
+		"Goal abandoned",
+	);
+	assert.equal(goalStatusLabel({ ...goal, status: "complete", tokens_used: 40_000 }), "Goal achieved (40K tokens)");
+	assert.equal(
+		goalStatusLabel({ ...goal, status: "complete", token_budget: null }),
+		"Goal achieved (1m)",
+	);
 });
 
 test("goal summary lists accounting and the controls that fit the status", () => {

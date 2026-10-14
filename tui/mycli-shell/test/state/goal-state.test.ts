@@ -34,16 +34,20 @@ test("automatic turns create one system marker and never a human message", () =>
 });
 
 test("goal status keeps text labels and fits narrow terminals", () => {
-	for (const status of ["active", "paused", "blocked", "usage_limited", "budget_limited", "complete"] as const) {
+	// Codex wording: one phrase per state, with usage only where the state has one.
+	for (const [status, expected] of [
+		["active", /^Pursuing goal \(1\.25K \/ 50K\)/u],
+		["paused", /^Goal paused \(\/goal resume\)/u],
+		["blocked", /^Goal stalled \(\/goal resume\)/u],
+		["usage_limited", /^Goal hit usage limits \(\/goal resume\)/u],
+		["budget_limited", /^Goal unmet \(1\.25K \/ 50K tokens\)/u],
+		["complete", /^Goal achieved \(1\.25K tokens\)/u],
+	] as const) {
 		const line = renderGoalStatus({ ...goal, status }, 100);
-		assert.match(line, new RegExp(`Goal ${status.replaceAll("_", " ")}`));
+		assert.match(line, expected);
 		// Stopped goals report no usage, matching Codex's indicator.
 		if (status === "paused" || status === "blocked" || status === "usage_limited") {
 			assert.doesNotMatch(line, /1\.25K/);
-		} else if (status === "complete") {
-			assert.match(line, /1\.25K tokens/);
-		} else {
-			assert.match(line, /1\.25K \/ 50K/);
 		}
 		for (const width of [1, 8, 20, 40, 80]) assert.ok(visibleWidth(renderGoalStatus({ ...goal, status }, width)) <= width);
 	}

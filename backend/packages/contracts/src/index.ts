@@ -114,6 +114,8 @@ export {
 	GOAL_RESTORED_STOP_REASON,
 	formatGoalElapsed,
 	formatGoalTokensCompact,
+	goalStatusHeadline,
+	goalStatusLabel,
 	goalStatusUsage,
 	goalSummaryLines,
 } from "./goal-display.ts";

@@ -2064,6 +2064,16 @@ test("shell command routes expose ps and stop-all through the active owner manag
 	const harness = gatewayHarness({ shell: true });
 	assert.ok(harness.shell);
 	harness.shell.snapshots.push(shellSnapshot());
+	// A command the agent is still waiting on is not "background", but `/ps` has to show it: an
+	// empty list during a turn is what made `/ps` look broken.
+	harness.shell.snapshots.push(shellSnapshot({
+		shellId: "f0re0000",
+		callId: "call-shell-2",
+		background: false,
+		processState: "running_foreground",
+		yielded: false,
+		commandPreview: "npm run dev",
+	}));
 
 	const listed = await harness.send("command.list", { surface: "tui" });
 	assert.deepEqual(
@@ -2078,6 +2088,12 @@ test("shell command routes expose ps and stop-all through the active owner manag
 	assert.equal("result" in ps ? ps.result.command_kind : null, "background_shells");
 	assert.deepEqual("result" in ps ? ps.result.processes : [], [
 		assertedShellPayload("a1b2c3d4", 1),
+		assertedShellPayload("f0re0000", 1, "session-node", "call-shell-2", {
+			command_preview: "npm run dev",
+			background: false,
+			process_state: "running_foreground",
+			yielded: false,
+		}),
 	]);
 	const stopped = await harness.send("command.run", { command: "/ps stop-all", surface: "tui" });
 	assert.equal("result" in stopped ? stopped.result.command_kind : null, "shell_stop");
@@ -6155,6 +6171,7 @@ function assertedShellPayload(
 	generation: number,
 	sessionId = "session-node",
 	callId = "call-shell-1",
+	overrides: Record<string, unknown> = {},
 ) {
 	return {
 		shell_id: shellId,
@@ -6173,6 +6190,7 @@ function assertedShellPayload(
 		tty: false,
 		yielded: true,
 		started_at: "2026-08-05T00:00:00.000Z",
+		...overrides,
 	};
 }
 

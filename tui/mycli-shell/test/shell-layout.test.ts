@@ -218,10 +218,37 @@ function assertActivityAboveComposer(lines: string[]): void {
 	assert.equal(lines[activity - 1]?.trim(), "");
 	assert.equal(lines[activity + 1]?.trim(), "");
 	const queued = lines.findIndex((line) => line.includes("queued-marker"));
-	const goal = lines.findIndex((line) => line.includes("Goal active"));
+	const goal = lines.findIndex((line) => line.includes("Pursuing goal"));
 	if (queued >= 0) assert.ok(activity < queued && queued < composer, lines.join("\n"));
 	if (goal >= 0) assert.ok(goal >= activity + 2 && goal < composer, lines.join("\n"));
 }
+
+test("the goal clock advances only while a turn runs", async (context) => {
+	let now = 1_000_000;
+	const terminal = new HeadlessTerminal({ columns: 100, rows: 24 });
+	const base = stateFor([]);
+	const runtime = new MycliShellRuntime({ initialState: base, terminal, now: () => now });
+	context.after(async () => { await runtime.shutdown(); terminal.dispose(); });
+	const summary = (): string => stripAnsi(runtime.workStatusContainer.render(100).join("\n"));
+
+	// A snapshot with no token budget reports elapsed time, and the turn starts at the same moment.
+	runtime.setState({
+		...runtime.getState(),
+		footer: { ...runtime.getState().footer, goal: { ...layoutGoal(), token_budget: null, elapsed_ms: 60_000 }, turnRunning: true, liveState: "Running" },
+	});
+	assert.match(summary(), /Pursuing goal \(1m\)/);
+
+	// The tick only re-renders; the clock moves because the row adds the time this turn spent.
+	now += 65_000;
+	assert.match(summary(), /Pursuing goal \(2m\)/);
+
+	// Outside a turn the snapshot is authoritative again, exactly like Codex.
+	runtime.setState({
+		...runtime.getState(),
+		footer: { ...runtime.getState().footer, turnRunning: false, liveState: "Idle" },
+	});
+	assert.match(summary(), /Pursuing goal \(1m\)/);
+});
 
 test("work changes only invalidate their summary and never duplicate the live state", async (context) => {
 	const terminal = new HeadlessTerminal({ columns: 100, rows: 24 });
@@ -235,11 +262,13 @@ test("work changes only invalidate their summary and never duplicate the live st
 	assert.equal(runtime.footerContainer.children[0], footer);
 	assert.equal(runtime.statusContainer.children[0], activity);
 	assert.equal(runtime.chatContainer.getRenderCacheKey(), transcriptRevision);
-	assert.match(stripAnsi(runtime.workStatusContainer.render(100).join("\n")), /Goal active.*2 shells/);
+	const goalSummary = stripAnsi(runtime.workStatusContainer.render(100).join("\n"));
+	assert.match(goalSummary, /Pursuing goal/);
+	assert.match(goalSummary, /2 shells/);
 	runtime.setState({ ...runtime.getState(), footer: { ...runtime.getState().footer, goal: { ...goal, status: "paused", tokens_used: 4321 }, backgroundShellCount: 0 } });
 	assert.equal(runtime.footerContainer.children[0], footer);
 	assert.equal(runtime.chatContainer.getRenderCacheKey(), transcriptRevision);
-	assert.match(stripAnsi(runtime.workStatusContainer.render(100).join("\n")), /Goal paused.*\/goal resume/);
+	assert.match(stripAnsi(runtime.workStatusContainer.render(100).join("\n")), /Goal paused \(\/goal resume\)/);
 	assert.doesNotMatch(stripAnsi(runtime.workStatusContainer.render(100).join("\n")), /shells/);
 	runtime.setState({ ...runtime.getState(), footer: { ...runtime.getState().footer, turnRunning: false, liveState: "Waiting for input", liveStateKind: "waiting" } });
 	assert.equal(stripAnsi(runtime.ui.render(100).join("\n")).match(/Waiting for input/gu)?.length, 1);
@@ -276,7 +305,7 @@ for (const nativeScrollback of [false, true]) {
 			const editor = lines.findIndex((line) => line.includes("composer-marker"));
 			assert.equal(editor, rows - runtime.footerContainer.render(columns).length - 2, lines.join("\n"));
 			assert.equal(terminal.cursorPosition().row, editor);
-			assert.doesNotMatch(terminal.historyLines().join("\n"), /output-tail|esc to interrupt|Goal active|composer-marker/);
+			assert.doesNotMatch(terminal.historyLines().join("\n"), /output-tail|esc to interrupt|Pursuing goal|composer-marker/);
 		}
 		runtime.setState({
 			...runtime.getState(),
@@ -285,7 +314,7 @@ for (const nativeScrollback of [false, true]) {
 		await delay(40);
 		await terminal.flush();
 		const lines = terminal.visibleLines();
-		assert.doesNotMatch(lines.join("\n"), /esc to interrupt|Goal active/);
+		assert.doesNotMatch(lines.join("\n"), /esc to interrupt|Pursuing goal/);
 		const editor = lines.findIndex((line) => line.includes("composer-marker"));
 		assert.equal(editor, terminal.rows - runtime.footerContainer.render(terminal.columns).length - 2, lines.join("\n"));
 		assert.equal(terminal.cursorPosition().row, editor);
@@ -312,20 +341,20 @@ for (const nativeScrollback of [false, true]) {
 				assertActivityAboveComposer(lines);
 				const editor = lines.findIndex((line) => line.includes("composer-marker"));
 				const activity = lines.findIndex((line) => line.includes("esc to interrupt"));
-				const goal = lines.findIndex((line) => line.includes("Goal active"));
+				const goal = lines.findIndex((line) => line.includes("Pursuing goal"));
 				const model = lines.findIndex((line) => line.includes("model-marker"));
 				assert.ok(activity < goal && goal < editor, lines.join("\n"));
-				assert.equal(lines.filter((line) => line.includes("Goal active")).length, 1);
+				assert.equal(lines.filter((line) => line.includes("Pursuing goal")).length, 1);
 				assert.equal(runtime.footerContainer.render(columns).length, statusbarMode === "full" ? 2 : statusbarMode === "compact" ? 1 : 0);
 				assert.ok(statusbarMode === "off" ? model === -1 : model > editor, lines.join("\n"));
-				assert.doesNotMatch(terminal.historyLines().join("\n"), /Goal active|extension-marker|model-marker|esc to interrupt/);
+				assert.doesNotMatch(terminal.historyLines().join("\n"), /Pursuing goal|extension-marker|model-marker|esc to interrupt/);
 			}
 		}
 		runtime.replaceSessionState({ ...stateFor([]), sessionId: "second", settings: { reducedMotion: true }, footer: { cwd: "/repo/second", model: "new-model", turnRunning: false, liveState: "Idle" } });
 		runtime.editor.setText("second-draft");
 		await delay(40);
 		await terminal.flush();
-		assert.doesNotMatch(terminal.visibleLines().join("\n"), /Goal active|extension-marker|2 shells|model-marker|composer-marker/);
+		assert.doesNotMatch(terminal.visibleLines().join("\n"), /Pursuing goal|extension-marker|2 shells|model-marker|composer-marker/);
 		assert.match(terminal.visibleLines().join("\n"), /second-draft/);
 	});
 }

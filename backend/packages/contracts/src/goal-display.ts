@@ -45,6 +45,34 @@ export function goalStatusUsage(goal: SessionGoal): string | undefined {
 	return undefined;
 }
 
+/**
+ * Codex status-line wording: one short phrase per state, with the usage in parentheses when the
+ * state has one. `goalStatusHeadline` is the same phrase without usage, for narrow terminals.
+ */
+export function goalStatusLabel(goal: SessionGoal): string {
+	const usage = goalStatusUsage(goal);
+	const suffix = usage === undefined ? "" : ` (${usage})`;
+	switch (goal.status) {
+		case "active": return `Pursuing goal${suffix}`;
+		case "paused": return "Goal paused (/goal resume)";
+		case "blocked": return "Goal stalled (/goal resume)";
+		case "usage_limited": return "Goal hit usage limits (/goal resume)";
+		case "budget_limited": return goal.token_budget === null ? "Goal abandoned" : `Goal unmet${suffix}`;
+		case "complete": return `Goal achieved${suffix}`;
+	}
+}
+
+export function goalStatusHeadline(goal: SessionGoal): string {
+	switch (goal.status) {
+		case "active": return "Pursuing goal";
+		case "paused": return "Goal paused";
+		case "blocked": return "Goal stalled";
+		case "usage_limited": return "Goal hit usage limits";
+		case "budget_limited": return goal.token_budget === null ? "Goal abandoned" : "Goal unmet";
+		case "complete": return "Goal achieved";
+	}
+}
+
 /** `/goal` summary body, following Codex's goal summary and per-status command hints. */
 export function goalSummaryLines(goal: SessionGoal): string[] {
 	const lines = [
