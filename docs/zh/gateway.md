@@ -137,7 +137,7 @@ Stdout 仅协议数据，启动诊断走 stderr，不含原始错误或凭据。
 
 当前轮次和 Worker 租约仍活动时，实时根 `approval.request` 可回答。每个兼容工具独立等待；一次回答后，已批准命令仍执行/等待输出时可出现下一提示。现代 `Shell` 保留普通 `yield_time_ms`，审批不强制立即返回进程句柄。
 
-`tool.complete` 结束调用，但进程可能仍运行。用 `shell.output`、`shell.completed` 跟踪进程，`shell.list`、`shell.stop` 控制进程，`transcript.load` 读取历史。TUI `Ctrl+T` 只展开已保留输出，打开或滚动不额外获取 Shell 输出，长输出保留截断标记。明确需要存储块的客户端仍可用诊断 `shell.output.load`。Agent 用 `WriteStdin` 等待命令退出后再执行依赖工作。普通 Shell 保留前台让出窗口，旧 `Bash` 保留等待行为。
+`tool.complete` 结束调用，但进程可能仍运行。用 `shell.output`、`shell.completed` 跟踪进程，`shell.list`、`shell.stop` 控制进程，`transcript.load` 读取历史。TUI `Ctrl+T` 只展开已保留输出，打开或滚动不额外获取 Shell 输出；展开单条 Shell 行则会：该行通过 `shell.output.load` 读取存储分块，达到行预算后提示加载下一页。长输出保留截断标记，需要自行翻页的客户端仍可用该 RPC。Agent 用 `WriteStdin` 等待命令退出后再执行依赖工作。普通 Shell 保留前台让出窗口，旧 `Bash` 保留等待行为。
 
 <a id="capacity-and-backpressure"></a>
 

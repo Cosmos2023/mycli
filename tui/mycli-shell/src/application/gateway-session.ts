@@ -49,6 +49,11 @@ import {
 	sessionTreeFromResult,
 	worktreesFromResult,
 } from "../state/catalog-state.ts";
+import { shellOutputPageFromResult } from "../transcript/shell-output-view.ts";
+import type {
+	MycliShellShellOutputLoadRequest,
+	MycliShellShellOutputPage,
+} from "../transcript/shell-output-view.ts";
 import {
 	runtimeStateWithPendingSteer,
 	runtimeStateWithSubmittingMessage,
@@ -1336,6 +1341,20 @@ async function removeWorktree(path: string): Promise<void> {
 	await send("worktree.remove", { path }, { recordErrors: false });
 }
 
+async function loadShellOutput(
+	request: MycliShellShellOutputLoadRequest,
+): Promise<MycliShellShellOutputPage> {
+	const result = await send("shell.output.load", {
+		shell_id: request.shellId,
+		...(request.callId ? { call_id: request.callId } : {}),
+		...(request.afterSequence === undefined ? {} : { after_sequence: request.afterSequence }),
+		...(request.limitChars === undefined ? {} : { limit_chars: request.limitChars }),
+	}, { recordErrors: false });
+	const page = shellOutputPageFromResult(result);
+	if (!page) throw new Error("Gateway returned an invalid Shell output page.");
+	return page;
+}
+
 async function saveSettings(change: MycliShellSettingChange): Promise<MycliShellSettingsSnapshot> {
 	const result = await send("settings.save", {
 		setting_id: change.settingId,
@@ -1526,6 +1545,7 @@ async function main(): Promise<void> {
 		onWorktreeLoad: loadWorktrees,
 		onWorktreeStart: startWorktree,
 		onWorktreeRemove: removeWorktree,
+		onShellOutputLoad: loadShellOutput,
 		onWorkspaceDiffLoad: async (signal) => {
 			signal.throwIfAborted();
 			const result = await send("workspace.diff", parseGatewayParams("workspace.diff", sessionMutationFields(currentSessionMutationContext())), { recordErrors: false });

@@ -2,6 +2,10 @@ import type { SkillReference, ReviewSelection } from "@mycli/contracts";
 import type { ModelSelectionScope } from "@mycli/contracts";
 import type { MycliShellPluginManager, MycliShellSkillManager, MycliShellHookManager } from "../model.ts";
 import type { ProjectTrustDecision } from "../components/selectors/trust-selector.ts";
+import type {
+	MycliShellShellOutputLoadRequest,
+	MycliShellShellOutputPage,
+} from "../transcript/shell-output-view.ts";
 import type { PlanImplementationAction } from "../interaction/plan-implementation.ts";
 import type { MycliUiActionDispatcher } from "../interaction/ui-actions.ts";
 import type {
@@ -101,6 +105,10 @@ export type MycliShellRuntimeOptions = {
 		request: { readonly name?: string; readonly path?: string },
 	) => void | Promise<void>;
 	onWorktreeRemove?: (path: string) => void | Promise<void>;
+	/** Reads stored command output for an expanded transcript row, one page at a time. */
+	onShellOutputLoad?: (
+		request: MycliShellShellOutputLoadRequest,
+	) => Promise<MycliShellShellOutputPage>;
 	onTranscriptHistoryLoad?: (before: string) => void | Promise<void>;
 	onApprovalRespond?: (
 		decisionId: string,

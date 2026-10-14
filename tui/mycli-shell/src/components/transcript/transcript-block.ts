@@ -1,4 +1,4 @@
-import type { MycliShellMessage } from "../../model.ts";
+import type { MycliShellBash, MycliShellMessage } from "../../model.ts";
 import type { ProjectedTranscriptBlock } from "../../transcript/transcript-projection.ts";
 import { Text } from "../../tui-core/components/text.ts";
 import type { Component } from "../../tui-core/tui.ts";
@@ -6,7 +6,10 @@ import { theme } from "../../theme/theme.ts";
 import { AssistantMessageComponent } from "./assistant-message.ts";
 import { ApprovalDecisionComponent } from "./approval-decision.ts";
 import { BackgroundTerminalsComponent } from "./background-terminals.ts";
-import { BashExecutionComponent } from "./bash-execution.ts";
+import {
+	BashExecutionComponent,
+	type BashExecutionShellOutput,
+} from "./bash-execution.ts";
 import { ClarificationResponseComponent } from "./clarification-response.ts";
 import { CollapsedToolGroupComponent } from "./collapsed-tool-group.ts";
 import { CommandDiagnosticComponent } from "./command-diagnostic.ts";
@@ -25,6 +28,8 @@ import { WebSearchComponent } from "./web-search.ts";
 export interface TranscriptBlockOptions {
 	readonly hideThinking?: boolean;
 	readonly now?: () => number;
+	/** Stored output already loaded for a shell row, if any. */
+	readonly shellOutput?: (bash: MycliShellBash) => BashExecutionShellOutput | undefined;
 }
 
 export interface RenderedTranscriptBlock {
@@ -59,7 +64,7 @@ export function createTranscriptBlockComponent(
 		case "file_change":
 			return new FileChangeComponent(block.fileChange);
 		case "bash":
-			return new BashExecutionComponent(block.bash, options.now);
+			return new BashExecutionComponent(block.bash, options.now, options.shellOutput?.(block.bash));
 		case "diagnostic":
 			return new CommandDiagnosticComponent(block.diagnostic);
 		case "background_terminals":
@@ -96,7 +101,7 @@ export function syncTranscriptBlock(
 		} else if (block.kind === "file_change" && component instanceof FileChangeComponent) {
 			component.updateFileChange(block.fileChange);
 		} else if (block.kind === "bash" && component instanceof BashExecutionComponent) {
-			component.updateBash(block.bash);
+			component.updateBash(block.bash, options.shellOutput?.(block.bash));
 		} else if (block.kind === "tool_group" && component instanceof CollapsedToolGroupComponent) {
 			component.updateGroup(block.group);
 		} else if (block.kind === "command_result" && component instanceof CommandResultComponent) {

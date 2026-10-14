@@ -9,6 +9,11 @@ import { theme } from "../../theme/theme.ts";
 import { terminalContent } from "../../transcript/terminal-content.ts";
 import { cachedShellSearchPreview, shellSearchHasNoMatches } from "../../transcript/shell-search-preview.ts";
 import { shellContextActivity } from "../../transcript/context-activity.ts";
+import {
+	shellOutputViewHasMore,
+	shellOutputViewRemaining,
+	type MycliShellShellOutputView,
+} from "../../transcript/shell-output-view.ts";
 import { ExplorationSummaryComponent } from "./exploration-summary.ts";
 import { keyHint } from "../shared/keybinding-hints.ts";
 import { TRANSCRIPT_HEADER_INDENT } from "./transcript-gutter.ts";
@@ -20,20 +25,40 @@ const SHELL_CELL_PADDING_X = TRANSCRIPT_HEADER_INDENT;
 /** Codex keeps a three-line tail preview for collapsed command output. */
 const DETAIL_PREVIEW_LINES = 3;
 
+/** The stored output an expanded row renders instead of the bounded transcript preview. */
+export interface BashExecutionShellOutput {
+	readonly view?: MycliShellShellOutputView;
+	readonly loading?: boolean;
+	readonly error?: string;
+}
+
 export class BashExecutionComponent extends Container {
 	private bash: MycliShellBash;
 	private outputLines: string[] = [];
 	private readonly now: () => number;
+	private shellOutput?: BashExecutionShellOutput;
 
-	constructor(bash: MycliShellBash, now: () => number = Date.now) {
+	constructor(
+		bash: MycliShellBash,
+		now: () => number = Date.now,
+		shellOutput?: BashExecutionShellOutput,
+	) {
 		super();
 		this.bash = bash;
 		this.now = now;
+		this.shellOutput = shellOutput;
 		this.rebuild();
 	}
 
-	updateBash(bash: MycliShellBash): void {
+	updateBash(bash: MycliShellBash, shellOutput?: BashExecutionShellOutput): void {
 		this.bash = bash;
+		this.shellOutput = shellOutput;
+		this.rebuild();
+	}
+
+	/** Applies a stored-output load result without rebuilding the whole transcript. */
+	setShellOutput(shellOutput: BashExecutionShellOutput | undefined): void {
+		this.shellOutput = shellOutput;
 		this.rebuild();
 	}
 
@@ -50,7 +75,8 @@ export class BashExecutionComponent extends Container {
 			this.addChild(new ExplorationSummaryComponent([activity]));
 			return;
 		}
-		const outputLines = terminalContent(this.bash.outputPreview ?? "").split("\n");
+		const source = this.displayedOutput();
+		const outputLines = terminalContent(source).split("\n");
 		const hasContent = (line: string): boolean => visibleWidth(line.replace(/\s/gu, "")) > 0;
 		const first = outputLines.findIndex(hasContent);
 		const last = outputLines.findLastIndex(hasContent);
@@ -64,7 +90,15 @@ export class BashExecutionComponent extends Container {
 		if (terminalDetail) {
 			this.addChild(new Text(theme.fg("muted", `${commandOutputInitialPrefix()}${terminalDetail}`), SHELL_CELL_PADDING_X, 0));
 		}
-		if (this.bash.outputPreview) {
+		const notice = this.shellOutputNotice();
+		if (notice) {
+			this.addChild(new Text(
+				theme.fg(this.shellOutput?.error ? "warning" : "muted", this.indentedText(notice)),
+				SHELL_CELL_PADDING_X,
+				0,
+			));
+		}
+		if (source) {
 			this.addChild(this.outputComponent());
 		}
 		if (this.bash.expanded) {
@@ -73,6 +107,14 @@ export class BashExecutionComponent extends Container {
 				SHELL_CELL_PADDING_X,
 				0,
 			));
+			const more = this.loadMoreText();
+			if (more) {
+				this.addChild(new Text(
+					theme.fg("accent", this.indentedText(more)),
+					SHELL_CELL_PADDING_X,
+					0,
+				));
+			}
 		}
 	}
 
@@ -80,6 +122,42 @@ export class BashExecutionComponent extends Container {
 	isDetailsToggleRow(row: number, width: number): boolean {
 		const line = stripVTControlCharacters(this.render(width)[row] ?? "");
 		return line.includes(" to expand)") || line.includes("Show less");
+	}
+
+	/** True when the given rendered row asks for the next page of stored output. */
+	isLoadMoreRow(row: number, width: number): boolean {
+		return stripVTControlCharacters(this.render(width)[row] ?? "").includes("to load more)");
+	}
+
+	/**
+	 * Expanded rows render the stored output once it has been read; until then they keep the bounded
+	 * preview, so expanding a cell never blanks it.
+	 */
+	private displayedOutput(): string {
+		const view = this.bash.expanded ? this.shellOutput?.view : undefined;
+		return view ? view.text : this.bash.outputPreview ?? "";
+	}
+
+	private shellOutputNotice(): string | undefined {
+		const state = this.shellOutput;
+		if (state?.error) return `Unable to load the full output: ${state.error}`;
+		if (!state?.view) return state?.loading ? "Loading full output…" : undefined;
+		if (state.view.omittedBefore > 0) {
+			return `… ${formatChars(state.view.omittedBefore)} chars omitted before this output`;
+		}
+		return undefined;
+	}
+
+	private loadMoreText(): string | undefined {
+		const view = this.shellOutput?.view;
+		if (!view) return undefined;
+		const produced = this.bash.outputChars ?? view.outputChars;
+		if (!shellOutputViewHasMore(view, produced)) return undefined;
+		return `+ ${formatChars(shellOutputViewRemaining(view, produced))} chars (click to load more)`;
+	}
+
+	private indentedText(text: string): string {
+		return `${commandOutputInitialPrefix()}${text}`;
 	}
 
 	private statusComponent(): { render: (width: number) => string[]; invalidate: () => void } {
@@ -273,4 +351,11 @@ function commandContinuationPrefix(): string {
 
 function commandOutputInitialPrefix(): string {
 	return `  ${uiGlyphs().branch} `;
+}
+
+/** Compact character counts for the stored-output markers. */
+function formatChars(count: number): string {
+	if (count < 1_000) return String(count);
+	if (count < 1_000_000) return `${(count / 1_000).toFixed(count < 10_000 ? 1 : 0)}K`;
+	return `${(count / 1_000_000).toFixed(1)}M`;
 }

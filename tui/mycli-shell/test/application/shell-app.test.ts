@@ -4606,6 +4606,89 @@ test("ctrl o expands collapsed reasoning in the main transcript", async () => {
 	await runtime.shutdown();
 });
 
+test("expanding a truncated shell row loads the stored output and pages it on request", async () => {
+	const terminal = new TestTerminal();
+	const requested: { shellId: string; afterSequence?: number }[] = [];
+	const pageBody = `${"x".repeat(65_000)}\n`;
+	const runtime = new MycliShellRuntime({
+		initialState: {
+			...sampleState(),
+			bash: [{
+				id: "b-load",
+				command: "npm test",
+				status: "success",
+				outputPreview: "preview only",
+				hiddenLineCount: 40,
+				shellId: "shell-load",
+				outputChars: 9_000,
+			}],
+		},
+		terminal,
+		onShellOutputLoad: async (request) => {
+			requested.push({
+				shellId: request.shellId,
+				...(request.afterSequence === undefined ? {} : { afterSequence: request.afterSequence }),
+			});
+			const after = request.afterSequence ?? 0;
+			// The stored output is far larger than one row may hold, so the first read stops at the
+			// row budget and the rest needs an explicit page request.
+			if (after >= 5) {
+				return {
+					chunks: [{ sequence: 6, output: "final page\n", omittedBefore: 0, cursorEnd: 400_000 }],
+					nextAfterSequence: null,
+					outputChars: 400_000,
+				};
+			}
+			const sequence = after + 1;
+			return {
+				chunks: [{
+					sequence,
+					output: `page ${sequence}\n${pageBody}`,
+					omittedBefore: 0,
+					cursorEnd: sequence * 65_030,
+				}],
+				nextAfterSequence: sequence,
+				outputChars: 400_000,
+			};
+		},
+	});
+	runtime.start();
+	await setTimeout(25);
+
+	// A collapsed row keeps the transcript preview and reads nothing.
+	assert.equal(requested.length, 0);
+	assert.match(stripAnsi(runtime.chatContainer.render(100).join("\n")), /preview only/u);
+
+	const rows = stripAnsi(runtime.ui.render(100).join("\n")).split("\n");
+	const expandRow = rows.findIndex((line) => line.includes("to expand)"));
+	assert.ok(expandRow >= 0, "expected a collapsed shell hint row");
+	terminal.input?.(`\x1b[<0;5;${expandRow + 1}M`);
+	terminal.input?.(`\x1b[<0;5;${expandRow + 1}m`);
+	await setTimeout(25);
+
+	assert.deepEqual(requested.map((entry) => entry.afterSequence ?? 0), [0, 1, 2, 3, 4]);
+	const expanded = stripAnsi(runtime.chatContainer.render(100).join("\n"));
+	assert.match(expanded, /page 1/u);
+	assert.match(expanded, /page 5/u);
+	assert.match(expanded, /\+ 75K chars \(click to load more\)/u);
+	assert.doesNotMatch(expanded, /preview only/u);
+
+	// The load-more row reads the next page instead of collapsing the block.
+	const expandedRows = stripAnsi(runtime.ui.render(100).join("\n")).split("\n");
+	const loadMoreRow = expandedRows.findIndex((line) => line.includes("to load more)"));
+	assert.ok(loadMoreRow >= 0, "expected a load-more row");
+	terminal.input?.(`\x1b[<0;5;${loadMoreRow + 1}M`);
+	terminal.input?.(`\x1b[<0;5;${loadMoreRow + 1}m`);
+	await setTimeout(25);
+
+	assert.deepEqual(requested.map((entry) => entry.afterSequence ?? 0), [0, 1, 2, 3, 4, 5]);
+	const paged = stripAnsi(runtime.chatContainer.render(100).join("\n"));
+	assert.match(paged, /page 1/u);
+	assert.match(paged, /final page/u);
+	assert.doesNotMatch(paged, /to load more\)/u);
+	await runtime.shutdown();
+});
+
 test("clicking the collapsed reasoning preview expands it", async () => {
 	const terminal = new TestTerminal();
 	const assistant = {

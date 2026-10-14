@@ -45,6 +45,10 @@ import { FrameCachedContainer } from "../components/shared/frame-cached-containe
 import { rawKeyHint } from "../components/shared/keybinding-hints.ts";
 import { AssistantMessageComponent } from "../components/transcript/assistant-message.ts";
 import {
+	BashExecutionComponent,
+	type BashExecutionShellOutput,
+} from "../components/transcript/bash-execution.ts";
+import {
 	BackgroundSubagentDialogComponent,
 	isResolvedSubagent,
 	SubagentTaskPanelComponent,
@@ -67,6 +71,7 @@ import { commandRoutingNames, isSlashCommandSubmission } from "../interaction/sl
 import { isMycliUiQueuedInput, type MycliUiAction } from "../interaction/ui-actions.ts";
 import type {
 	MycliShellAuthProvider,
+	MycliShellBash,
 	MycliShellCommandResult,
 	MycliShellCommandSpec,
 	MycliShellMessage,
@@ -88,6 +93,11 @@ import type {
 } from "../model.ts";
 import { copyText } from "../platform/clipboard.ts";
 import { safeErrorMessage } from "../safe-ui-text.ts";
+import {
+	loadShellOutputView,
+	SHELL_OUTPUT_VIEW_MAX_CHARS,
+	type MycliShellShellOutputView,
+} from "../transcript/shell-output-view.ts";
 import { setUiGlyphMode, uiGlyphs } from "../theme/terminal-style.ts";
 import { transcriptCopyBlocks, transcriptCopyIndexHint, transcriptCopyText } from "../state/transcript-copy.ts";
 import { getEditorTheme, theme } from "../theme/theme.ts";
@@ -214,8 +224,16 @@ export class MycliShellRuntime {
 	private readonly composerSnapshots = new Map<string, ComposerSessionSnapshot>();
 	private toolDetailMode: ToolDetailMode = "default";
 	private detailOverrides: DetailOverrides = new Map();
+	/** Stored command output read for expanded shell rows, keyed by Shell id. */
+	private readonly shellOutputViews = new Map<string, MycliShellShellOutputView>();
+	private readonly shellOutputLoads = new Map<string, Promise<void>>();
+	private readonly shellOutputErrors = new Map<string, string>();
 	private readonly toolDetailProjector = new ToolDetailProjector();
-	private transcriptPointer: { targetId: string | undefined; dragged: boolean } | null = null;
+	private transcriptPointer: {
+		readonly targetId: string | undefined;
+		readonly targetAction: "toggle" | "load_more" | undefined;
+		dragged: boolean;
+	} | null = null;
 	private nativeResizeTimer: ReturnType<typeof setTimeout> | undefined;
 	private nativeTranscriptDeltaHeld = false;
 	private transcriptViewer: ActiveTranscriptViewer | null = null;
@@ -365,6 +383,9 @@ export class MycliShellRuntime {
 		const sessionChanged = previousState.sessionId !== effectiveState.sessionId;
 		if (sessionChanged) {
 			this.sessionRevision += 1;
+			this.shellOutputViews.clear();
+			this.shellOutputLoads.clear();
+			this.shellOutputErrors.clear();
 			if (this.selectorStack.some((entry) => entry.dispose)) this.restoreEditor();
 			// The shell paints before the first session arrives, so the composer may
 			// already hold text the user typed during startup. Adopt it as the draft
@@ -614,10 +635,10 @@ export class MycliShellRuntime {
 		}
 		if (pressed && isLeft) {
 			const hit = this.transcriptViewport.hitTest(row);
-			const targetId = hit
-				? this.detailsToggleBlockId(hit.component, hit.lineInComponent, width)
+			const target = hit
+				? this.transcriptHitTarget(hit.component, hit.lineInComponent, width)
 				: undefined;
-			this.transcriptPointer = { targetId, dragged: false };
+			this.transcriptPointer = { targetId: target?.id, targetAction: target?.action, dragged: false };
 			this.transcriptViewport.beginSelection(row, column);
 			this.ui.requestRender();
 			return true;
@@ -633,7 +654,8 @@ export class MycliShellRuntime {
 			this.transcriptPointer = null;
 			if (!pointer.dragged && pointer.targetId) {
 				this.transcriptViewport.clearSelection();
-				this.toggleDetailsAt(pointer.targetId);
+				if (pointer.targetAction === "load_more") this.loadMoreShellOutput(pointer.targetId);
+				else this.toggleDetailsAt(pointer.targetId);
 				return true;
 			}
 			const text = this.transcriptViewport.selectedText();
@@ -645,14 +667,33 @@ export class MycliShellRuntime {
 		return false;
 	}
 
-	private detailsToggleBlockId(component: Component, lineInComponent: number, width: number): string | undefined {
-		const toggle = component as { isDetailsToggleRow?: (row: number, width: number) => boolean };
-		if (typeof toggle.isDetailsToggleRow !== "function") return undefined;
-		if (!toggle.isDetailsToggleRow(lineInComponent, width)) return undefined;
+	/** Resolves a click to the block it landed on and the affordance it hit. */
+	private transcriptHitTarget(
+		component: Component,
+		lineInComponent: number,
+		width: number,
+	): { readonly id: string; readonly action: "toggle" | "load_more" } | undefined {
+		const toggle = component as {
+			isDetailsToggleRow?: (row: number, width: number) => boolean;
+			isLoadMoreRow?: (row: number, width: number) => boolean;
+		};
+		const loadMore = typeof toggle.isLoadMoreRow === "function"
+			&& toggle.isLoadMoreRow(lineInComponent, width);
+		const details = !loadMore && typeof toggle.isDetailsToggleRow === "function"
+			&& toggle.isDetailsToggleRow(lineInComponent, width);
+		if (!loadMore && !details) return undefined;
 		for (const [id, block] of this.chatBlocks) {
-			if (block.component === component) return id;
+			if (block.component !== component) continue;
+			return { id, action: loadMore ? "load_more" : "toggle" };
 		}
 		return undefined;
+	}
+
+	/** Reads the next page of stored output for the shell row the reader clicked. */
+	private loadMoreShellOutput(blockId: string): void {
+		const block = this.projectedChatBlocks.find((item) => item.id === blockId);
+		if (block?.kind !== "bash" || !block.bash.shellId) return;
+		this.startShellOutputLoad(block.bash, true);
 	}
 
 	private scrollTranscript(deltaLines: number): void {
@@ -2072,6 +2113,7 @@ export class MycliShellRuntime {
 					? this.reasoningHiddenForId(block.id)
 					: this.reasoningHiddenForRender(),
 				now: this.now,
+				shellOutput: (bash) => this.shellOutputStateFor(bash),
 			});
 			this.chatBlocks.set(block.id, next);
 			suffixComponents.push(next.component);
@@ -2086,6 +2128,7 @@ export class MycliShellRuntime {
 		}
 		this.transcriptProjection = projectionUpdate.projection;
 		this.projectedChatBlocks = projected;
+		this.ensureShellOutputViews();
 		return prefixLength;
 	}
 
@@ -2811,6 +2854,82 @@ export class MycliShellRuntime {
 		return [id];
 	}
 
+	/**
+	 * The transcript only carries a bounded preview, so an expanded row reads the rest of the stored
+	 * output. Loading stays on demand: a view is fetched once per row, and later pages are requested
+	 * by the reader.
+	 */
+	private shellOutputStateFor(bash: MycliShellBash): BashExecutionShellOutput | undefined {
+		if (!bash.shellId) return undefined;
+		const error = this.shellOutputErrors.get(bash.shellId);
+		const view = this.shellOutputViews.get(bash.shellId);
+		const loading = this.shellOutputLoads.has(bash.shellId);
+		if (!error && !view && !loading) return undefined;
+		return {
+			...(view ? { view } : {}),
+			...(loading ? { loading } : {}),
+			...(error ? { error } : {}),
+		};
+	}
+
+	/** Expands a row's stored output the first time it is shown expanded. */
+	private ensureShellOutputViews(): void {
+		if (!this.options.onShellOutputLoad) return;
+		for (const block of this.projectedChatBlocks) {
+			if (block.kind !== "bash" || block.bash.expanded !== true) continue;
+			const bash = block.bash;
+			if (!bash.shellId || this.shellOutputLoads.has(bash.shellId)) continue;
+			if (this.shellOutputViews.has(bash.shellId) || this.shellOutputErrors.has(bash.shellId)) continue;
+			if (!shellOutputIsTruncated(bash)) continue;
+			this.startShellOutputLoad(bash);
+		}
+	}
+
+	private startShellOutputLoad(bash: MycliShellBash, append = false): void {
+		const load = this.options.onShellOutputLoad;
+		const shellId = bash.shellId;
+		if (!load || !shellId || this.shellOutputLoads.has(shellId)) return;
+		const revision = this.sessionRevision;
+		const previous = append ? this.shellOutputViews.get(shellId) : undefined;
+		const pending = loadShellOutputView({
+			shellId,
+			...(bash.callId ? { callId: bash.callId } : {}),
+			load,
+			...(previous ? { previous } : {}),
+			maxChars: SHELL_OUTPUT_VIEW_MAX_CHARS,
+		}).then(
+			(view) => {
+				if (this.sessionRevision !== revision) return;
+				this.shellOutputViews.set(shellId, view);
+				this.shellOutputErrors.delete(shellId);
+				this.applyShellOutputViews();
+			},
+			(error: unknown) => {
+				if (this.sessionRevision !== revision) return;
+				this.shellOutputErrors.set(
+					shellId,
+					safeErrorMessage(error, "Unable to read stored command output."),
+				);
+				this.applyShellOutputViews();
+			},
+		).finally(() => {
+			this.shellOutputLoads.delete(shellId);
+		});
+		this.shellOutputLoads.set(shellId, pending);
+		this.applyShellOutputViews();
+	}
+
+	/** Pushes loaded output into the shell rows that are already on screen. */
+	private applyShellOutputViews(): void {
+		for (const block of this.projectedChatBlocks) {
+			if (block.kind !== "bash" || !block.bash.shellId) continue;
+			const component = this.chatBlocks.get(block.id)?.component;
+			if (!(component instanceof BashExecutionComponent)) continue;
+			component.setShellOutput(this.shellOutputStateFor(block.bash));
+		}
+		this.ui.requestRender();
+	}
+
 	private isDetailsExpanded(id: string): boolean {
 		const block = this.chatBlocks.get(id);
 		if (block?.kind === "message") return !this.reasoningHiddenForId(id);
@@ -3385,6 +3504,11 @@ function transcriptBlocksWerePrepended(
 	if (previous.length === 0 || next.length <= previous.length) return false;
 	const offset = next.length - previous.length;
 	return previous.every((block, index) => next[offset + index]?.id === block.id);
+}
+
+/** True when the shell produced more characters than the transcript preview carries. */
+function shellOutputIsTruncated(bash: MycliShellBash): boolean {
+	return (bash.outputChars ?? 0) > (bash.outputPreview?.length ?? 0);
 }
 
 function resourceInspectCommand(type: MycliShellResource["type"]): string | null {
