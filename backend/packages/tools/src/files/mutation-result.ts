@@ -82,21 +82,31 @@ export function mutationFailure(
 	toolName: MutationToolName,
 	rawPath: string,
 	error: unknown,
+	context: { readonly operationCount?: number } = {},
 ): ToolAdapterResult {
 	const path = displayMutationPath(rawPath);
 	const errorKind = error instanceof FileMutationError ? error.kind : "invalid_arguments";
+	const operation = error instanceof FileMutationError ? error.operation : undefined;
+	const hint = error instanceof FileMutationError ? error.hint : undefined;
+	const position = operation === undefined
+		? undefined
+		: context.operationCount === undefined
+			? `${operation}`
+			: `${operation} of ${context.operationCount}`;
 	const modelOutput = [
 		`${toolName} failed`,
-		`Path: ${path}`,
+		...(rawPath.trim() ? [`Path: ${path}`] : []),
+		...(position ? [`Operation: ${position}`] : []),
 		`Error kind: ${errorKind}`,
 		`Error: ${publicError(errorKind)}`,
+		...(hint ? [`Hint: ${hint}`] : []),
 	].join("\n").slice(0, MAX_MODEL_OUTPUT_CHARS);
 	return {
 		success: false,
-		summary: `Failed to ${verbFor(toolName)} ${path}`,
+		summary: `Failed to ${verbFor(toolName)} ${path}${position ? ` (operation ${position})` : ""}`,
 		modelOutput,
 		errorKind,
-		metadata: { path, errorKind },
+		metadata: { path, errorKind, ...(operation === undefined ? {} : { operation }) },
 	};
 }
 

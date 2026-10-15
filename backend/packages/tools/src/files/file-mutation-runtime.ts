@@ -28,6 +28,8 @@ const MAX_REPLACEMENT_FILE_BYTES = 1_000_000;
 const MAX_PATCH_TOTAL_BYTES = 8_000_000;
 const MAX_PATCH_TARGETS = 128;
 const BINARY_SAMPLE_BYTES = 1_024;
+const MISSING_CONTEXT_MAX_LINES = 64;
+const MISSING_CONTEXT_HINT_MAX_CHARS = 120;
 const LIVE_PREVIEW_DIFF_LIMITS = Object.freeze({ maxChars: 12_000, maxLines: 500 });
 const LINE_NUMBER_PATTERN = /^\s*\d+\t/gm;
 const SECRET_PATTERNS = [
@@ -53,17 +55,24 @@ export type MutationErrorKind =
 	| "invalid_justification"
 	| "sandbox_override_not_approved"
 	| "invalid_path"
+	| "invalid_arguments"
 	| "write_failed"
 	| "edit_failed"
 	| "patch_failed";
 
 export class FileMutationError extends Error {
 	readonly kind: MutationErrorKind;
+	/** 1-based position of the patch operation that failed, when one did. */
+	readonly operation?: number;
+	/** Bounded, model-facing explanation that makes an exact-match failure actionable. */
+	readonly hint?: string;
 
-	constructor(kind: MutationErrorKind) {
+	constructor(kind: MutationErrorKind, details: { operation?: number; hint?: string } = {}) {
 		super(`file_mutation_error: ${kind}`);
 		this.name = "FileMutationError";
 		this.kind = kind;
+		this.operation = details.operation;
+		this.hint = details.hint;
 	}
 }
 
@@ -335,56 +344,13 @@ export class FileMutationRuntime {
 			return virtual;
 		};
 
-		for (const operation of input.operations) {
+		for (const [index, operation] of input.operations.entries()) {
 			assertNotAborted(input.signal);
-			switch (operation.type) {
-				case "add": {
-					const target = await load(operation.filePath);
-					if (target.content !== undefined) throw new FileMutationError("already_exists");
-					validateNewContent(operation.content);
-					target.rawPath = operation.filePath;
-					target.content = operation.content;
-					break;
-				}
-				case "update": {
-					const target = await load(operation.filePath);
-					if (target.content === undefined) throw new FileMutationError("not_found");
-					const replacement = exactReplacement(
-						target.content,
-						target.resolved.target,
-						operation.oldString,
-						operation.newString,
-						operation.replaceAll,
-					);
-					target.content = replacement.content;
-					target.matches += replacement.matches;
-					break;
-				}
-				case "delete": {
-					const target = await load(operation.filePath);
-					if (target.content === undefined) throw new FileMutationError("not_found");
-					target.content = undefined;
-					break;
-				}
-				case "move": {
-					const source = await load(operation.fromPath);
-					const destination = await load(operation.toPath);
-					if (source.resolved.target === destination.resolved.target) {
-						throw new FileMutationError("no_op");
-					}
-					if (source.content === undefined) throw new FileMutationError("not_found");
-					if (destination.content !== undefined) throw new FileMutationError("already_exists");
-					destination.rawPath = operation.toPath;
-					destination.content = source.content;
-					destination.mode = source.mode;
-					if (source.baseline || source.originPath) {
-						destination.originPath = source.originPath
-							?? resultPath(source.resolved.relativePath);
-						destination.originTarget = source.originTarget ?? source.resolved.target;
-					}
-					source.content = undefined;
-					break;
-				}
+			try {
+				await this.#applyPatchOperation(files, load, operation);
+			} catch (error) {
+				// One bad operation fails the whole changeset, so the caller has to know which one.
+				throw withOperationIndex(error, index + 1);
 			}
 		}
 
@@ -451,6 +417,62 @@ export class FileMutationRuntime {
 				: { allowedWritableRoots: Object.freeze([...input.allowedWritableRoots]) }),
 			guard: createPatchGuard(frozenChanges),
 		});
+	}
+
+	async #applyPatchOperation(
+		files: Map<string, VirtualPatchFile>,
+		load: (rawPath: string) => Promise<VirtualPatchFile>,
+		operation: PatchOperation,
+	): Promise<void> {
+		switch (operation.type) {
+			case "add": {
+				const target = await load(operation.filePath);
+				if (target.content !== undefined) throw new FileMutationError("already_exists");
+				validateNewContent(operation.content);
+				target.rawPath = operation.filePath;
+				target.content = operation.content;
+				break;
+			}
+			case "update": {
+				const target = await load(operation.filePath);
+				if (target.content === undefined) throw new FileMutationError("not_found");
+				const replacement = exactReplacement(
+					target.content,
+					target.resolved.target,
+					operation.oldString,
+					operation.newString,
+					operation.replaceAll,
+				);
+				target.content = replacement.content;
+				target.matches += replacement.matches;
+				break;
+			}
+			case "delete": {
+				const target = await load(operation.filePath);
+				if (target.content === undefined) throw new FileMutationError("not_found");
+				target.content = undefined;
+				break;
+			}
+			case "move": {
+				const source = await load(operation.fromPath);
+				const destination = await load(operation.toPath);
+				if (source.resolved.target === destination.resolved.target) {
+					throw new FileMutationError("no_op");
+				}
+				if (source.content === undefined) throw new FileMutationError("not_found");
+				if (destination.content !== undefined) throw new FileMutationError("already_exists");
+				destination.rawPath = operation.toPath;
+				destination.content = source.content;
+				destination.mode = source.mode;
+				if (source.baseline || source.originPath) {
+					destination.originPath = source.originPath
+						?? resultPath(source.resolved.relativePath);
+					destination.originTarget = source.originTarget ?? source.resolved.target;
+				}
+				source.content = undefined;
+				break;
+			}
+		}
 	}
 
 	async #commitPatch(
@@ -901,7 +923,9 @@ function exactReplacement(
 		return { content: newString, matches: 1 };
 	}
 	const matches = countOccurrences(content, oldString);
-	if (matches === 0) throw new FileMutationError("string_not_found");
+	if (matches === 0) {
+		throw new FileMutationError("string_not_found", { hint: missingContextHint(content, oldString) });
+	}
 	return {
 		content: replaceAll
 			? content.split(oldString).join(newString)
@@ -1049,6 +1073,42 @@ function mutationErrorFrom(error: unknown, fallback: MutationErrorKind): FileMut
 		return new FileMutationError("permission_denied");
 	}
 	return new FileMutationError(fallback);
+}
+
+/** A patch fails as a whole, so the failing position has to survive the throw. */
+function withOperationIndex(error: unknown, operation: number): unknown {
+	if (!(error instanceof FileMutationError) || error.operation !== undefined) return error;
+	return new FileMutationError(error.kind, {
+		operation,
+		...(error.hint ? { hint: error.hint } : {}),
+	});
+}
+
+/**
+ * Points at the first old_string line that is missing from the file. Models usually copy most of
+ * the block correctly, so naming the line that differs is what lets them retry in one step.
+ */
+function missingContextHint(content: string, oldString: string): string | undefined {
+	const lines = oldString.split("\n");
+	if (lines.length > MISSING_CONTEXT_MAX_LINES) return undefined;
+	let matched = 0;
+	for (const [index, line] of lines.entries()) {
+		if (line.trim().length === 0) continue;
+		if (content.includes(line)) {
+			matched += 1;
+			continue;
+		}
+		return `old_string line ${index + 1} of ${lines.length} does not appear in the file: ${quotedLineHint(line)}`;
+	}
+	if (matched === 0) return "no line of old_string appears in the file; read the file again before retrying";
+	return "every line of old_string appears somewhere, so the block differs in order, indentation, or whitespace";
+}
+
+function quotedLineHint(line: string): string {
+	const trimmed = line.trim();
+	return trimmed.length > MISSING_CONTEXT_HINT_MAX_CHARS
+		? `"${trimmed.slice(0, MISSING_CONTEXT_HINT_MAX_CHARS)}…"`
+		: `"${trimmed}"`;
 }
 
 export function isAbortError(error: unknown): boolean {

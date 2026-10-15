@@ -16,6 +16,7 @@ import * as tools from "../../src/index.ts";
 
 interface AdapterResult {
 	readonly success: boolean;
+	readonly summary: string;
 	readonly modelOutput: string;
 	readonly errorKind?: string;
 	readonly metadata: Readonly<Record<string, unknown>>;
@@ -471,6 +472,55 @@ test("Patch returns string_not_found when a prepared update no longer matches", 
 
 	assert.equal(result.errorKind, "string_not_found");
 	assert.equal(await readFile(fixture.target, "utf8"), "manual change\n");
+});
+
+test("Patch infers the operation kind when a model omits type", async (t) => {
+	const fixture = await workspaceFixture(t, "value = 1\n");
+	const adapters = createAdapters(fixture.root);
+
+	const updated = await adapters.patch.execute({
+		operations: [{ file_path: "a.ts", old_string: "value = 1", new_string: "value = 2" }],
+	}, options());
+	assert.equal(updated.success, true);
+	assert.equal(await readFile(fixture.target, "utf8"), "value = 2\n");
+
+	const created = await adapters.patch.execute({
+		operations: [{ file_path: "created.ts", content: "fresh\n" }],
+	}, options());
+	assert.equal(created.success, true);
+	assert.equal(await readFile(join(fixture.root, "created.ts"), "utf8"), "fresh\n");
+});
+
+test("Patch never infers a delete and names the unusable operation", async (t) => {
+	const fixture = await workspaceFixture(t, "keep me\n");
+	const adapters = createAdapters(fixture.root);
+
+	const result = await adapters.patch.execute({ operations: [{ file_path: "a.ts" }] }, options());
+
+	assert.equal(result.success, false);
+	assert.equal(result.errorKind, "invalid_arguments");
+	assert.match(result.modelOutput, /operations\[0\] has type "missing"/u);
+	assert.equal(await readFile(fixture.target, "utf8"), "keep me\n");
+});
+
+test("Patch names the failing operation and the first old_string line that is missing", async (t) => {
+	const fixture = await workspaceFixture(t, "alpha\nbeta\ngamma\n");
+	const adapters = createAdapters(fixture.root);
+
+	const result = await adapters.patch.execute({
+		operations: [
+			{ type: "update", file_path: "a.ts", old_string: "alpha", new_string: "ALPHA" },
+			{ type: "update", file_path: "a.ts", old_string: "beta\nWRONG\ngamma", new_string: "x" },
+		],
+	}, options());
+
+	assert.equal(result.errorKind, "string_not_found");
+	assert.match(result.modelOutput, /Operation: 2 of 2/u);
+	assert.match(result.modelOutput, /old_string line 2 of 3 does not appear in the file: "WRONG"/u);
+	assert.equal(result.summary, "Failed to patch a.ts (operation 2 of 2)");
+	assert.equal(result.metadata.operation, 2);
+	// The whole changeset is rejected, so the first operation must not have landed either.
+	assert.equal(await readFile(fixture.target, "utf8"), "alpha\nbeta\ngamma\n");
 });
 
 test("Patch accepts the public 64-operation and 128-target preparation boundary", async (t) => {

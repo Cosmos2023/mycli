@@ -859,6 +859,7 @@
   {"file":"backend/packages/tools/src/files/local-image-loader.ts","boundary":"LocalImageInputError","code":"*","evidence":"explicit_generic_fallback","scope":"tool_call","reason":"tool.failure_unclassified"},
   {"file":"backend/packages/tools/src/files/local-image-loader.ts","boundary":"RangeError","code":"*","evidence":"explicit_generic_fallback","scope":"tool_call","reason":"tool.failure_unclassified"},
   {"file":"backend/packages/tools/src/files/patch-tool.ts","boundary":"FileMutationError","code":"*","evidence":"explicit_generic_fallback","scope":"tool_call","reason":"tool.failure_unclassified"},
+  {"file":"backend/packages/tools/src/files/patch-tool.ts","boundary":"FileMutationError","code":"invalid_arguments","evidence":"legacy_code","scope":"tool_call","reason":"tool.invalid_arguments"},
   {"file":"backend/packages/tools/src/files/path-policy.ts","boundary":"WorkspacePathError","code":"invalid_path","evidence":"legacy_code","scope":"tool_call","reason":"tool.invalid_arguments"},
   {"file":"backend/packages/tools/src/files/path-policy.ts","boundary":"WorkspacePathError","code":"is_directory","evidence":"legacy_code","scope":"tool_call","reason":"tool.path_unreadable"},
   {"file":"backend/packages/tools/src/files/path-policy.ts","boundary":"WorkspacePathError","code":"not_found","evidence":"legacy_code","scope":"tool_call","reason":"tool.path_not_found"},
