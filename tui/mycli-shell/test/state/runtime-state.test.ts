@@ -5131,7 +5131,7 @@ test("runtime adapter keeps overlay and action results out of transcript", () =>
 	assert.equal(state.collaborationMode, "plan");
 });
 
-test("runtime adapter defers transcript command results until the active turn completes", () => {
+test("runtime adapter renders transcript command results immediately while a turn streams", () => {
 	let state = reduceRuntimeEvent(initialRuntimeState(), "turn.started", { turn_id: "turn-1" });
 	state = reduceRuntimeEvent(state, "message.delta", { text: "assistant prefix\n" });
 	state = runtimeStateWithCommandResult(state, "/tools", {
@@ -5147,14 +5147,15 @@ test("runtime adapter defers transcript command results until the active turn co
 		lines: ["Tools", "Read  builtin"],
 	});
 
-	assert.deepEqual(projectRuntimeState(state).transcript?.map((block) => block.kind), ["message"]);
+	// A reader has to be able to check `/ps` or `/usage` while the agent is still working.
+	assert.deepEqual(projectRuntimeState(state).transcript?.map((block) => block.kind), ["message", "command_result"]);
 
 	state = reduceRuntimeEvent(state, "message.delta", { text: "assistant tail" });
 	state = reduceRuntimeEvent(state, "message.complete", {
 		text: "assistant prefix\nassistant tail",
 		final: true,
 	});
-	assert.deepEqual(projectRuntimeState(state).transcript?.map((block) => block.kind), ["message"]);
+	assert.deepEqual(projectRuntimeState(state).transcript?.map((block) => block.kind), ["message", "command_result"]);
 
 	state = reduceRuntimeEvent(state, "turn.completed", {
 		turn_id: "turn-1",

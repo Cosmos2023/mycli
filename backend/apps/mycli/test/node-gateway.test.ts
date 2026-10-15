@@ -2060,6 +2060,29 @@ test("shell bootstrap and control RPCs stay scoped to the active owner", async (
 	await harness.gateway.close();
 });
 
+test("shell and diagnostics commands answer while a turn is active", async (t) => {
+	const harness = gatewayHarness({ shell: true, sessions: {} });
+	assert.ok(harness.shell);
+	harness.shell.snapshots.push(shellSnapshot());
+	t.after(async () => { harness.releaseTurn(); await harness.gateway.close(); });
+	await waitFor(() => notification(harness.messages, "runtime.ready"));
+
+	// The harness holds submissions until releaseTurn(), so the turn stays active here.
+	await harness.send("turn.submit", {
+		client_turn_id: "client:busy",
+		client_user_message_id: "user:busy",
+		message: "hold the turn",
+	});
+	await waitFor(() => harness.sessionCoordinator?.executing() === true);
+
+	const ps = await harness.send("command.run", { command: "/ps", surface: "tui" });
+	assert.equal("result" in ps ? ps.result.command_kind : null, "background_shells");
+	assert.deepEqual("result" in ps ? ps.result.processes : [], [assertedShellPayload("a1b2c3d4", 1)]);
+
+	const usage = await harness.send("command.run", { command: "/usage", surface: "tui" });
+	assert.ok("result" in usage, JSON.stringify(usage));
+});
+
 test("shell command routes expose ps and stop-all through the active owner manager", async () => {
 	const harness = gatewayHarness({ shell: true });
 	assert.ok(harness.shell);

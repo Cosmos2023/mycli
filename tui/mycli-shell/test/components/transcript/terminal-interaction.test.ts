@@ -123,6 +123,22 @@ test("terminal interaction rendering fits narrow terminals and sanitizes termina
 	}
 });
 
+test("wait rows collapse multi-line commands onto one bounded line", () => {
+	const command = "ssh -o BatchMode=yes root@203.0.113.9 'bash -s' <<'REMOTE'\nsystemctl restart qq-agent\nsleep 8\necho done\nREMOTE";
+	const state = runtimeStateFromTranscript(initialRuntimeState(), { items: [{
+		id: "wait-row", type: "tool_summary", text: "WriteStdin",
+		metadata: { tool_name: "WriteStdin", success: true, terminal_interaction: {
+			shell_id: "shell-1", kind: "poll", command_preview: command, interaction_succeeded: true,
+		} },
+	}] });
+	const waitLines = rendered(state).split("\n").filter((line) => line.includes("Waited for background terminal"));
+	assert.equal(waitLines.length, 1);
+	assert.match(waitLines[0]!, /Waited for background terminal .*ssh -o BatchMode=yes root@203\.0\.113\.9/u);
+	assert.match(waitLines[0]!, /…\s*$/u);
+	assert.ok(!waitLines[0]!.includes("sleep 8"));
+	assert.ok(visibleWidth(waitLines[0]!.trimEnd()) < 120);
+});
+
 for (const nativeScrollback of [false, true]) {
 	test(`terminal frames update interactions and waits without stale rows (native=${nativeScrollback})`, async (t) => {
 		const terminal = new HeadlessTerminal({ columns: 80, rows: 30, nativeScrollback });

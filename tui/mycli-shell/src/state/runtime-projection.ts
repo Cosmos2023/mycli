@@ -14,7 +14,6 @@ import { currentModel } from "./catalog-state.ts";
 import { commandResultFromTranscriptItem } from "./command-results.ts";
 import { projectedQueueInputs } from "./input-queue.ts";
 import {
-	booleanValue,
 	isInternalTaskNotification,
 	numberValue,
 	recordValue,
@@ -74,12 +73,6 @@ function projectRuntimeShellState(
 	) {
 		const item = state.transcript[transcriptIndex]!;
 		if (isInternalTaskNotification(item.text)) {
-			continue;
-		}
-		if (
-			state.turnRunning &&
-			booleanValue(recordValue(item.metadata).deferred_until_turn_complete) === true
-		) {
 			continue;
 		}
 		if (item.type === "provider_attempt" && item.providerAttempts?.length) {

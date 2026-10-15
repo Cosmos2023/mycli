@@ -7,6 +7,16 @@ import { Spacer } from "../../tui-core/components/spacer.ts";
 import { Text } from "../../tui-core/components/text.ts";
 import { TRANSCRIPT_HEADER_INDENT, TRANSCRIPT_BRANCH_INDENT } from "./transcript-gutter.ts";
 
+/** Keeps a wait row to a single readable line; the full command stays on the shell row itself. */
+const COMMAND_PREVIEW_MAX_CHARS = 72;
+
+function compactCommandPreview(text: string): string {
+	const collapsed = text.replace(/\s+/gu, " ").trim();
+	return collapsed.length > COMMAND_PREVIEW_MAX_CHARS
+		? `${collapsed.slice(0, COMMAND_PREVIEW_MAX_CHARS - 1)}${uiGlyphs().ellipsis}`
+		: collapsed;
+}
+
 export class TerminalInteractionComponent extends Container {
 	constructor(tool: MycliShellTool) {
 		super();
@@ -22,7 +32,9 @@ export class TerminalInteractionComponent extends Container {
 			: poll ? running ? "Waiting for background terminal" : "Waited for background terminal"
 				: running ? "Interacting with background terminal" : "Interacted with background terminal";
 		const marker = poll ? uiGlyphs().bullet : uiGlyphs().continuation;
-		const command = interaction.command_preview ? ` ${uiGlyphs().separator} ${terminalContent(interaction.command_preview)}` : "";
+		const command = interaction.command_preview
+			? ` ${uiGlyphs().separator} ${terminalContent(compactCommandPreview(interaction.command_preview))}`
+			: "";
 		this.addChild(new Spacer(1));
 		this.addChild(new Text(`${theme.fg(failed ? "error" : "muted", marker)} ${theme.bold(label)}${theme.fg("muted", command)}`,
 			TRANSCRIPT_HEADER_INDENT, 0));

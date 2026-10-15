@@ -47,7 +47,7 @@ function projectRuntimeStateWithCommandResult(state: RuntimeShellState, command:
 					type: "background_terminals",
 					text: "Background terminals",
 					folded: false,
-					metadata: commandResultMetadata(state, { command, backgroundTerminals }),
+					metadata: { command, backgroundTerminals },
 				},
 			),
 		};
@@ -59,7 +59,7 @@ function projectRuntimeStateWithCommandResult(state: RuntimeShellState, command:
 			collaborationMode: collaborationMode ?? state.collaborationMode,
 			transcript: upsertTranscriptItem(
 				state.transcript,
-				commandResultTranscriptItem(commandResult, state.turnRunning),
+				commandResultTranscriptItem(commandResult),
 			),
 		};
 	}
@@ -69,7 +69,7 @@ function projectRuntimeStateWithCommandResult(state: RuntimeShellState, command:
 		type: "command_output",
 		text: lines.join("\n"),
 		folded: false,
-		metadata: commandResultMetadata(state, { command }),
+		metadata: { command },
 	};
 	return {
 		...state,
@@ -123,7 +123,6 @@ function withoutStartupUpdateNotice(state: RuntimeShellState): RuntimeShellState
 
 function commandResultTranscriptItem(
 	commandResult: MycliShellCommandResult,
-	deferUntilTurnComplete: boolean,
 ): RuntimeTranscriptItem {
 	return {
 		id: commandResult.id,
@@ -135,18 +134,8 @@ function commandResultTranscriptItem(
 			display: commandResultDisplayPayload(commandResult),
 			fallback_lines: commandResult.fallbackLines,
 			model_visible: false,
-			...(deferUntilTurnComplete ? { deferred_until_turn_complete: true } : {}),
 		},
 	};
-}
-
-function commandResultMetadata(
-	state: RuntimeShellState,
-	metadata: Record<string, unknown>,
-): Record<string, unknown> {
-	return state.turnRunning
-		? { ...metadata, deferred_until_turn_complete: true }
-		: metadata;
 }
 
 function commandResultDisplayPayload(commandResult: MycliShellCommandResult): Record<string, unknown> {

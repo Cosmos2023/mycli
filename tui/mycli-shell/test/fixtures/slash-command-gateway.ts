@@ -47,6 +47,11 @@ const sessions = [{ id: "initial", title: "Initial session", cwd: "/tmp" }];
 const commands = ["new", "resume", "clear", "view", "settings", "compact", "export"].map((id) => ({
 	id, name: `/${id}`, description: `Run ${id}`, argument_policy: "optional", available_during_turn: false,
 }));
+// Diagnostics stay available during a turn, unlike the session commands above.
+commands.push(
+	{ id: "ps", name: "/ps", description: "List background terminals", argument_policy: "optional", available_during_turn: true },
+	{ id: "usage", name: "/usage", description: "Show token usage", argument_policy: "none", available_during_turn: true },
+);
 
 function notify(method: string, params: Record<string, unknown>): void {
 	input.write(`${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`);
@@ -79,6 +84,24 @@ function runCommand(request: Request): void {
 		return;
 	}
 	if (command === "/compact") { compactRequest = request; return; }
+	if (command === "/ps") {
+		respond(request, {
+			execution: "backend", presentation: "transcript", result_id: `ps:${request.id}`,
+			command_kind: "background_shells",
+			processes: [{ shell_id: "fixture-shell", command_preview: "npm run dev", process_state: "running_foreground" }],
+			lines: ["fixture-shell running_foreground npm run dev"],
+		});
+		return;
+	}
+	if (command === "/usage") {
+		respond(request, {
+			execution: "backend", presentation: "transcript", result_id: `usage:${request.id}`,
+			display: { version: 1, kind: "diagnostic", command, title: "Usage", severity: "info",
+				fields: [{ label: "Input tokens", value: "1,200" }],
+				rows: [], sections: [], suggestions: [], omitted_rows: 0, omitted_chars: 0 },
+		});
+		return;
+	}
 	const target = slashCommandArguments(command, "/resume");
 	if (command === "/clear" && rejectNextClear) {
 		rejectNextClear = false;
@@ -167,6 +190,19 @@ lines.on("line", (line: string) => {
 		case "session.list": respond(request, { sessions }); break;
 		case "resource.list": respond(request, { resources: [] }); break;
 		case "command.run": runCommand(request); break;
+		case "turn.submit": {
+			respond(request, {
+				accepted: true,
+				client_turn_id: request.params.client_turn_id,
+				client_user_message_id: request.params.client_user_message_id,
+				turn_id: "turn-fixture",
+			});
+			notify("turn.started", {
+				session_id: activeSession, generation, turn_id: "turn-fixture",
+				client_turn_id: request.params.client_turn_id, source: "user",
+			});
+			break;
+		}
 		case "turn.interrupt": {
 			assert.ok(compactRequest);
 			assert.equal(request.params.operation_id, compactRequest.params.operation_id);
@@ -331,6 +367,18 @@ try {
 		await waitFor(() => requests.filter((request) => request.method === "turn.interrupt").length > interrupts && runtime.getState().footer.operationRunning === false);
 		assert.doesNotMatch(runtime.ui.render(110).join("\n"), /Press Ctrl\+C again|Worked|Turn interrupted/);
 	}
+
+	// Diagnostics have to answer while a turn is running. The agent polls a background terminal
+	// exactly then, so `/ps` and `/usage` refusing here would leave the reader with no way to check.
+	submit("hold the turn open");
+	await waitFor(() => runtime.getState().footer.turnRunning === true);
+	submit("/ps");
+	await waitFor(() => runtime.ui.render(110).join("\n").includes("Background terminals"));
+	assert.match(runtime.ui.render(110).join("\n"), /npm run dev/);
+	assert.match(runtime.ui.render(110).join("\n"), /foreground/);
+	submit("/usage");
+	await waitFor(() => runtime.ui.render(110).join("\n").includes("Usage"));
+	assert.match(runtime.ui.render(110).join("\n"), /Input tokens/);
 
 	submit("/resume waiting");
 	await waitFor(() => runtime.getState().transcript?.some((block) => block.kind === "message" && block.message.text === "Session waiting") === true);
