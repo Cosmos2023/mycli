@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { HookRunnerContract, RuntimeEvent } from "@mycli/core";
-import { HookCoordinator } from "../../src/index.ts";
+import { HookCoordinator, runSessionHookPoint } from "../../src/index.ts";
 
 test("hook coordinator merges modifications and fails closed on pre-hook denial", async () => {
 	let denied = false;
@@ -93,4 +93,34 @@ test("slow and failed non-tool hooks publish owned lifecycle feedback", async (t
 	assert.doesNotMatch(JSON.stringify(events), /private exception payload/);
 	t.mock.timers.tick(1000);
 	assert.equal(events.length, 2);
+});
+
+test("session hook points run outside a turn with a stable synthetic turn id", async () => {
+	const invocations: { readonly point: string; readonly turnId: string; readonly sessionId: string }[] = [];
+	const runner: HookRunnerContract = {
+		run: async (input) => {
+			invocations.push({ point: input.point, turnId: input.turnId, sessionId: input.sessionId });
+			return [{ hookId: "bootstrap", result: { action: "allow", additionalContexts: ["project rules"] } }];
+		},
+	};
+
+	const started = await runSessionHookPoint(
+		{ runner, sessionId: "session-7" },
+		"session_start",
+		{ source: "startup" },
+		new AbortController().signal,
+	);
+	const ended = await runSessionHookPoint(
+		{ runner, sessionId: "session-7" },
+		"session_end",
+		{ reason: "session_end" },
+		new AbortController().signal,
+	);
+
+	assert.deepEqual(started.contexts, ["project rules"]);
+	assert.equal(ended.failed, false);
+	assert.deepEqual(invocations, [
+		{ point: "session_start", turnId: "session:session-7", sessionId: "session-7" },
+		{ point: "session_end", turnId: "session:session-7", sessionId: "session-7" },
+	]);
 });

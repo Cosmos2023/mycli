@@ -18,7 +18,7 @@ import {
 import type { LoadedWorkspaceInstructions } from "./workspace-instructions.ts";
 import { collaborationModeDeveloperInstruction } from "./collaboration-mode.ts";
 
-export type RuntimeHookPoint = "user_prompt_submit" | "pre_tool_use" | "post_tool_use";
+export type RuntimeHookPoint = "user_prompt_submit" | "pre_tool_use" | "post_tool_use" | "pre_compact";
 
 export interface RuntimeHookContext {
 	readonly point: RuntimeHookPoint;

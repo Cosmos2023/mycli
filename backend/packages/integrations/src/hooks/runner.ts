@@ -57,9 +57,10 @@ const BLOCKING_EXIT_POINTS = new Set([
 	"post_tool_use",
 	"user_prompt_submit",
 	"stop",
+	"pre_compact",
 ]);
-const PLAIN_CONTEXT_POINTS = new Set(["session_start", "user_prompt_submit"]);
-const CODEX_CONTEXT_POINTS = new Set(["post_tool_use", "session_start", "user_prompt_submit"]);
+const PLAIN_CONTEXT_POINTS = new Set(["session_start", "user_prompt_submit", "pre_compact"]);
+const CODEX_CONTEXT_POINTS = new Set(["post_tool_use", "session_start", "user_prompt_submit", "pre_compact"]);
 
 export class ConfiguredHookRunner implements ConfiguredHookExecutorContract {
 	readonly #options: ConfiguredHookRunnerOptions;
@@ -527,7 +528,9 @@ function codexEventName(point: HookInvocation["point"]): string {
 	return ({
 		pre_tool_use: "PreToolUse",
 		post_tool_use: "PostToolUse",
+		pre_compact: "PreCompact",
 		session_start: "SessionStart",
+		session_end: "SessionEnd",
 		user_prompt_submit: "UserPromptSubmit",
 		stop: "Stop",
 	} as Partial<Record<HookInvocation["point"], string>>)[point] ?? point;

@@ -48,6 +48,25 @@ test("discovers flat user and repository hooks in precedence order", async (t) =
 	assert.deepEqual(discovery.diagnostics, []);
 });
 
+test("clamps session_end timeouts so teardown never waits on a hook", async (t) => {
+	const fixture = await configFixture(t);
+	await writeHooks(fixture.workspaceRoot, {
+		hooks: [
+			{ id: "end-default", hook_point: "session_end", command: [process.execPath, "hook.mjs"] },
+			{ id: "end-explicit", hook_point: "session_end", command: [process.execPath, "hook.mjs"], timeout_seconds: 30 },
+			{ id: "start-explicit", hook_point: "session_start", command: [process.execPath, "hook.mjs"], timeout_seconds: 30 },
+		],
+	});
+
+	const discovery = await discoverHookConfig(fixture);
+
+	assert.deepEqual(discovery.hooks.map((hook) => [hook.hookId, hook.timeoutMs]), [
+		["end-default", 1_000],
+		["end-explicit", 3_000],
+		["start-explicit", 30_000],
+	]);
+});
+
 test("does not read repository hooks when project configuration is disabled", async (t) => {
 	const fixture = await configFixture(t);
 	await writeHooks(fixture.homeDir, {

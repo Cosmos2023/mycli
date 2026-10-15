@@ -234,9 +234,12 @@ export { HookCoordinator } from "./hooks/hook-coordinator.ts";
 export type {
 	AfterToolHookResult,
 	BeforeToolHookResult,
+	CoordinatedHookPoint,
 	HookCoordinatorOptions,
 	HookPointResult,
 } from "./hooks/hook-coordinator.ts";
+export { runSessionHookPoint } from "./hooks/session-hooks.ts";
+export type { SessionHookOptions, SessionHookPoint } from "./hooks/session-hooks.ts";
 export { ContextItemCoordinator } from "./context/context-item-coordinator.ts";
 export type {
 	ContextItemCoordinatorContract,

@@ -119,10 +119,29 @@ to audit and is preferred:
 ```
 
 Supported points are `pre_tool_use`, `post_tool_use`, `user_prompt_submit`, `stop`,
-`pre_compact`, `session_start`, and `session_end`. A configured hook does not run until its current
-command digest is approved. Changing the command invalidates approval. `inherit_safe`, disabled
-hooks, missing approval, and digest mismatch appear as doctor warnings; malformed configuration is
-a failed check.
+`pre_compact`, `session_start`, and `session_end`. Every point runs:
+
+| Point | When it runs | What the hook can do |
+| --- | --- | --- |
+| `pre_tool_use` | before each tool call | add context, rewrite the arguments, or deny the call |
+| `post_tool_use` | after each tool call | add context; a denial only marks the hook failed |
+| `user_prompt_submit` | before a turn is prepared, with the prompt | add context |
+| `stop` | when a turn finishes | side effects only |
+| `pre_compact` | before automatic or `/compact` compaction, with `trigger` | add context, or deny to keep the context intact |
+| `session_start` | once per session runtime, with `source` (`startup` or `resume`) | add context; contexts are stored for the session |
+| `session_end` | when the backend retires a session runtime | side effects only |
+
+Exit code `2` denies for `pre_tool_use`, `post_tool_use`, `user_prompt_submit`, `stop`, and
+`pre_compact`. Hook output uses `hook_event_name` with Codex-style names (`PreToolUse`,
+`PostToolUse`, `UserPromptSubmit`, `Stop`, `PreCompact`, `SessionStart`, `SessionEnd`), and the
+invocation payload also carries `hook_point`.
+
+A configured hook does not run until its current command digest is approved. Changing the command
+invalidates approval. `inherit_safe`, disabled hooks, missing approval, and digest mismatch appear
+as doctor warnings; malformed configuration is a failed check. Session hooks run outside a turn, so
+their failures reach the node trace instead of the transcript. `session_start` and `session_end`
+fire for every session runtime, including subagent sessions; mycli has no separate
+`subagent_start` / `subagent_stop` point yet.
 
 Hooks run through the normal sandbox/process-tree controller with a timeout of at most 30 seconds,
 bounded stdin/stdout/stderr, and a selected safe environment. Diagnostics never contain command

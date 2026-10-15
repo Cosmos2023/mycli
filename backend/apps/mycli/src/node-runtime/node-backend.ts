@@ -4,7 +4,7 @@ import { GatewayFailure } from "./node-gateway-errors.ts";
 import { GoalObjectiveFiles } from "./goal-objective-files.ts";
 import { loadGitWorkspaceDiff, repositoryInitPrompt, prepareInteractiveReview, workspaceWorkflowFailure, workspaceWorktreeCommands } from "./workspace-slash-workflows.ts";
 import { SelectedSkillContext } from "./selected-skill-context.ts";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { PluginCatalogService } from "@mycli/integrations";
 import { McpElicitationBroker } from "./mcp-elicitation-broker.ts";
 import { NetworkApprovalBroker } from "./network-approval-broker.ts";
@@ -54,6 +54,7 @@ import type {
 	AgentCanonicalEvent,
 	AgentExecutionPolicySnapshot,
 	AgentProviderSnapshot,
+	HookRunnerContract,
 	QueueSnapshot,
 	ReasoningEffort,
 	ProviderRequest,
@@ -103,6 +104,7 @@ import {
 	CompactionCoordinator,
 	ContextItemCoordinator,
 	ExecutionPolicyCoordinator,
+	HookCoordinator,
 	MemoryContextService,
 	MemoryStore,
 	NodeTurnRuntime,
@@ -120,6 +122,7 @@ import {
 	toolExposureForSnapshot,
 	WorkerLeasedAgentThreadRuntimeFactory,
 	WorkerLeasedRootTurnRuntime,
+	runSessionHookPoint,
 } from "@mycli/runtime";
 import type {
 	NodeTurnRuntimeOptions,
@@ -136,6 +139,7 @@ import {
 import type {
 	AgentThreadRecord,
 	SubagentTaskRecord,
+	AppendContextItemInput,
 } from "@mycli/storage";
 import {
 	ApprovalPolicy,
@@ -562,7 +566,9 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			delegate: inProcessChildRuntimeFactory,
 		})
 		: inProcessChildRuntimeFactory;
-	const runtimeRegistry = new NodeRuntimeRegistry<ComposedNodeRuntime>();
+	const runtimeRegistry = new NodeRuntimeRegistry<ComposedNodeRuntime>({
+		onDispose: (disposedSessionId, runtime) => runSessionEndHook(disposedSessionId, runtime),
+	});
 	const agentInteractiveRequests = new AgentInteractiveRequestBroker();
 	const mcpElicitations = new McpElicitationBroker();
 	const networkApprovals = new NetworkApprovalBroker();
@@ -1581,12 +1587,31 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					const resolved = await resolveRuntimeConfig(input.modelOverride);
 					const commandId = input.operationId;
 					const startedAt = performance.now();
+					const conversation = store.loadConversationItems(sessionId);
+					const preCompact = await new HookCoordinator({
+						runner: integrationComposition.hookRunner,
+						sessionId,
+						turnId: commandId,
+					}).runPoint("pre_compact", {
+						trigger: "user_requested",
+						messageCount: conversation.length,
+					}, input.signal);
+					persistHookContexts({
+						sessionId,
+						point: "pre_compact",
+						contexts: preCompact.contexts,
+						appendContext: (contextInput) => store.appendContextItem(contextInput),
+					});
+					// A denying hook keeps the context intact; `/compact` reports that nothing ran.
+					if (preCompact.denied) {
+						return { status: "not_needed" as const, beforeTokens: 0, afterTokens: 0 };
+					}
 					const result = await createCompactionCoordinator(resolved).compact({
 						operationId: commandId,
 						clientTurnId: commandId,
 						turnId: commandId,
 						source: "user_requested",
-						conversation: store.loadConversationItems(sessionId),
+						conversation,
 						freshItemIds: new Set(),
 						emit: input.emit,
 						signal: input.signal,
@@ -1618,7 +1643,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				await integrationComposition.close().catch(() => undefined);
 				throw error;
 			}
-		}).then((binding) => {
+		}).then(async (binding) => {
 			// Mailbox delivery resolves queues through the registry; publish the runtime first.
 			const agent = store.agentThreads.get(threadId);
 			agentMailbox.repair(Object.freeze({
@@ -1627,6 +1652,13 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				path: agent?.path ?? rootAgentPath(),
 				sessionId,
 			}));
+			await runSessionStartHook({
+				sessionId,
+				runner: binding.integrations.hookRunner,
+				// A session that already has transcript entries is being resumed, not started fresh.
+				source: (store.loadSession(sessionId)?.messageCount ?? 0) > 0 ? "resume" : "startup",
+				appendContext: (input) => store.appendContextItem(input),
+			});
 			return binding;
 		});
 		childRuntimeFactoryDelegate.create = async (input) => {
@@ -2983,4 +3015,74 @@ function parseRuntimeArguments(args: readonly string[]): ParsedRuntimeArguments 
 
 function runtimeHome(env: NodeJS.ProcessEnv): string {
 	return env.HOME?.trim() || env.USERPROFILE?.trim() || homedir();
+}
+
+/**
+ * `session_start` fires once per session runtime. Its `source` is derived from stored history: a
+ * session that already has transcript entries is being resumed, an empty one is starting fresh.
+ */
+async function runSessionStartHook(options: {
+	readonly sessionId: string;
+	readonly runner: HookRunnerContract;
+	readonly source: "startup" | "resume";
+	readonly appendContext: (input: AppendContextItemInput) => void;
+}): Promise<void> {
+	try {
+		const result = await runSessionHookPoint({
+			runner: options.runner,
+			sessionId: options.sessionId,
+		}, "session_start", { source: options.source }, new AbortController().signal);
+		persistHookContexts({ ...options, point: "session_start", contexts: result.contexts });
+	} catch {
+		// A failing session-start hook must not stop the session from starting.
+	}
+}
+
+/** Session teardown must not fail because a hook did. */
+async function runSessionEndHook(sessionId: string, runtime: ComposedNodeRuntime): Promise<void> {
+	try {
+		await runSessionHookPoint({
+			runner: runtime.integrations.hookRunner,
+			sessionId,
+		}, "session_end", { reason: "session_end" }, new AbortController().signal);
+	} catch {
+		// Best effort: the runtime is already retired.
+	}
+}
+
+/**
+ * Session hooks run outside any turn, so their additional contexts are stored as session context
+ * items instead of being appended to a turn. The item id is the content digest, so resuming a
+ * session re-records the same context at most once.
+ */
+function persistHookContexts(options: {
+	readonly sessionId: string;
+	readonly point: "session_start" | "pre_compact";
+	readonly contexts: readonly string[];
+	readonly appendContext: (input: AppendContextItemInput) => void;
+}): void {
+	for (const raw of options.contexts) {
+		const text = raw.trim();
+		if (!text) continue;
+		const digest = createHash("sha256").update(text, "utf8").digest("hex");
+		try {
+			options.appendContext({
+				sessionId: options.sessionId,
+				itemId: `hook:${options.point}:${digest}`,
+				text,
+				metadata: {
+					kind: "hook_context",
+					role: "user",
+					cacheClass: "dynamic",
+					durability: "persistent",
+					scope: "session",
+					sourceId: `hook:${options.point}`,
+					contentSha256: digest,
+					contentLength: text.length,
+				},
+			});
+		} catch {
+			// The same context is already recorded for this session.
+		}
+	}
 }

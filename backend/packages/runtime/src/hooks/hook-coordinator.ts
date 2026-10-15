@@ -46,6 +46,15 @@ export interface HookPointResult {
 	readonly errorContext?: ErrorContext;
 }
 
+/**
+ * Hook points that carry no tool call of their own: session boundaries and context compaction
+ * rather than a single tool invocation.
+ */
+export type CoordinatedHookPoint = Extract<
+	HookPoint,
+	"user_prompt_submit" | "stop" | "pre_compact" | "session_start" | "session_end"
+>;
+
 export class HookCoordinator {
 	readonly #runner: HookRunnerContract;
 	readonly #emit: ((event: RuntimeEvent) => void) | undefined;
@@ -60,7 +69,7 @@ export class HookCoordinator {
 	}
 
 	async runPoint(
-		point: Extract<HookPoint, "user_prompt_submit" | "stop">,
+		point: CoordinatedHookPoint,
 		metadata: Readonly<Record<string, unknown>>,
 		signal: AbortSignal,
 	): Promise<HookPointResult> {

@@ -1729,6 +1729,23 @@ export class NodeTurnRuntime {
 	): Promise<CompactionResult> {
 		const coordinator = context.compactionCoordinator;
 		if (!coordinator) throw new StorageFailure("compaction coordinator is not configured");
+		const hookResult = await context.hookCoordinator?.runPoint("pre_compact", {
+			trigger: source,
+			messageCount: conversation.length,
+		}, context.signal);
+		if (hookResult) {
+			context.hookContexts.append({ point: "pre_compact", contexts: hookResult.contexts });
+			// A denying pre-compact hook keeps the context intact and lets the turn continue as-is.
+			if (hookResult.denied) {
+				return Object.freeze({
+					status: "not_needed",
+					providerConversation: conversation,
+					rehydration: Object.freeze([]),
+					beforeTokens: 0,
+					afterTokens: 0,
+				});
+			}
+		}
 		const startedAt = this.#options.monotonicClock?.() ?? performance.now();
 		const result = await coordinator.compact({
 			clientTurnId: context.submission.clientTurnId,

@@ -2929,6 +2929,76 @@ test("compacts before the first provider request and keeps the current user item
 	});
 });
 
+test("runs the pre_compact hook before compaction with the trigger that asked for it", async () => {
+	const trace: string[] = [];
+	const store = new FakeStore(trace);
+	const requests: ProviderRequest[] = [];
+	const provider = scriptedProvider(trace, requests, [[
+		{ type: "text_delta", text: "Continued after the hook." },
+		{ type: "completed", responseId: "resp-final" },
+	]]);
+	const coordinator = new ScriptedCompactionCoordinator(trace, [
+		compactionResult("compressed", [{ type: "user", text: "[compact-summary]" }]),
+	]);
+	const invocations: Parameters<HookRunnerContract["run"]>[0][] = [];
+	const hookRunner: HookRunnerContract = {
+		run: async (input) => {
+			invocations.push(input);
+			trace.push(input.point);
+			return input.point === "pre_compact"
+				? [{ hookId: "keeper", result: { action: "allow", additionalContexts: ["keep the release checklist"] } }]
+				: [];
+		},
+	};
+
+	const result = await createRuntime({
+		store,
+		provider,
+		toolRouter: new SequencedRouter(trace),
+		compactionCoordinator: coordinator,
+		hookRunner,
+	}).submit(submission(), () => {}, { signal: new AbortController().signal });
+
+	assert.equal(result.status, "completed");
+	const hookIndex = trace.indexOf("pre_compact");
+	const compactIndex = trace.indexOf("compact:pre_turn");
+	assert.ok(hookIndex >= 0 && compactIndex > hookIndex,
+		`expected the pre_compact hook before compaction: ${trace.join(", ")}`);
+	assert.equal(coordinator.calls.length, 1);
+	const preCompact = invocations.find((invocation) => invocation.point === "pre_compact");
+	assert.equal(preCompact?.metadata.trigger, "pre_turn");
+	assert.equal(typeof preCompact?.metadata.messageCount, "number");
+});
+
+test("a denying pre_compact hook keeps the context and lets the turn continue", async () => {
+	const trace: string[] = [];
+	const requests: ProviderRequest[] = [];
+	const provider = scriptedProvider(trace, requests, [[
+		{ type: "text_delta", text: "Ran without compaction." },
+		{ type: "completed", responseId: "resp-final" },
+	]]);
+	const coordinator = new ScriptedCompactionCoordinator(trace, [
+		compactionResult("compressed", [{ type: "user", text: "[compact-summary]" }]),
+	]);
+	const hookRunner: HookRunnerContract = {
+		run: async (input) => input.point === "pre_compact"
+			? [{ hookId: "keeper", result: { action: "deny", message: "compaction is not allowed yet" } }]
+			: [],
+	};
+
+	const result = await createRuntime({
+		store: new FakeStore(trace),
+		provider,
+		toolRouter: new SequencedRouter(trace),
+		compactionCoordinator: coordinator,
+		hookRunner,
+	}).submit(submission(), () => {}, { signal: new AbortController().signal });
+
+	assert.equal(result.status, "completed");
+	assert.equal(coordinator.calls.length, 0);
+	assert.equal(trace.includes("compact:pre_turn"), false);
+});
+
 test("uses the canonical queue history identity for a queued turn's fresh input", async () => {
 	const trace: string[] = [];
 	const requests: ProviderRequest[] = [];

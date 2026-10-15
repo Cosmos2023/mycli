@@ -3,11 +3,21 @@ interface RefreshableNodeRuntime {
 	closeExtensions?(): Promise<void>;
 }
 
+export interface NodeRuntimeRegistryOptions<Runtime> {
+	/** Runs once per retired runtime, before its extensions close. */
+	readonly onDispose?: (sessionId: string, runtime: Runtime) => Promise<void> | void;
+}
+
 export class NodeRuntimeRegistry<Runtime extends RefreshableNodeRuntime> {
 	readonly #runtimeBySessionId = new Map<string, Runtime>();
 	readonly #preparing = new Map<string, Promise<Runtime>>();
 	readonly #controller = new AbortController();
+	readonly #onDispose: ((sessionId: string, runtime: Runtime) => Promise<void> | void) | undefined;
 	#closing: Promise<void> | undefined;
+
+	constructor(options: NodeRuntimeRegistryOptions<Runtime> = {}) {
+		this.#onDispose = options.onDispose;
+	}
 
 	get(sessionId: string): Runtime | undefined {
 		return this.#runtimeBySessionId.get(sessionId);
@@ -44,6 +54,7 @@ export class NodeRuntimeRegistry<Runtime extends RefreshableNodeRuntime> {
 
 	async dispose(sessionId: string, expected: Runtime): Promise<void> {
 		this.delete(sessionId, expected);
+		await this.#onDispose?.(sessionId, expected);
 		await expected.closeExtensions?.();
 	}
 

@@ -53,6 +53,8 @@ const CODEX_GROUPS: Readonly<Record<string, HookPoint>> = Object.freeze({
 const HOOK_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u;
 const DEFAULT_TIMEOUT_MS = 2_000;
 const MAX_TIMEOUT_MS = 30_000;
+const SESSION_END_TIMEOUT_MS = 1_000;
+const SESSION_END_MAX_TIMEOUT_MS = 3_000;
 const MAX_COMMAND_ARGUMENTS = 64;
 const MAX_COMMAND_ARGUMENT_CHARS = 4_096;
 
@@ -230,7 +232,7 @@ function parseHook(
 		throw new HookConfigError("invalid_hook_point");
 	}
 	const command = commandValue(value.command, options);
-	const timeoutMs = timeoutValue(value.timeout_seconds);
+	const timeoutMs = timeoutValue(value.timeout_seconds, hookPoint as HookPoint);
 	const workingDirectory = enumValue(
 		value.working_directory,
 		["workspace", "config"] as const,
@@ -328,14 +330,21 @@ function quotedExecutableInvocation(
 	return kind === "powershell" && /^["']/u.test(command) ? `& ${command}` : command;
 }
 
-function timeoutValue(value: unknown): number {
-	if (value === undefined || value === null) return DEFAULT_TIMEOUT_MS;
+/**
+ * `session_end` runs while the backend retires a session, so it cannot hold teardown for the full
+ * hook budget: its default and ceiling are clamped the way Codex clamps SessionEnd.
+ */
+function timeoutValue(value: unknown, point: HookPoint): number {
+	const fallback = point === "session_end" ? SESSION_END_TIMEOUT_MS : DEFAULT_TIMEOUT_MS;
+	if (value === undefined || value === null) return fallback;
 	if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
 		throw new HookConfigError("invalid_timeout");
 	}
 	const timeoutMs = value * 1_000;
 	if (timeoutMs > MAX_TIMEOUT_MS) throw new HookConfigError("invalid_timeout");
-	return Math.round(timeoutMs);
+	return point === "session_end"
+		? Math.min(Math.round(timeoutMs), SESSION_END_MAX_TIMEOUT_MS)
+		: Math.round(timeoutMs);
 }
 
 function matcherValue(value: unknown): ConfiguredHookMatcher {

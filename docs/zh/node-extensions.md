@@ -97,7 +97,21 @@ Hook 使用 JSON 文件，接受有界 argv 数组或 Shell 命令字符串。�
 }
 ```
 
-支持 `pre_tool_use`、`post_tool_use`、`user_prompt_submit`、`stop`、`pre_compact`、`session_start`、`session_end`。配置 hook 只有当前命令摘要获批后才运行；修改命令会使审批失效。`inherit_safe`、禁用、缺审批和摘要不匹配显示为 doctor 警告，格式错误为失败检查。
+支持 `pre_tool_use`、`post_tool_use`、`user_prompt_submit`、`stop`、`pre_compact`、`session_start`、`session_end`，七个切入点都会真正触发：
+
+| 切入点 | 触发时机 | 能做什么 |
+| --- | --- | --- |
+| `pre_tool_use` | 每次工具调用前 | 注入上下文、改写参数、拒绝这次调用 |
+| `post_tool_use` | 每次工具调用后 | 注入上下文；返回拒绝只会把 hook 标记为失败 |
+| `user_prompt_submit` | turn 准备前，带 prompt | 注入上下文 |
+| `stop` | turn 正常结束时 | 只做副作用 |
+| `pre_compact` | 自动压缩或 `/compact` 之前，带 `trigger` | 注入上下文；返回拒绝可让上下文保持原样 |
+| `session_start` | 每个 session 运行时启动一次，带 `source`（`startup` / `resume`） | 注入上下文，上下文会持久保存到该 session |
+| `session_end` | 后端回收 session 运行时 | 只做副作用 |
+
+`pre_tool_use`、`post_tool_use`、`user_prompt_submit`、`stop`、`pre_compact` 支持用退出码 `2` 表示拒绝。hook 输出的 `hook_event_name` 使用 Codex 风格名称（`PreToolUse`、`PostToolUse`、`UserPromptSubmit`、`Stop`、`PreCompact`、`SessionStart`、`SessionEnd`），调用 payload 里同时带 `hook_point`。
+
+配置 hook 只有当前命令摘要获批后才运行；修改命令会使审批失效。`inherit_safe`、禁用、缺审批和摘要不匹配显示为 doctor 警告，格式错误为失败检查。session 类 hook 在 turn 之外运行，失败只会写进 node trace，不会出现在 transcript 里。`session_start` / `session_end` 对每个 session 运行时都会触发（包括子代理 session）；mycli 目前还没有单独的 `subagent_start` / `subagent_stop` 切入点。
 
 Hook 使用正常沙箱/进程树控制器，最多 30 秒超时，有界 stdin/stdout/stderr 和选定安全环境。诊断不含命令参数、hook payload、输出正文或环境值。
 

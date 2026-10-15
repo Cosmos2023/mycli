@@ -293,6 +293,8 @@ test("workspace trust starts and revocation stops project MCP and plugin hosts",
 	const home = join(root, "home");
 	const workspace = join(root, "workspace");
 	const hookMarker = join(workspace, "hook-ran");
+	const sessionStartMarker = join(workspace, "session-started");
+	const sessionEndMarker = join(workspace, "session-ended");
 	const mcpPidFile = join(workspace, "mcp.pid");
 	const pluginPidFile = join(workspace, ".mycli", "plugins", "good", "plugin.pid");
 	await Promise.all([mkdir(home), mkdir(workspace)]);
@@ -300,6 +302,8 @@ test("workspace trust starts and revocation stops project MCP and plugin hosts",
 		home,
 		workspace,
 		hookMarker,
+		sessionStartMarker,
+		sessionEndMarker,
 		mcpPidFile,
 		pluginPidFile,
 	});
@@ -392,6 +396,8 @@ test("M7 runs skills MCP hooks plugins and a subagent entirely in Node", {
 	const workspace = join(root, "workspace");
 	const pythonMarker = join(root, "python-started");
 	const hookMarker = join(workspace, "hook-ran");
+	const sessionStartMarker = join(workspace, "session-started");
+	const sessionEndMarker = join(workspace, "session-ended");
 	const mcpPidFile = join(workspace, "mcp.pid");
 	const pluginPidFile = join(workspace, ".mycli", "plugins", "good", "plugin.pid");
 	await Promise.all([mkdir(home), mkdir(workspace)]);
@@ -399,13 +405,17 @@ test("M7 runs skills MCP hooks plugins and a subagent entirely in Node", {
 		home,
 		workspace,
 		hookMarker,
+		sessionStartMarker,
+		sessionEndMarker,
 		mcpPidFile,
 		pluginPidFile,
 	});
 	await new WorkspaceTrustStore({ homeDir: home }).save(workspace, "trusted");
 	const hookDiscovery = await discoverHookConfig({ homeDir: home, workspaceRoot: workspace });
-	assert.equal(hookDiscovery.hooks.length, 1);
-	await new HookAllowlistStore({ homeDir: home }).approve(hookDiscovery.hooks[0]!);
+	assert.equal(hookDiscovery.hooks.length, 3);
+	for (const hook of hookDiscovery.hooks) {
+		await new HookAllowlistStore({ homeDir: home }).approve(hook);
+	}
 
 	const requests: JsonObject[] = [];
 	const parentRequests: JsonObject[] = [];
@@ -594,11 +604,14 @@ test("M7 runs skills MCP hooks plugins and a subagent entirely in Node", {
 		["running", "completed"],
 	);
 	assert.equal(existsSync(hookMarker), true);
+	assert.equal(existsSync(sessionStartMarker), true);
+	assert.equal(existsSync(sessionEndMarker), false);
 	assert.equal(existsSync(pythonMarker), false);
 	assert.equal(existsSync(mcpPidFile), true);
 	assert.equal(existsSync(pluginPidFile), true);
 
 	await shutdown();
+	assert.equal(existsSync(sessionEndMarker), true);
 	await eventually(
 		() => !existsSync(mcpPidFile) && !existsSync(pluginPidFile),
 		() => extensionMarkerDiagnostics({ mcpPidFile, pluginPidFile }),
@@ -621,6 +634,8 @@ async function writeExtensionFixtures(options: {
 	readonly home: string;
 	readonly workspace: string;
 	readonly hookMarker: string;
+	readonly sessionStartMarker: string;
+	readonly sessionEndMarker: string;
 	readonly mcpPidFile: string;
 	readonly pluginPidFile: string;
 }): Promise<void> {
@@ -647,12 +662,26 @@ async function writeExtensionFixtures(options: {
 		"timeout_seconds = 10",
 	].join("\n"), "utf8");
 	await writeFile(join(mycli, "hooks.json"), JSON.stringify({
-		hooks: [{
-			id: "m7-marker",
-			hook_point: "pre_tool_use",
-			command: [process.execPath, join(mycli, "hook-command.mjs"), "marker", options.hookMarker],
-			timeout_seconds: 3,
-		}],
+		hooks: [
+			{
+				id: "m7-marker",
+				hook_point: "pre_tool_use",
+				command: [process.execPath, join(mycli, "hook-command.mjs"), "marker", options.hookMarker],
+				timeout_seconds: 3,
+			},
+			{
+				id: "m7-session-start",
+				hook_point: "session_start",
+				command: [process.execPath, join(mycli, "hook-command.mjs"), "marker", options.sessionStartMarker],
+				timeout_seconds: 3,
+			},
+			{
+				id: "m7-session-end",
+				hook_point: "session_end",
+				command: [process.execPath, join(mycli, "hook-command.mjs"), "marker", options.sessionEndMarker],
+				timeout_seconds: 3,
+			},
+		],
 	}), "utf8");
 	await writeFile(join(mycli, "config.toml"), [
 		"[plugins]",
