@@ -461,6 +461,7 @@ const EXTENSION_HOOKS = [
 	"compactionBudget",
 	"conversationContext",
 	"captureDelegatedWork", "bindDelegatedWork", "releaseDelegatedWork",
+	"normalizeFailure",
 ] as const;
 
 function extensionFailureTracePayload(

@@ -16,6 +16,7 @@ registry: features register contributors, and the runtime asks the registry inst
   `compactionBudget` (the account a compaction summary is charged to),
   `conversationContext` (who fills the session's `conversation_context` fragment),
   `delegation` (carrying an extension's accounting across a runtime boundary),
+  `failure` (an extension classifying the errors it raised),
   `turnLifecycle` (`onTurnAdmitted` / `onTurnStart` / `onTurnComplete` / `onTurnFinished`),
   `context` (turn-context sections the extension renders itself), `conversationItems` (items
   inserted ahead of the current user input), `tokenUsage.onTokenUsage`.
@@ -44,6 +45,7 @@ The runtime consults the registry in `node-turn-runtime.ts`:
 | `compactionBudget` | `node-backend.ts`, once per compaction before the summarizer runs |
 | `conversationContext` | `mergeRuntimeContextSources`, when the app leaves the field empty |
 | `captureDelegatedWork` / `bindDelegatedWork` / `releaseDelegatedWork` | the agent-thread factory that runs delegated work |
+| `normalizeFailure` | `#normalizeFailure`, before the runtime's own failure rules |
 
 Failures land in the session node trace as `extension_failure` rows (extension id, hook, bounded
 message), which `/trace` and the doctor support bundle surface.
@@ -172,18 +174,29 @@ Two details are deliberate:
 - **Handles are opaque.** `goal` captures the `{ service, ref }` binding, and `goal-usage`
   re-validates the shape before handing it to the tracker.
 
+### Failure classification (done)
+
+`node-turn-runtime.ts` no longer mentions goal anywhere. The `failure` slot lets an extension
+classify an error it raised, so a feature's own failure keeps its meaning instead of becoming an
+internal error: `goal` maps `GoalStateError` to `interrupted` with the error's own message, exactly
+as the runtime's hard-coded branch did.
+
+The slot is consulted **before** the runtime's own rules, matching where that branch sat. The cost
+was mechanical rather than conceptual — the classifier has to be reachable from the free
+`normalizeFailure` helper, so the ~20 call sites became `this.#normalizeFailure(...)`, which tries
+the registry first and otherwise delegates to the unchanged helper.
+
 ## What is still missing
 
-The runtime turn loop no longer names goal; the remaining coupling is in the app, where goal is a
-user-facing feature with commands and a transcript projection:
+`node-turn-runtime.ts` no longer names any feature: memory and goal are both composed entirely
+through the registry. What is left is one durable-format decision.
 
-- **`GoalStateError`.** `normalizeFailure` in `node-turn-runtime.ts` still maps it to an
-  interruption. The error comes from the goal tools, so it should move with them; doing it now
-  means threading the registry through roughly twenty call sites of a free function for no
-  behaviour change.
-- **`TurnSubmission.source`** is still the closed union `"user" | "agent_mailbox" | "goal"` because
-  storage persists it and the transcript renders it. Generalising it to
-  `{ kind: "extension", ... }` needs storage and projection work.
+**`TurnSubmission.source`** is still the closed union `"user" | "agent_mailbox" | "goal"` because
+storage persists it and the transcript renders it (`payload.source === "goal"` becomes "Continuing
+goal", and schema v15 gates goal input). Generalising it to `{ kind: "extension", ... }` means a
+storage migration plus a projection change, so an extension that is not goal cannot yet admit a
+turn with its own durable label — it would have to borrow `"goal"`. That is the last thing standing
+between the registry and a second feature that admits turns.
 
 ## Constraints discovered while migrating
 

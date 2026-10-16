@@ -665,6 +665,7 @@
   {"file":"backend/packages/runtime/src/providers/provider-continuation.ts","boundary":"TypeError","code":"*","evidence":"explicit_generic_fallback","scope":"turn","reason":"runtime.internal_error"},
   {"file":"backend/packages/runtime/src/providers/provider-input-timeline.ts","boundary":"TypeError","code":"*","evidence":"explicit_generic_fallback","scope":"turn","reason":"runtime.internal_error"},
   {"file":"backend/packages/runtime/src/providers/retry-policy.ts","boundary":"Error","code":"*","evidence":"explicit_generic_fallback","scope":"turn","reason":"runtime.internal_error"},
+  {"file":"backend/packages/runtime/src/sessions/goal-extension.ts","boundary":"runtime_failure","code":"interrupted","evidence":"legacy_code","scope":"turn","reason":"runtime.interruption_unspecified"},
   {"file":"backend/packages/runtime/src/sessions/goal-extension.ts","boundary":"TypeError","code":"*","evidence":"explicit_generic_fallback","scope":"turn","reason":"runtime.internal_error"},
   {"file":"backend/packages/runtime/src/sessions/session-coordinator.ts","boundary":"SessionTransitionError","code":"session_state_invalid","evidence":"legacy_code","scope":"turn","reason":"runtime.internal_error"},
   {"file":"backend/packages/runtime/src/sessions/session-coordinator.ts","boundary":"SessionTransitionError","code":"turn_in_progress","evidence":"legacy_code","scope":"turn","reason":"runtime.internal_error"},

@@ -2,6 +2,7 @@ import type {
 	CanonicalConversationItem,
 	InstructionFragmentKind,
 	ProviderUsage,
+	RuntimeErrorCode,
 } from "@mycli/core";
 import type { ToolAdapter } from "@mycli/tools";
 
@@ -241,6 +242,22 @@ export interface DelegationContributor {
 	releaseDelegatedWork?(input: ExtensionTurnContextInput): void;
 }
 
+/** The runtime failure an extension's own error should be reported as. */
+export interface ExtensionFailureMapping {
+	readonly code: RuntimeErrorCode;
+	readonly message: string;
+	readonly retryable?: boolean;
+}
+
+/**
+ * Lets an extension classify an error it raised, so the turn reports the failure the feature means
+ * instead of a generic internal error. The first mapping wins, and an extension returns undefined
+ * for errors it does not own.
+ */
+export interface FailureContributor {
+	normalizeFailure?(input: { readonly error: unknown }): ExtensionFailureMapping | undefined;
+}
+
 export interface ConversationItemContributor {
 	/**
 	 * Items the runtime inserts ahead of the current user input, mirroring how memory is injected.
@@ -291,6 +308,7 @@ export interface ExtensionDefinition {
 	readonly compactionBudget?: CompactionBudgetContributor;
 	readonly conversationContext?: ConversationContextContributor;
 	readonly delegation?: DelegationContributor;
+	readonly failure?: FailureContributor;
 	readonly turnLifecycle?: TurnLifecycleContributor;
 	readonly conversationItems?: ConversationItemContributor;
 	readonly context?: ContextContributor;

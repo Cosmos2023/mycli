@@ -1,5 +1,4 @@
 import { isTurnInterruptionReason, type TurnInterruptionReason } from "@mycli/contracts";
-import { GoalStateError } from "@mycli/core";
 import type {
 	ExtensionAdmissionRef,
 	ExtensionContextSection,
@@ -650,7 +649,7 @@ export class NodeTurnRuntime {
 				} catch (error) {
 					return await this.#finalizeFailure(
 					submission,
-					normalizeFailure(error, options.signal, "config_error"),
+					this.#normalizeFailure(error, options.signal, "config_error"),
 					emit,
 				);
 			}
@@ -678,7 +677,7 @@ export class NodeTurnRuntime {
 		try {
 			return await this.#finalizeFailure(
 				{ clientTurnId: reservation.turn.client_turn_id },
-				normalizeFailure(error, signal, "config_error"),
+				this.#normalizeFailure(error, signal, "config_error"),
 				emit,
 			);
 		} finally {
@@ -1064,7 +1063,7 @@ export class NodeTurnRuntime {
 			retainPolicy = result.status === "in_progress";
 			return result;
 		} catch (error) {
-			return await this.#finalizeFailure(submission, normalizeFailure(error, signal, "persistence_error"), emit);
+			return await this.#finalizeFailure(submission, this.#normalizeFailure(error, signal, "persistence_error"), emit);
 		} finally {
 			if (!retainPolicy) this.#finishTurn(pending.turnId);
 		}
@@ -1134,7 +1133,7 @@ export class NodeTurnRuntime {
 				} catch (error) {
 					return this.#finalizeFailure(
 						submission,
-						normalizeFailure(error, signal, "persistence_error"),
+						this.#normalizeFailure(error, signal, "persistence_error"),
 						emit,
 					);
 				}
@@ -1172,7 +1171,7 @@ export class NodeTurnRuntime {
 			} catch (error) {
 				return this.#finalizeFailure(
 					submission,
-					normalizeFailure(error, signal, "persistence_error"),
+					this.#normalizeFailure(error, signal, "persistence_error"),
 					emit,
 				);
 			}
@@ -1194,7 +1193,7 @@ export class NodeTurnRuntime {
 				} catch (error) {
 					return this.#finalizeFailure(
 						submission,
-						normalizeFailure(error, signal, "persistence_error"),
+						this.#normalizeFailure(error, signal, "persistence_error"),
 						emit,
 					);
 				}
@@ -1228,7 +1227,7 @@ export class NodeTurnRuntime {
 				} catch (error) {
 					return this.#finalizeFailure(
 						submission,
-						normalizeFailure(error, signal, "persistence_error"),
+						this.#normalizeFailure(error, signal, "persistence_error"),
 						emit,
 					);
 				}
@@ -1314,7 +1313,7 @@ export class NodeTurnRuntime {
 				} catch (error) {
 					return this.#finalizeFailure(
 						submission,
-						normalizeFailure(error, signal, "persistence_error"),
+						this.#normalizeFailure(error, signal, "persistence_error"),
 						emit,
 					);
 				}
@@ -1365,7 +1364,7 @@ export class NodeTurnRuntime {
 			} catch (error) {
 				return this.#finalizeFailure(
 					submission,
-					normalizeFailure(error, signal, "persistence_error"),
+					this.#normalizeFailure(error, signal, "persistence_error"),
 					emit,
 				);
 			}
@@ -1428,7 +1427,7 @@ export class NodeTurnRuntime {
 			} catch (error) {
 				return this.#finalizeFailure(
 					submission,
-					normalizeFailure(error, signal, "provider_error"),
+					this.#normalizeFailure(error, signal, "provider_error"),
 					emit,
 				);
 			}
@@ -1443,7 +1442,7 @@ export class NodeTurnRuntime {
 					} catch (error) {
 						return this.#finalizeFailure(
 							submission,
-							normalizeFailure(error, signal, "persistence_error"),
+							this.#normalizeFailure(error, signal, "persistence_error"),
 							emit,
 						);
 					}
@@ -1467,7 +1466,7 @@ export class NodeTurnRuntime {
 					} catch (error) {
 						return this.#finalizeFailure(
 							submission,
-							normalizeFailure(error, signal, "persistence_error"),
+							this.#normalizeFailure(error, signal, "persistence_error"),
 							emit,
 						);
 					}
@@ -1511,7 +1510,7 @@ export class NodeTurnRuntime {
 			} catch (error) {
 				return this.#finalizeFailure(
 					submission,
-					normalizeFailure(error, signal, "persistence_error"),
+					this.#normalizeFailure(error, signal, "persistence_error"),
 					emit,
 				);
 			}
@@ -1527,7 +1526,7 @@ export class NodeTurnRuntime {
 				} catch (error) {
 					return this.#finalizeFailure(
 						submission,
-						normalizeFailure(error, signal, "persistence_error"),
+						this.#normalizeFailure(error, signal, "persistence_error"),
 						emit,
 					);
 				}
@@ -1606,7 +1605,7 @@ export class NodeTurnRuntime {
 			} catch (error) {
 				return this.#finalizeFailure(
 					submission,
-					normalizeFailure(error, signal, "persistence_error"),
+					this.#normalizeFailure(error, signal, "persistence_error"),
 					emit,
 				);
 			}
@@ -1691,7 +1690,7 @@ export class NodeTurnRuntime {
 		} catch (error) {
 			return this.#finalizeFailure(
 				submission,
-				normalizeFailure(error, signal, "persistence_error"),
+				this.#normalizeFailure(error, signal, "persistence_error"),
 				emit,
 			);
 		}
@@ -1755,7 +1754,7 @@ export class NodeTurnRuntime {
 			});
 			return undefined;
 		} catch (error) {
-			return normalizeFailure(error, undefined, "persistence_error");
+			return this.#normalizeFailure(error, undefined, "persistence_error");
 		}
 	}
 
@@ -1764,7 +1763,7 @@ export class NodeTurnRuntime {
 			this.#options.providerContinuation?.invalidate(reason);
 			return undefined;
 		} catch (error) {
-			return normalizeFailure(error, undefined, "persistence_error");
+			return this.#normalizeFailure(error, undefined, "persistence_error");
 		}
 	}
 
@@ -1851,6 +1850,20 @@ export class NodeTurnRuntime {
 
 	#turnPolicyInput(turnId: string): ExtensionTurnPolicyInput {
 		return turnPolicyInput(this.#options.sessionId, turnId);
+	}
+
+	/**
+	 * An extension classifies the errors it raised before the runtime falls back to its own rules,
+	 * so a feature's own failure keeps its meaning instead of becoming an internal error.
+	 */
+	#normalizeFailure(
+		error: unknown,
+		signal: AbortSignal | undefined,
+		fallbackCode: RuntimeErrorCode,
+	): NormalizedFailure {
+		const mapped = this.#options.extensions?.normalizeFailure(error);
+		if (mapped) return { code: mapped.code, message: mapped.message, retryable: mapped.retryable ?? false };
+		return normalizeFailure(error, signal, fallbackCode);
 	}
 
 	/** A stop an extension asked for, as the runtime failure the turn loop reports. */
@@ -1984,7 +1997,7 @@ export class NodeTurnRuntime {
 		} catch (error) {
 			return this.#finalizeFailure(
 				submission,
-				normalizeFailure(error, signal, "persistence_error"),
+				this.#normalizeFailure(error, signal, "persistence_error"),
 				emit,
 			);
 		}
@@ -2037,7 +2050,7 @@ export class NodeTurnRuntime {
 				completedAt: this.#options.clock(),
 			});
 		} catch (error) {
-			const persistence = normalizeFailure(error, undefined, "persistence_error");
+			const persistence = this.#normalizeFailure(error, undefined, "persistence_error");
 			const errorContext = this.#options.store.errorContextVersion === 1 ? createErrorContext({
 				reason: error instanceof StorageFailure && error.reason !== "storage.failure_unclassified" ? error.reason : "storage.write_failed",
 				source: "storage", scope: { kind: "turn", id: turnId }, details: { operation: "commit",
@@ -2122,7 +2135,6 @@ function normalizeFailure(
 	signal: AbortSignal | undefined,
 	fallbackCode: RuntimeErrorCode,
 ): NormalizedFailure {
-	if (error instanceof GoalStateError) return { code: "interrupted", message: error.message, retryable: false };
 	if (signal?.aborted || (error instanceof Error && error.name === "AbortError")) {
 		return {
 			code: "interrupted",

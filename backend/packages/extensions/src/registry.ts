@@ -10,6 +10,7 @@ import type {
 	ExtensionCompactionBudgetInput,
 	ExtensionContextSection,
 	ExtensionDefinition,
+	ExtensionFailureMapping,
 	ExtensionFinishedTurnInput,
 	ExtensionTokenUsageInput,
 	ExtensionTurnContextInput,
@@ -41,7 +42,8 @@ export type ExtensionHookName =
 	| "conversationContext"
 	| "captureDelegatedWork"
 	| "bindDelegatedWork"
-	| "releaseDelegatedWork";
+	| "releaseDelegatedWork"
+	| "normalizeFailure";
 
 /** A turn an extension asked for, resolved back to the extension that asked. */
 export interface ResolvedAdmission extends ExtensionAdmission {
@@ -362,6 +364,24 @@ export class ExtensionRegistry {
 				this.#report(id, "releaseDelegatedWork", error);
 			}
 		}
+	}
+
+	/**
+	 * The first extension that recognises the error classifies it; a throwing contributor is
+	 * reported and skipped, so a broken extension cannot turn a real failure into an internal one.
+	 */
+	normalizeFailure(error: unknown): ExtensionFailureMapping | undefined {
+		for (const [id, extension] of this.#extensions) {
+			const hook = extension.failure?.normalizeFailure;
+			if (!hook) continue;
+			try {
+				const mapping = hook({ error });
+				if (mapping) return mapping;
+			} catch (failure) {
+				this.#report(id, "normalizeFailure", failure);
+			}
+		}
+		return undefined;
 	}
 
 	async collectConversationItems(

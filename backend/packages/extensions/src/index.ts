@@ -13,6 +13,8 @@ export type {
 	ConversationItemContributor,
 	ContextContributor,
 	DelegationContributor,
+	ExtensionFailureMapping,
+	FailureContributor,
 	ExtensionCompactionBudget,
 	ExtensionCompactionBudgetInput,
 	ExtensionAdmission,

@@ -506,6 +506,33 @@ test("a step whose executor never reported usage reports its settled usage once"
 	assert.deepEqual(events, ["usage:final:true:2"]);
 });
 
+test("an extension classifies its own error before the runtime fallback", async () => {
+	class FixtureFailure extends Error {}
+	const extensions = new ExtensionRegistry();
+	extensions.register({
+		id: "feature",
+		failure: {
+			normalizeFailure: ({ error }) => error instanceof FixtureFailure
+				? { code: "interrupted", message: `feature: ${error.message}`, retryable: false }
+				: undefined,
+		},
+	});
+
+	const result = await createRuntime({
+		store: new FakeStore([]),
+		provider: {
+			...scriptedProvider([], [], [[]]),
+			resolveCapabilities: () => { throw new FixtureFailure("capability lookup failed"); },
+		},
+		toolRouter: new SequencedRouter([]),
+		extensions,
+	}).submit(submission(), () => {}, { signal: new AbortController().signal });
+
+	// Without the mapping this falls back to config_error and a failed turn.
+	assert.equal(result.status, "interrupted");
+	assert.equal(result.error_code, "interrupted");
+});
+
 test("a throwing extension cannot fail the turn and is reported", async () => {
 	const trace: string[] = [];
 	const failures: ExtensionFailure[] = [];

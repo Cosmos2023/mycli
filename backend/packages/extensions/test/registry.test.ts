@@ -346,3 +346,27 @@ test("captured delegated work handles are offered to every extension that can ad
 	assert.deepEqual(released, ["child-turn"]);
 	assert.deepEqual(failures, [{ extensionId: "broken", hook: "captureDelegatedWork", message: "boom" }]);
 });
+
+test("the first extension that recognises an error classifies it", () => {
+	const failures: ExtensionFailure[] = [];
+	const registry = new ExtensionRegistry({ onFailure: (failure) => failures.push(failure) });
+	class FixtureFailure extends Error {}
+	registry.register({ id: "quiet", failure: { normalizeFailure: () => undefined } });
+	registry.register({ id: "broken", failure: { normalizeFailure: () => { throw new Error("boom"); } } });
+	registry.register({
+		id: "goal",
+		failure: {
+			normalizeFailure: ({ error }) => error instanceof FixtureFailure
+				? { code: "interrupted", message: error.message, retryable: false }
+				: undefined,
+		},
+	});
+
+	assert.deepEqual(registry.normalizeFailure(new FixtureFailure("goal changed")), {
+		code: "interrupted",
+		message: "goal changed",
+		retryable: false,
+	});
+	assert.deepEqual(failures, [{ extensionId: "broken", hook: "normalizeFailure", message: "boom" }]);
+	assert.equal(new ExtensionRegistry().normalizeFailure(new Error("unowned")), undefined);
+});

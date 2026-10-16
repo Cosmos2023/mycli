@@ -1,4 +1,4 @@
-import type { GoalRef } from "@mycli/core";
+import { GoalStateError, type GoalRef } from "@mycli/core";
 import type { ExtensionDefinition } from "@mycli/extensions";
 import { GoalTool } from "@mycli/tools";
 import { goalContinuationMessage, sessionGoalContext } from "./session-goal-context.ts";
@@ -116,6 +116,12 @@ export function createGoalExtension(options: GoalExtensionOptions): ExtensionDef
 				const ref = options.service.usageReference(turnId);
 				return ref ? { service: options.service, ref } : undefined;
 			},
+		},
+		failure: {
+			// A goal state error is a goal outcome, so it keeps its message instead of becoming internal.
+			normalizeFailure: ({ error }) => error instanceof GoalStateError
+				? { code: "interrupted", message: error.message, retryable: false }
+				: undefined,
 		},
 	};
 }
