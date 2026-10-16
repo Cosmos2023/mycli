@@ -11,7 +11,7 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "build": "npm run build --workspace @mycli/contracts && npm run build --workspace @mycli/gateway && npm run build --workspace @mycli/core && npm run build --workspace @mycli/config && npm run build --workspace @mycli/tools && npm run build --workspace @mycli/providers && npm run build --workspace @mycli/storage && npm run build --workspace @mycli/integrations && npm run build --workspace @mycli/runtime && npm run build --workspace mycli-shell-tui && npm run build --workspace @cosmos2023/mycli",
+    "build": "npm run build --workspace @mycli/contracts && npm run build --workspace @mycli/gateway && npm run build --workspace @mycli/core && npm run build --workspace @mycli/config && npm run build --workspace @mycli/tools && npm run build --workspace @mycli/providers && npm run build --workspace @mycli/storage && npm run build --workspace @mycli/integrations && npm run build --workspace @mycli/extensions && npm run build --workspace @mycli/runtime && npm run build --workspace mycli-shell-tui && npm run build --workspace @cosmos2023/mycli",
     "contracts:generate": "npm run generate --workspace @mycli/contracts",
     "contracts:check": "npm run check --workspace @mycli/contracts",
     "config:generate": "node --conditions=mycli-source --import tsx scripts/generate-config-reference.mjs",
@@ -24,8 +24,8 @@
     "mycli": "node backend/apps/mycli/dist/cli.js",
     "pretest": "npm run build",
     "smoke:package": "node scripts/smoke_packed_cli.mjs",
-		"sandbox:check-host": "node scripts/check-windows-sandbox-host.mjs",
-		"promote:windows-sandbox-helper": "node scripts/promote-windows-sandbox-helper.mjs",
+    "sandbox:check-host": "node scripts/check-windows-sandbox-host.mjs",
+    "promote:windows-sandbox-helper": "node scripts/promote-windows-sandbox-helper.mjs",
     "smoke:providers": "node --conditions=mycli-source --import tsx scripts/smoke_curated_providers.mjs",
     "smoke:providers:native": "node --conditions=mycli-source --import tsx scripts/smoke_native_providers.mjs",
     "smoke:release-compatibility": "node scripts/smoke_release_compatibility.mjs",

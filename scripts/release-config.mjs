@@ -27,6 +27,7 @@ export const VENDORED_WORKSPACE_PACKAGES = Object.freeze([
 	releasePackage("@mycli/providers", "backend/packages/providers", true),
 	releasePackage("@mycli/storage", "backend/packages/storage", true),
 	releasePackage("@mycli/integrations", "backend/packages/integrations", true),
+	releasePackage("@mycli/extensions", "backend/packages/extensions", true),
 	releasePackage("@mycli/runtime", "backend/packages/runtime", true),
 	releasePackage("mycli-shell-tui", "tui/mycli-shell", true),
 ]);

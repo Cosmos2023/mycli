@@ -23,6 +23,7 @@
     "@mycli/config": "0.1.1",
     "@mycli/contracts": "0.1.1",
     "@mycli/core": "0.1.1",
+    "@mycli/extensions": "0.1.1",
     "@mycli/providers": "0.1.1",
     "@mycli/storage": "0.1.1",
     "@mycli/tools": "0.1.1",

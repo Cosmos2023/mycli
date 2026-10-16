@@ -55,6 +55,7 @@ import {
 	type ToolRouterContract,
 } from "@mycli/tools";
 import { ApprovalPolicy } from "../../../tools/src/policy/approval-policy.ts";
+import { ExtensionRegistry, type ExtensionFailure } from "@mycli/extensions";
 import {
 	NodeTurnRuntime,
 	ContextItemCoordinator,
@@ -434,6 +435,75 @@ test("collects memory once and reuses it across provider tool steps", async () =
 			item.type === "user" && item.text.includes("memory-reference")
 		)).length, 1);
 	}
+});
+
+test("registered extensions observe turn start, token usage, and completion", async () => {
+	const trace: string[] = [];
+	const requests: ProviderRequest[] = [];
+	const events: string[] = [];
+	const extensions = new ExtensionRegistry();
+	extensions.register({
+		id: "observer",
+		turnLifecycle: {
+			onTurnStart: (input) => { events.push(`start:${input.source}:${input.message}`); },
+			onTurnComplete: (input) => {
+				events.push(`complete:${input.assistantText}:${input.usage.output_tokens ?? 0}`);
+			},
+		},
+		tokenUsage: {
+			onTokenUsage: (input) => {
+				events.push(`usage:${input.requestId.endsWith(":final")}:${input.usage.output_tokens ?? 0}`);
+			},
+		},
+	});
+
+	const result = await createRuntime({
+		store: new FakeStore(trace),
+		provider: scriptedProvider(trace, requests, [[
+			{ type: "usage", usage: { input_tokens: 4, output_tokens: 2 } },
+			{ type: "text_delta", text: "done" },
+			{ type: "completed", responseId: "resp-final" },
+		]]),
+		toolRouter: new SequencedRouter(trace),
+		extensions,
+	}).submit(submission(), () => {}, { signal: new AbortController().signal });
+
+	assert.equal(result.status, "completed");
+	assert.deepEqual(events, ["start:user:Read README.md", "usage:true:2", "complete:done:2"]);
+});
+
+test("a throwing extension cannot fail the turn and is reported", async () => {
+	const trace: string[] = [];
+	const failures: ExtensionFailure[] = [];
+	const extensions = new ExtensionRegistry({ onFailure: (failure) => failures.push(failure) });
+	const ran: string[] = [];
+	extensions.register({
+		id: "broken",
+		turnLifecycle: {
+			onTurnStart: () => { throw new Error("start boom"); },
+			onTurnComplete: () => { throw new Error("complete boom"); },
+		},
+		tokenUsage: { onTokenUsage: () => { throw new Error("usage boom"); } },
+	});
+	extensions.register({ id: "healthy", turnLifecycle: { onTurnStart: () => { ran.push("healthy"); } } });
+
+	const result = await createRuntime({
+		store: new FakeStore(trace),
+		provider: scriptedProvider(trace, [], [[
+			{ type: "usage", usage: { input_tokens: 4, output_tokens: 2 } },
+			{ type: "text_delta", text: "done" },
+			{ type: "completed", responseId: "resp-final" },
+		]]),
+		toolRouter: new SequencedRouter(trace),
+		extensions,
+	}).submit(submission(), () => {}, { signal: new AbortController().signal });
+
+	assert.equal(result.status, "completed");
+	assert.deepEqual(ran, ["healthy"]);
+	assert.deepEqual(
+		failures.map((failure) => `${failure.extensionId}:${failure.hook}`),
+		["broken:onTurnStart", "broken:onTokenUsage", "broken:onTurnComplete"],
+	);
 });
 
 test("writes the terminal snapshot after durable completion and before memory actions", async () => {
@@ -4287,6 +4357,7 @@ function createRuntime(options: {
 	readonly compactionCoordinator?: CompactionCoordinatorContract;
 	readonly createCompactionCoordinator?: NodeTurnRuntimeOptions["createCompactionCoordinator"];
 	readonly memoryContextService?: MemoryContextServiceContract;
+	readonly extensions?: ExtensionRegistry;
 	readonly providerContinuation?: ProviderContinuationCoordinator;
 	readonly providerStepExecutor?: NodeTurnRuntimeOptions["providerStepExecutor"];
 	readonly writeTerminalSnapshot?: NodeTurnRuntimeOptions["writeTerminalSnapshot"];
@@ -4347,6 +4418,7 @@ function createRuntime(options: {
 		...(options.memoryContextService ? {
 			memoryContextService: options.memoryContextService,
 		} : {}),
+		...(options.extensions ? { extensions: options.extensions } : {}),
 		...(options.providerContinuation ? {
 			providerContinuation: options.providerContinuation,
 		} : {}),

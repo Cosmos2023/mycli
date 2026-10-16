@@ -400,7 +400,7 @@ test("current repository release metadata is valid", async () => {
 	const result = await verifyReleaseState();
 	assert.equal(result.packageCount, RELEASE_PACKAGES.length);
 	assert.equal(result.packageCount, 7);
-	assert.equal(result.vendoredPackageCount, 10);
+	assert.equal(result.vendoredPackageCount, 11);
 	assert.equal(isReleaseVersion(result.version), true);
 	await assert.rejects(
 		verifyReleaseState({ tag: "v99.0.0" }),

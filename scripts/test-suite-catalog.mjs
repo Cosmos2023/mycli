@@ -36,6 +36,13 @@ export const TEST_TARGETS = Object.freeze([
 		defaultSuite: "unit",
 	},
 	{
+		id: "extensions",
+		label: "@mycli/extensions",
+		root: "backend/packages/extensions",
+		testRoot: "test",
+		defaultSuite: "unit",
+	},
+	{
 		id: "contracts",
 		label: "@mycli/contracts",
 		root: "backend/packages/contracts",

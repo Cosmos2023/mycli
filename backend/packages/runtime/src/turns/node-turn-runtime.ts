@@ -1,5 +1,6 @@
 import type { TurnInterruptionReason } from "@mycli/contracts";
 import { GoalStateError } from "@mycli/core";
+import type { ExtensionRegistry, ExtensionTurnInput } from "@mycli/extensions";
 import type { SessionGoalService } from "../sessions/session-goal-service.ts";
 import type { SessionGoalUsageTracker } from "../sessions/session-goal-usage.ts";
 import type { GoalRef } from "@mycli/core";
@@ -223,6 +224,7 @@ export interface NodeTurnRuntimeOptions {
 		runSnapshot?: RunExecutionSnapshot,
 	) => CompactionCoordinatorContract;
 	readonly memoryContextService?: MemoryContextServiceContract;
+	readonly extensions?: ExtensionRegistry;
 	readonly providerContinuation?: ProviderContinuationContract;
 	readonly hookRunner?: HookRunnerContract;
 	readonly contextItemCoordinator?: ContextItemCoordinatorContract;
@@ -953,6 +955,9 @@ export class NodeTurnRuntime {
 		if (expectedProtocol && config.protocol !== expectedProtocol) {
 			throw configFailure("resolved provider protocol does not match suspended turn");
 		}
+		// Turn-start hooks run after admission and before the first provider request. The registry
+		// isolates failures, so a broken extension can never stop a turn from starting.
+		await this.#options.extensions?.runTurnStart(this.#extensionTurnInput(submission, turnId, signal));
 		return {
 			submission,
 			turnId,
@@ -1460,6 +1465,14 @@ export class NodeTurnRuntime {
 					this.#options.goal?.observeUsage(turnId, `${usageId}:final`, stepResult.usage);
 					this.#options.goalUsage?.observe(turnId, `${usageId}:final`, stepResult.usage);
 				}
+				if (Object.keys(stepResult.usage).length > 0) {
+					await this.#options.extensions?.runTokenUsage({
+						sessionId: this.#options.sessionId,
+						turnId,
+						requestId: `${usageId}:final`,
+						usage: stepResult.usage,
+					});
+				}
 			} catch (error) {
 				return this.#finalizeFailure(
 					submission,
@@ -1791,6 +1804,22 @@ export class NodeTurnRuntime {
 		}
 	}
 
+	/** The view every extension hook gets of the running turn. */
+	#extensionTurnInput(
+		submission: TurnSubmission,
+		turnId: string,
+		signal: AbortSignal,
+	): ExtensionTurnInput {
+		return Object.freeze({
+			sessionId: this.#options.sessionId,
+			turnId,
+			workspaceRoot: this.#options.workspaceRoot,
+			source: submission.source ?? "user",
+			message: submission.message,
+			signal,
+		});
+	}
+
 	async #finalizeAgentBudget(
 		context: TurnExecutionContext,
 		kind: AgentBudgetExhaustionKind,
@@ -1895,6 +1924,11 @@ export class NodeTurnRuntime {
 					// Memory is auxiliary and cannot rewrite an already completed turn.
 				}
 			}
+			await this.#options.extensions?.runTurnComplete({
+				...this.#extensionTurnInput(submission, completed.turn_id, signal),
+				assistantText,
+				usage: lastTokenUsage,
+			});
 			return completed;
 		} catch (error) {
 			return this.#finalizeFailure(
