@@ -24,6 +24,7 @@ type NodeTraceKind =
 	| "tool_execution"
 	| "compaction"
 	| "goal_lifecycle"
+	| "extension_failure"
 	| "subagent_lifecycle";
 
 export function nodeTraceRows(
@@ -191,6 +192,17 @@ export function runtimeDiagnosticTraceEvent(
 			},
 		});
 	}
+	if (event.kind === "extension_failure") {
+		return Object.freeze({
+			kind: "extension_failure",
+			turn_id: "extension",
+			payload: {
+				extension_id: event.extensionId,
+				hook: event.hook,
+				message: event.message,
+			},
+		});
+	}
 	return Object.freeze({
 		kind: event.kind,
 		turn_id: event.turnId,
@@ -299,6 +311,7 @@ function nodeTraceKind(value: unknown): NodeTraceKind | undefined {
 		"tool_execution",
 		"compaction",
 	"goal_lifecycle",
+	"extension_failure",
 		"subagent_lifecycle",
 	].includes(value as NodeTraceKind)
 		? value as NodeTraceKind
@@ -325,6 +338,7 @@ function nodeTracePayload(
 	if (kind === "tool_execution") return toolExecutionTracePayload(value);
 	if (kind === "compaction") return compactionTracePayload(value);
 	if (kind === "goal_lifecycle") return goalLifecycleTracePayload(value);
+	if (kind === "extension_failure") return extensionFailureTracePayload(value);
 	if (kind === "subagent_lifecycle") return subagentLifecycleTracePayload(value);
 	const clientTurnId = boundedTraceString(value.client_turn_id, 256);
 	return Object.freeze({
@@ -437,6 +451,18 @@ function subagentLifecycleTracePayload(
 }
 
 const GOAL_ACTIONS = ["created", "edited", "status_changed", "cleared", "round_started", "usage_accounted"] as const;
+const EXTENSION_HOOKS = ["onTurnStart", "onTurnComplete", "conversationItems", "context", "onTokenUsage"] as const;
+
+function extensionFailureTracePayload(
+	value: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> {
+	return compactTracePayload({
+		extension_id: boundedTraceToken(value.extension_id, 128),
+		hook: traceEnum(value.hook, EXTENSION_HOOKS),
+		message: boundedTraceText(value.message, 240),
+	});
+}
+
 const GOAL_SOURCES = ["model_tool", "user_command", "runtime"] as const;
 const GOAL_STATUSES = ["active", "paused", "blocked", "usage_limited", "budget_limited", "complete"] as const;
 

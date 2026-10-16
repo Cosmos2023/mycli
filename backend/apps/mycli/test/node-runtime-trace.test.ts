@@ -169,3 +169,26 @@ test("goal lifecycle trace keeps counters and never carries the objective text",
 	});
 	assert.equal(JSON.stringify(rows).includes("private objective"), false);
 });
+
+test("extension failures are traced with bounded evidence", async (t) => {
+	const home = await mkdtemp(join(tmpdir(), "mycli-extension-trace-"));
+	removeFixtureDirectoryAfterTests(t, home);
+	const store = openRuntimeSessionStore({ dbPath: join(home, "sessions.db") });
+	t.after(() => store.close());
+	appendNodeTrace(home, "extension-session", runtimeDiagnosticTraceEvent({
+		kind: "extension_failure",
+		extensionId: "memory",
+		hook: "context",
+		message: "private payload \u0000 boom",
+	}));
+
+	const rows = nodeTraceRows(store, home, "extension-session");
+
+	assert.equal(rows.length, 1);
+	assert.equal(rows[0]!.kind, "extension_failure");
+	assert.deepEqual(rows[0]!.payload, {
+		extension_id: "memory",
+		hook: "context",
+		message: "private payload   boom",
+	});
+});

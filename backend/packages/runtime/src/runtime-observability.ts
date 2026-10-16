@@ -101,6 +101,13 @@ export type RuntimeDiagnosticEvent =
 		readonly reason?: string;
 		readonly requestId?: string;
 		readonly turnId?: string;
+	}
+	| {
+		/** An extension hook threw. Isolation keeps the turn alive; this keeps the failure visible. */
+		readonly kind: "extension_failure";
+		readonly extensionId: string;
+		readonly hook: string;
+		readonly message: string;
 	};
 
 export function publishRuntimeDiagnostic(

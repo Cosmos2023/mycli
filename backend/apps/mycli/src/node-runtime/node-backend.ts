@@ -111,6 +111,7 @@ import {
 	MemoryStore,
 	NodeTurnRuntime,
 	planExtensionToolExposure,
+	publishRuntimeDiagnostic,
 	resolveAgentExecutionAdapters,
 	loadWorkspaceInstructions,
 	ProviderContinuationCoordinator,
@@ -130,6 +131,7 @@ import type {
 	NodeTurnRuntimeOptions,
 	PreparedSession,
 	RunExecutionSnapshot,
+	RuntimeDiagnosticEvent,
 } from "@mycli/runtime";
 import {
 	AGENT_MAILBOX_COMPLETION_REPORT_MAX_CHARS,
@@ -901,11 +903,13 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			const reviewRevision = runtimeOptions.review?.revision ?? options.reviewRevision;
 			const readRoot = runtimeOptions.review?.workspaceRoot ?? workspaceRoot;
 			const allowedTools = reviewMode ? ["Read"] : runtimeOptions.allowedTools;
+			const recordRuntimeDiagnostic = (event: RuntimeDiagnosticEvent): void =>
+				tryAppendNodeTrace(homeDir, sessionId, runtimeDiagnosticTraceEvent(event));
 			const goal = !reviewMode && !runtimeOptions.subagentContext && options.enableGoals !== false
 				? new SessionGoalService({
 					sessionId, workspaceRoot, threadId, store: store.goals,
 					materializeObjective: (input) => goalObjectiveFiles.pathFor(input),
-					recordDiagnostic: (event) => tryAppendNodeTrace(homeDir, sessionId, runtimeDiagnosticTraceEvent(event)),
+					recordDiagnostic: recordRuntimeDiagnostic,
 				}) : undefined;
 			goal?.restore();
 			const goalUsage = new SessionGoalUsageTracker(goal);
@@ -1265,7 +1269,15 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				sessionStore: store,
 				tokenCounter,
 			});
-			const extensions = new ExtensionRegistry();
+			// Extension failures stay visible: isolation keeps the turn alive, the trace records why.
+			const extensions = new ExtensionRegistry({
+				onFailure: (failure) => publishRuntimeDiagnostic(recordRuntimeDiagnostic, {
+					kind: "extension_failure",
+					extensionId: failure.extensionId,
+					hook: failure.hook,
+					message: failure.message,
+				}),
+			});
 			extensions.register(createMemoryExtension({
 				service: memoryContextService,
 				enabled: () => controlConfig.memoryEnabled,

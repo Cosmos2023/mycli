@@ -10,6 +10,7 @@ This directory is split by document purpose.
 - [architecture.md](./architecture.md): Node workspace and runtime ownership boundaries.
 - [testing.md](./testing.md): canonical test suites, classification rules, local commands, and CI composition.
 - [architecture/configuration-trust-and-provenance.md](./architecture/configuration-trust-and-provenance.md): configuration precedence, workspace trust, provenance, and secret boundaries.
+- [architecture/extension-api.md](./architecture/extension-api.md): the runtime extension registry, its contributor slots, failure isolation, and the goal migration still ahead.
 - [reference/configuration.md](./reference/configuration.md): generated configuration keys, defaults, canonical paths, and compatibility aliases.
 - [reference/config.example.toml](./reference/config.example.toml): generated commented configuration example.
 - [providers.md](./providers.md): built-in provider defaults, additional catalogs, custom endpoints, credentials, and opt-in live verification. See the [README examples](../README.md#additional-and-custom-providers) for setup.
