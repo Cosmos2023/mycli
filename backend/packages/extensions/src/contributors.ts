@@ -3,6 +3,7 @@ import type {
 	InstructionFragmentKind,
 	ProviderUsage,
 } from "@mycli/core";
+import type { ToolAdapter } from "@mycli/tools";
 
 /**
  * Where a turn came from: a human submission, another agent, or an extension that asked for it.
@@ -156,6 +157,31 @@ export interface TurnPolicyContributor {
 	allowTools?(input: ExtensionTurnPolicyInput): boolean;
 }
 
+/**
+ * Lets an extension own the session-level lifecycle of the state it drives, so the app does not
+ * have to name the feature that pauses on a cold start or releases resources on close.
+ */
+export interface SessionLifecycleContributor {
+	/** The session was activated. A feature must not resume work it cannot confirm after a restart. */
+	onRestore?(): void;
+	/** The user interrupted the running turn; pause anything the feature was driving. */
+	onInterrupt?(): void;
+	/** The session is closing; release resources. */
+	onClose?(): void;
+}
+
+/**
+ * Lets an extension contribute tools, so the session catalog is built from the registry instead of
+ * the app naming each feature's tool class.
+ */
+export interface ToolContributor {
+	/**
+	 * Adapters for this session's static catalog. Called whenever the catalog is rebuilt, so the
+	 * extension may build them lazily and keep them out of the model's view until then.
+	 */
+	tools?(): readonly ToolAdapter[];
+}
+
 export interface ConversationItemContributor {
 	/**
 	 * Items the runtime inserts ahead of the current user input, mirroring how memory is injected.
@@ -201,6 +227,8 @@ export interface ExtensionDefinition {
 	readonly id: string;
 	readonly admission?: AdmissionContributor;
 	readonly turnPolicy?: TurnPolicyContributor;
+	readonly sessionLifecycle?: SessionLifecycleContributor;
+	readonly tools?: ToolContributor;
 	readonly turnLifecycle?: TurnLifecycleContributor;
 	readonly conversationItems?: ConversationItemContributor;
 	readonly context?: ContextContributor;

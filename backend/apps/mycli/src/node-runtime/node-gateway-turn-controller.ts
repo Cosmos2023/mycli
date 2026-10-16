@@ -225,7 +225,7 @@ export class NodeGatewayTurnController {
 
 	async close(): Promise<void> {
 		this.#closed = true;
-		try { this.#session.runtime().goal?.interrupt(); }
+		try { this.#session.runtime().extensions?.interrupt(); }
 		finally {
 			const admission = this.#admission;
 			admission?.controller.abort();
@@ -737,7 +737,7 @@ export class NodeGatewayTurnController {
 					actual_turn_id: admission.turnId,
 				});
 			}
-			try { if (pauseGoal) this.#session.runtime().goal?.interrupt(); }
+			try { if (pauseGoal) this.#session.runtime().extensions?.interrupt(); }
 			finally { admission.controller.abort(new UserTurnCancellation()); }
 			return admission.settled.then(() => admission.reserved
 				? { accepted: false, requested: false, ...this.#status() }
@@ -815,7 +815,7 @@ export class NodeGatewayTurnController {
 			input_rolled_back: active.inputRolledBack === true,
 		});
 		let pauseFailure: unknown;
-		try { if (pauseGoal) active.runtime.goal?.interrupt(); }
+		try { if (pauseGoal) active.runtime.extensions?.interrupt(); }
 		catch (error) { pauseFailure = error; }
 		active.controller.abort(new UserTurnCancellation());
 		active.interruptPromise = this.#awaitInterrupt(active);

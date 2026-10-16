@@ -24,7 +24,9 @@ export type {
 	ExtensionTurnPolicyInput,
 	ExtensionTurnStop,
 	ExtensionTurnSource,
+	SessionLifecycleContributor,
 	TokenUsageContributor,
+	ToolContributor,
 	TurnPolicyContributor,
 	TurnLifecycleContributor,
 } from "./contributors.ts";

@@ -1,9 +1,11 @@
 import type { GoalRef } from "@mycli/core";
 import type { ExtensionDefinition } from "@mycli/extensions";
+import { GoalTool } from "@mycli/tools";
 import { goalContinuationMessage } from "./session-goal-context.ts";
 import type { SessionGoalService } from "./session-goal-service.ts";
 
 export interface GoalExtensionOptions {
+	readonly sessionId: string;
 	readonly service: SessionGoalService;
 }
 
@@ -67,6 +69,18 @@ export function createGoalExtension(options: GoalExtensionOptions): ExtensionDef
 			onTokenUsage: ({ turnId, requestId, usage }) => {
 				options.service.observeUsage(turnId, requestId, usage);
 			},
+		},
+		sessionLifecycle: {
+			// A cold start never inherits permission to launch automatic work.
+			onRestore: () => options.service.restore(),
+			onInterrupt: () => options.service.interrupt(),
+			onClose: () => options.service.close(),
+		},
+		tools: {
+			// The goal tools are authority-gated by the service, so they belong to the feature.
+			tools: () => (["create", "get", "update"] as const).map(
+				(operation) => new GoalTool(operation, options.sessionId, options.service),
+			),
 		},
 	};
 }

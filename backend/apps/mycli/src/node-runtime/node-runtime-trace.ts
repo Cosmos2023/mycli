@@ -456,6 +456,8 @@ const EXTENSION_HOOKS = [
 	"conversationItems", "context", "onTokenUsage",
 	"nextTurn", "assertAdmission", "onAdmissionFailed",
 	"stopReason", "toolsStopReason", "allowTools",
+	"onRestore", "onInterrupt", "onClose",
+	"tools",
 ] as const;
 
 function extensionFailureTracePayload(

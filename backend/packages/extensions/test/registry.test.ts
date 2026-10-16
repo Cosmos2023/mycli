@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { ToolAdapter } from "@mycli/tools";
 import { ExtensionRegistry, type ExtensionFailure } from "../src/index.ts";
+
+function toolAdapter(name: string): ToolAdapter {
+	return {
+		definition: { id: name, name, description: name, inputSchema: { type: "object" } },
+		execute: async () => ({ success: true, modelOutput: name, summary: name, metadata: {} }),
+	};
+}
 
 const turn = {
 	sessionId: "session-1",
@@ -224,4 +232,49 @@ test("every extension is asked about tools so one refusal strips them", () => {
 
 	assert.equal(registry.allowTools({ sessionId: "session-1", turnId: "turn-1" }), false);
 	assert.deepEqual(asked, ["wrap-up", "audit"]);
+});
+
+test("session lifecycle reports and propagates restore and interrupt", () => {
+	const failures: ExtensionFailure[] = [];
+	const seen: string[] = [];
+	const registry = new ExtensionRegistry({ onFailure: (failure) => failures.push(failure) });
+	registry.register({
+		id: "goal",
+		sessionLifecycle: {
+			onRestore: () => { seen.push("restore"); throw new Error("restore failed"); },
+			onInterrupt: () => { seen.push("interrupt"); },
+		},
+	});
+	registry.register({ id: "audit", sessionLifecycle: { onInterrupt: () => { seen.push("audit"); } } });
+
+	assert.throws(() => registry.restore(), /restore failed/u);
+	assert.deepEqual(failures, [{ extensionId: "goal", hook: "onRestore", message: "restore failed" }]);
+	registry.interrupt();
+	assert.deepEqual(seen, ["restore", "interrupt", "audit"]);
+});
+
+test("closing runs every extension and rethrows the first failure", () => {
+	const failures: ExtensionFailure[] = [];
+	const closed: string[] = [];
+	const registry = new ExtensionRegistry({ onFailure: (failure) => failures.push(failure) });
+	registry.register({
+		id: "broken",
+		sessionLifecycle: { onClose: () => { closed.push("broken"); throw new Error("close failed"); } },
+	});
+	registry.register({ id: "healthy", sessionLifecycle: { onClose: () => { closed.push("healthy"); } } });
+
+	assert.throws(() => registry.close(), /close failed/u);
+	assert.deepEqual(closed, ["broken", "healthy"]);
+	assert.deepEqual(failures, [{ extensionId: "broken", hook: "onClose", message: "close failed" }]);
+});
+
+test("tool contributions are concatenated in order and a throwing one is skipped", () => {
+	const failures: ExtensionFailure[] = [];
+	const registry = new ExtensionRegistry({ onFailure: (failure) => failures.push(failure) });
+	registry.register({ id: "first", tools: { tools: () => [toolAdapter("create_goal")] } });
+	registry.register({ id: "broken", tools: { tools: () => { throw new Error("boom"); } } });
+	registry.register({ id: "second", tools: { tools: () => [toolAdapter("update_goal")] } });
+
+	assert.deepEqual(registry.tools().map((adapter) => adapter.definition.name), ["create_goal", "update_goal"]);
+	assert.deepEqual(failures, [{ extensionId: "broken", hook: "tools", message: "boom" }]);
 });

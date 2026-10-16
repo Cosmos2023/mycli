@@ -1,5 +1,4 @@
 import { SessionGoalService, SessionGoalUsageTracker, sessionGoalContext } from "@mycli/runtime";
-import { GoalTool } from "@mycli/tools";
 import { GatewayFailure } from "./node-gateway-errors.ts";
 import { GoalObjectiveFiles } from "./goal-objective-files.ts";
 import { loadGitWorkspaceDiff, repositoryInitPrompt, prepareInteractiveReview, workspaceWorkflowFailure, workspaceWorktreeCommands } from "./workspace-slash-workflows.ts";
@@ -913,8 +912,21 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					materializeObjective: (input) => goalObjectiveFiles.pathFor(input),
 					recordDiagnostic: recordRuntimeDiagnostic,
 				}) : undefined;
-			goal?.restore();
 			const goalUsage = new SessionGoalUsageTracker(goal);
+			// Extension failures stay visible: isolation keeps the turn alive, the trace records why.
+			const extensions = new ExtensionRegistry({
+				onFailure: (failure) => publishRuntimeDiagnostic(recordRuntimeDiagnostic, {
+					kind: "extension_failure",
+					extensionId: failure.extensionId,
+					hook: failure.hook,
+					message: failure.message,
+				}),
+			});
+			if (goal) extensions.register(createGoalExtension({ sessionId, service: goal }));
+			// Delegated work carries no goal of its own; it mirrors the parent goal it was bound to.
+			if (runtimeOptions.subagentContext) extensions.register(createGoalUsageExtension({ tracker: goalUsage }));
+			// Cold activation: the registry, not the app, decides which features may continue.
+			extensions.restore();
 			let sessionPreferences = runtimeOptions.subagentContext
 				? undefined
 				: loadSessionPreferences(store, sessionId);
@@ -1091,7 +1103,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			};
 			const toolSearch = new ToolSearchTool(deferredCandidates(allowedDeferredRegistrations()));
 			const staticAdapters = [
-				...(goal ? (["create", "get", "update"] as const).map((operation) => new GoalTool(operation, sessionId, goal)) : []),
+				...extensions.tools(),
 				new ViewImageTool({ workspaceRoot, homeDir }),
 				new ListMcpResourcesTool(integrationComposition.mcpResourceService),
 				new ListMcpResourceTemplatesTool(integrationComposition.mcpResourceService),
@@ -1271,18 +1283,6 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				sessionStore: store,
 				tokenCounter,
 			});
-			// Extension failures stay visible: isolation keeps the turn alive, the trace records why.
-			const extensions = new ExtensionRegistry({
-				onFailure: (failure) => publishRuntimeDiagnostic(recordRuntimeDiagnostic, {
-					kind: "extension_failure",
-					extensionId: failure.extensionId,
-					hook: failure.hook,
-					message: failure.message,
-				}),
-			});
-			if (goal) extensions.register(createGoalExtension({ service: goal }));
-			// Delegated work carries no goal of its own; it mirrors the parent goal it was bound to.
-			if (runtimeOptions.subagentContext) extensions.register(createGoalUsageExtension({ tracker: goalUsage }));
 			extensions.register(createMemoryExtension({
 				service: memoryContextService,
 				enabled: () => controlConfig.memoryEnabled,
@@ -1590,7 +1590,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				workspaceRoot,
 				toolNames: () => allToolExposure.map((tool) => tool.name),
 				closeExtensions: async () => {
-					try { goal?.close(); }
+					try { extensions.close(); }
 					finally {
 						unsubscribeExtensions?.();
 						await integrationComposition.close();

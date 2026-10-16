@@ -32,7 +32,7 @@ for (const status of ["paused", "complete"] as const) {
 				yield { type: "completed", responseId: `response-${requests}` };
 			} };
 			const extensions = new ExtensionRegistry();
-			extensions.register(createGoalExtension({ service: goal }));
+			extensions.register(createGoalExtension({ sessionId: "session", service: goal }));
 			const runtime = new NodeTurnRuntime({ sessionId: "session", workspaceRoot: root, threadId: "session", instructions: "Fixture", store, extensions,
 				resolveConfig: () => ({ ...NODE_RUNTIME_CONTEXT_DEFAULTS, workspaceRoot: root, homeDir: root, provider: "openai", protocol: "responses", model: "gpt-test",
 					apiBaseUrl: "https://example.invalid/v1", apiKey: "test", authRef: "openai", sessionId: "session", sessionsDbPath: join(root, "sessions.db"),

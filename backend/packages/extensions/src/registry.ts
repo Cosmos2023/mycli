@@ -1,4 +1,5 @@
 import type { CanonicalConversationItem } from "@mycli/core";
+import type { ToolAdapter } from "@mycli/tools";
 import type {
 	ExtensionAdmission,
 	ExtensionAdmissionFailureInput,
@@ -28,7 +29,11 @@ export type ExtensionHookName =
 	| "onAdmissionFailed"
 	| "stopReason"
 	| "toolsStopReason"
-	| "allowTools";
+	| "allowTools"
+	| "onRestore"
+	| "onInterrupt"
+	| "onClose"
+	| "tools";
 
 /** A turn an extension asked for, resolved back to the extension that asked. */
 export interface ResolvedAdmission extends ExtensionAdmission {
@@ -204,6 +209,66 @@ export class ExtensionRegistry {
 			}
 		}
 		return undefined;
+	}
+
+	/**
+	 * Session lifecycle is contract-bearing: `onRestore` decides whether a feature may continue
+	 * after a restart and `onInterrupt` decides whether it keeps driving work, so both report and
+	 * propagate. `onClose` releases resources, so every extension is closed and the first failure
+	 * is rethrown afterwards.
+	 */
+	restore(): void {
+		this.#runLifecycle("onRestore");
+	}
+
+	interrupt(): void {
+		this.#runLifecycle("onInterrupt");
+	}
+
+	close(): void {
+		let firstError: unknown;
+		for (const [id, extension] of this.#extensions) {
+			const hook = extension.sessionLifecycle?.onClose;
+			if (!hook) continue;
+			try {
+				hook();
+			} catch (error) {
+				this.#report(id, "onClose", error);
+				firstError ??= error;
+			}
+		}
+		if (firstError !== undefined) throw firstError;
+	}
+
+	#runLifecycle(hook: "onRestore" | "onInterrupt"): void {
+		for (const [id, extension] of this.#extensions) {
+			const run = extension.sessionLifecycle?.[hook];
+			if (!run) continue;
+			try {
+				run();
+			} catch (error) {
+				this.#report(id, hook, error);
+				throw error;
+			}
+		}
+	}
+
+	/**
+	 * Every extension's tools, in registration order. A throwing contributor is reported and
+	 * skipped: a broken extension must not leave the session without a catalog.
+	 */
+	tools(): readonly ToolAdapter[] {
+		const adapters: ToolAdapter[] = [];
+		for (const [id, extension] of this.#extensions) {
+			const contribute = extension.tools?.tools;
+			if (!contribute) continue;
+			try {
+				adapters.push(...contribute());
+			} catch (error) {
+				this.#report(id, "tools", error);
+			}
+		}
+		return Object.freeze(adapters);
 	}
 
 	async collectConversationItems(

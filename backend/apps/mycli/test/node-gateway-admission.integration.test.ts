@@ -170,7 +170,7 @@ async function createFixture(t: test.TestContext, options: {
 		store: { loadCommittedQueueIds: () => new Set(), saveSnapshot: (snapshot) => { store.saveQueueSnapshot({ sessionId: config.sessionId, threadId: config.sessionId, workspaceRoot: root, snapshot }); },
 			commitPending: (turnId, records) => store.commitQueuedInputs({ sessionId: config.sessionId, turnId, records }) } }) : undefined;
 	const extensions = new ExtensionRegistry();
-	if (goal) extensions.register(createGoalExtension({ service: goal }));
+	if (goal) extensions.register(createGoalExtension({ sessionId: config.sessionId, service: goal }));
 	const runtime = new NodeTurnRuntime({
 		extensions, queueCoordinator: queue,
 		sessionId: config.sessionId, threadId: config.sessionId, workspaceRoot: root, store,

@@ -359,7 +359,7 @@ export class NodeGatewaySessionController {
 	): SessionAdmissionClaim {
 		this.#assertTransitionAvailable(coordinator);
 		const claim: SessionAdmissionClaim = Object.freeze({ kind: "transition", identity: {} });
-		this.runtime().goal?.interrupt();
+		this.runtime().extensions?.interrupt();
 		this.#admission = Object.freeze({ kind: "transitioning", claim });
 		this.#options.onTransition?.();
 		return claim;

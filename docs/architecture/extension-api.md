@@ -12,6 +12,7 @@ registry: features register contributors, and the runtime asks the registry inst
   empty ids are rejected.
 - Slots: `admission` (`nextTurn` / `assertAdmission` / `onAdmissionFailed`),
   `turnPolicy` (`stopReason` / `toolsStopReason` / `allowTools`),
+  `sessionLifecycle` (`onRestore` / `onInterrupt` / `onClose`), `tools`,
   `turnLifecycle` (`onTurnAdmitted` / `onTurnStart` / `onTurnComplete` / `onTurnFinished`),
   `context` (turn-context sections the extension renders itself), `conversationItems` (items
   inserted ahead of the current user input), `tokenUsage.onTokenUsage`.
@@ -35,6 +36,8 @@ The runtime consults the registry in `node-turn-runtime.ts`:
 | `stopReason` | `#turnStopFailure`, before each provider step |
 | `toolsStopReason` | `#turnStopFailure` and the `ToolBatchCoordinator` tool-stop callback |
 | `allowTools` | the wrap-up step that decides whether the request carries tools |
+| `onRestore` / `onInterrupt` / `onClose` | the app's session activation, interruption, and close paths |
+| `tools` | `node-backend.ts`, when the static tool catalog is built |
 
 Failures land in the session node trace as `extension_failure` rows (extension id, hook, bounded
 message), which `/trace` and the doctor support bundle surface.
@@ -102,21 +105,37 @@ callbacks, the post-step stop check, the tool-stop check, and the wrap-up step t
 
 ## What is still missing
 
+### Tools and session lifecycle (done)
+
+- `tools` lets an extension contribute `ToolAdapter`s to the session's static catalog, so the app
+  no longer names `GoalTool`. A throwing contributor is reported and skipped — a broken extension
+  must not leave the session without a catalog.
+- `sessionLifecycle` carries `onRestore` / `onInterrupt` / `onClose`. `restore` and `interrupt` are
+  contract-bearing (they decide whether a feature may keep driving work), so they report and
+  propagate; `close` releases resources, so every extension is closed and the first failure is
+  rethrown afterwards.
+- The registry is now created right after the goal service, before the tool catalog is built, and
+  the memory extension is registered later when its service exists. The app composes goal through
+  the registry for admission, turn policy, usage, tools, and session lifecycle.
+
 ## What is still missing
 
-### 5. Tools and session lifecycle
+The runtime turn loop no longer names goal; the remaining coupling is in the app, where goal is a
+user-facing feature with commands and a transcript projection:
 
-- Tool registration: goal exposes `create_goal`, `get_goal`, and `update_goal` from the app's tool
-  exposure today (`runtimeToolExposure` in `node-backend.ts`). The slot should let an extension
-  contribute tool definitions plus adapters, so the catalog is built from the registry.
-- Session lifecycle: `restore()`, `interrupt()`, `close()`, and `subscribe()` are driven by the app
-  (`node-gateway-session-controller.ts`, `node-backend.ts`). A `sessionLifecycle` slot should carry
-  those so a feature can react to cold activation and interruption without the app naming it.
-- One goal reference is still left in the turn loop on purpose: `normalizeFailure` maps
-  `GoalStateError` to an interruption. The error comes from the goal *tools*, so it should move
-  when those tools move onto the registry — they own the error then. Doing it now would mean
-  threading the registry through roughly twenty call sites of a free function for no behaviour
-  change.
+- **Compaction budget.** `node-backend.ts` asks goal for `accountingGoalId`,
+  `remainingTokenBudget`, and `observeAttributedUsage` when it builds the compaction coordinator.
+- **Goal context.** `contextSources` still renders `sessionGoalContext(goal.modelView(), ...)`,
+  which is a different mechanism from the extension `context` sections.
+- **Delegation.** `runtime.goalUsage.capture` / `.bind` route a child turn's usage to the parent
+  goal.
+- **`GoalStateError`.** `normalizeFailure` in `node-turn-runtime.ts` still maps it to an
+  interruption. The error comes from the goal tools, so it should move with them; doing it now
+  means threading the registry through roughly twenty call sites of a free function for no
+  behaviour change.
+- **`TurnSubmission.source`** is still the closed union `"user" | "agent_mailbox" | "goal"` because
+  storage persists it and the transcript renders it. Generalising it to
+  `{ kind: "extension", ... }` needs storage and projection work.
 
 ## Constraints discovered while migrating
 
