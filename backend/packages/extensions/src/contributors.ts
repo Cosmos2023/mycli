@@ -116,6 +116,34 @@ export interface AdmissionContributor {
 	onAdmissionFailed?(input: ExtensionAdmissionFailureInput): void;
 }
 
+export interface ExtensionTurnPolicyInput {
+	readonly sessionId: string;
+	readonly turnId: string;
+}
+
+/** Why an extension stopped a turn. The runtime validates `interruptionReason` against the contract. */
+export interface ExtensionTurnStop {
+	readonly message: string;
+	readonly interruptionReason?: string;
+}
+
+/**
+ * Lets an extension end a running turn or take its tools away, which is how a feature enforces a
+ * budget it owns. Every hook is a pure read of the extension's own state.
+ */
+export interface TurnPolicyContributor {
+	/** Why the turn must stop before the next provider step. The first contributor wins. */
+	stopReason?(input: ExtensionTurnPolicyInput): ExtensionTurnStop | undefined;
+	/** Why tools must not run for the pending batch. The first contributor wins. */
+	toolsStopReason?(input: ExtensionTurnPolicyInput): ExtensionTurnStop | undefined;
+	/**
+	 * Whether the next provider step may carry tools. Every contributor is asked and a single
+	 * `false` strips them, which is how a budget-exhausted feature offers its one wrap-up step. The
+	 * owner decides when that step has been served; it is asked again on every step.
+	 */
+	allowTools?(input: ExtensionTurnPolicyInput): boolean;
+}
+
 export interface ConversationItemContributor {
 	/**
 	 * Items the runtime inserts ahead of the current user input, mirroring how memory is injected.
@@ -160,6 +188,7 @@ export interface ContextContributor {
 export interface ExtensionDefinition {
 	readonly id: string;
 	readonly admission?: AdmissionContributor;
+	readonly turnPolicy?: TurnPolicyContributor;
 	readonly turnLifecycle?: TurnLifecycleContributor;
 	readonly conversationItems?: ConversationItemContributor;
 	readonly context?: ContextContributor;

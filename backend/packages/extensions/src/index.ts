@@ -4,6 +4,7 @@ export type {
 	ExtensionHookName,
 	ExtensionRegistryOptions,
 	ResolvedAdmission,
+	ResolvedTurnStop,
 } from "./registry.ts";
 export type {
 	AdmissionContributor,
@@ -20,7 +21,10 @@ export type {
 	ExtensionTokenUsageInput,
 	ExtensionTurnCompleteInput,
 	ExtensionTurnInput,
+	ExtensionTurnPolicyInput,
+	ExtensionTurnStop,
 	ExtensionTurnSource,
 	TokenUsageContributor,
+	TurnPolicyContributor,
 	TurnLifecycleContributor,
 } from "./contributors.ts";

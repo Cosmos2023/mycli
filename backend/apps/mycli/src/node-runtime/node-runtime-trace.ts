@@ -455,6 +455,7 @@ const EXTENSION_HOOKS = [
 	"onTurnAdmitted", "onTurnStart", "onTurnComplete", "onTurnFinished",
 	"conversationItems", "context", "onTokenUsage",
 	"nextTurn", "assertAdmission", "onAdmissionFailed",
+	"stopReason", "toolsStopReason", "allowTools",
 ] as const;
 
 function extensionFailureTracePayload(

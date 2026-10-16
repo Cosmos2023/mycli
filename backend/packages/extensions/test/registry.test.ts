@@ -190,3 +190,38 @@ test("turn lifecycle reports admission and terminal state to every extension", a
 
 	assert.deepEqual(seen, ["admitted:goal:turn-1", "finished:failed:quota_exceeded", "audit:turn-1"]);
 });
+
+test("the first extension with a stop reason wins and a throwing one is skipped", () => {
+	const failures: ExtensionFailure[] = [];
+	const registry = new ExtensionRegistry({ onFailure: (failure) => failures.push(failure) });
+	registry.register({ id: "quiet", turnPolicy: { stopReason: () => undefined } });
+	registry.register({ id: "broken", turnPolicy: { stopReason: () => { throw new Error("boom"); } } });
+	registry.register({
+		id: "budget",
+		turnPolicy: {
+			stopReason: () => ({ message: "Goal token budget exhausted.", interruptionReason: "goal_budget" }),
+		},
+	});
+	registry.register({ id: "later", turnPolicy: { stopReason: () => ({ message: "later" }) } });
+
+	const input = { sessionId: "session-1", turnId: "turn-1" };
+	assert.deepEqual(registry.stopReason(input), {
+		extensionId: "budget",
+		message: "Goal token budget exhausted.",
+		interruptionReason: "goal_budget",
+	});
+	assert.deepEqual(failures, [{ extensionId: "broken", hook: "stopReason", message: "boom" }]);
+	assert.equal(registry.toolsStopReason(input), undefined);
+	assert.equal(registry.allowTools(input), true);
+});
+
+test("every extension is asked about tools so one refusal strips them", () => {
+	const asked: string[] = [];
+	const registry = new ExtensionRegistry();
+	registry.register({ id: "wrap-up", turnPolicy: { allowTools: () => { asked.push("wrap-up"); return false; } } });
+	registry.register({ id: "audit", turnPolicy: { allowTools: () => { asked.push("audit"); return true; } } });
+	registry.register({ id: "broken", turnPolicy: { allowTools: () => { throw new Error("boom"); } } });
+
+	assert.equal(registry.allowTools({ sessionId: "session-1", turnId: "turn-1" }), false);
+	assert.deepEqual(asked, ["wrap-up", "audit"]);
+});

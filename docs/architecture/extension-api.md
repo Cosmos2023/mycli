@@ -11,6 +11,7 @@ registry: features register contributors, and the runtime asks the registry inst
 - `ExtensionRegistry.register(definition)` — registration order is execution order; duplicate or
   empty ids are rejected.
 - Slots: `admission` (`nextTurn` / `assertAdmission` / `onAdmissionFailed`),
+  `turnPolicy` (`stopReason` / `toolsStopReason` / `allowTools`),
   `turnLifecycle` (`onTurnAdmitted` / `onTurnStart` / `onTurnComplete` / `onTurnFinished`),
   `context` (turn-context sections the extension renders itself), `conversationItems` (items
   inserted ahead of the current user input), `tokenUsage.onTokenUsage`.
@@ -31,6 +32,9 @@ The runtime consults the registry in `node-turn-runtime.ts`:
 | `nextTurn` | `node-gateway-turn-controller.ts#scheduleNextQueuedTurn`, when the session is idle |
 | `assertAdmission` | `NodeTurnRuntime.reserve`, before the turn is persisted |
 | `onAdmissionFailed` | the turn controller's `startFailed` path |
+| `stopReason` | `#turnStopFailure`, before each provider step |
+| `toolsStopReason` | `#turnStopFailure` and the `ToolBatchCoordinator` tool-stop callback |
+| `allowTools` | the wrap-up step that decides whether the request carries tools |
 
 Failures land in the session node trace as `extension_failure` rows (extension id, hook, bounded
 message), which `/trace` and the doctor support bundle surface.
@@ -60,26 +64,39 @@ through `onTurnAdmitted` / `onTurnFinished`.
   "Continuing goal", and schema v15 gates goal input). Generalising it to
   `{ kind: "extension", ... }` needs storage work and was deliberately left out of this slice.
 
+### Turn policy (done)
+
+Goal decides when a turn stops and whether the wrap-up step may use tools. That decision now comes
+from `turnPolicy.stopReason` / `toolsStopReason` / `allowTools`, and `node-turn-runtime.ts` no
+longer mentions goal at the five call sites that used to read it (two `ToolBatchCoordinator`
+callbacks, the post-step stop check, the tool-stop check, and the wrap-up step that used to call
+`goal.beginWrapUpStep`).
+
+- `stopReason` / `toolsStopReason` are synchronous reads; the first contributor with a stop wins.
+  A throwing contributor cannot decide, so it is reported and skipped — the failure stays visible
+  in the session trace.
+- `allowTools` asks **every** contributor and one `false` strips tools, so an extension's internal
+  state never depends on whether another extension short-circuited the loop. That is what keeps
+  goal's one-shot wrap-up step advancing on every step.
+- `ExtensionTurnStop.interruptionReason` is a plain string on the boundary and the runtime
+  validates it with `isTurnInterruptionReason`, so the extensions package does not need a second
+  workspace dependency.
+- `createGoalUsageExtension` is the delegated-work half: a subagent runtime carries no goal service
+  of its own, so it mirrors the parent goal it was bound to.
+
 ## What is still missing
 
-### 2. Turn policy
+### 4. Usage accounting
 
-Goal decides when a turn stops and whether the wrap-up step may use tools:
+`node-turn-runtime.ts` still holds `options.goal` / `options.goalUsage` for `observeUsage` and
+`observe`, so the runtime still imports `SessionGoalService`. Migrating it needs a decision the
+`tokenUsage` slot does not make today: the runtime reports retry attempts as `${usageId}:${attempt}`
+and the step result as `${usageId}:final`, and it deliberately skips the final goal write when an
+attempt already reported usage, because `session_goal_usage` is keyed by request id. The extension
+would have to know which of the two it is looking at, so the slot needs to carry that distinction
+before goal accounting can move.
 
-```ts
-interface TurnPolicyContributor {
-  stopReason?(input: { sessionId: string; turnId: string }): RuntimeFailure | undefined;
-  toolsStopReason?(input: { sessionId: string; turnId: string }): RuntimeFailure | undefined;
-  allowTools?(input: { sessionId: string; turnId: string }): boolean;
-}
-```
-
-- Call sites: `node-turn-runtime.ts` — the post-step stop check, the tool-stop failure, and the
-  wrap-up step that currently strips tools through `goal.beginWrapUpStep(turnId)`.
-- Acceptance: goal's budget/blocked/paused stop paths keep their current messages and interruption
-  reasons, verified by `node-goal.integration.test.ts` and the goal service tests.
-
-### 3. Tools and session lifecycle
+### 5. Tools and session lifecycle
 
 - Tool registration: goal exposes `create_goal`, `get_goal`, and `update_goal` from the app's tool
   exposure today (`runtimeToolExposure` in `node-backend.ts`). The slot should let an extension

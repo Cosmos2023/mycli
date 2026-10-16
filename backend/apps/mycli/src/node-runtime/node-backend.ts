@@ -124,6 +124,7 @@ import {
 	TokenCounter,
 	toolExposureForSnapshot,
 	createGoalExtension,
+	createGoalUsageExtension,
 	WorkerLeasedAgentThreadRuntimeFactory,
 	WorkerLeasedRootTurnRuntime,
 	runSessionHookPoint,
@@ -1280,6 +1281,8 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				}),
 			});
 			if (goal) extensions.register(createGoalExtension({ service: goal }));
+			// Delegated work carries no goal of its own; it mirrors the parent goal it was bound to.
+			if (runtimeOptions.subagentContext) extensions.register(createGoalUsageExtension({ tracker: goalUsage }));
 			extensions.register(createMemoryExtension({
 				service: memoryContextService,
 				enabled: () => controlConfig.memoryEnabled,

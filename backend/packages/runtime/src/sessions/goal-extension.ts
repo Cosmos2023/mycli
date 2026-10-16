@@ -44,6 +44,24 @@ export function createGoalExtension(options: GoalExtensionOptions): ExtensionDef
 				options.service.finishTurn(turnId, status, errorCode);
 			},
 		},
+		turnPolicy: {
+			stopReason: ({ turnId }) => {
+				const message = options.service.stopReason(turnId);
+				return message === undefined ? undefined : {
+					message,
+					interruptionReason: options.service.interruptionReason(turnId),
+				};
+			},
+			toolsStopReason: ({ turnId }) => {
+				const message = options.service.toolsStopReason(turnId);
+				return message === undefined ? undefined : {
+					message,
+					interruptionReason: options.service.interruptionReason(turnId),
+				};
+			},
+			// A budgeted goal gets exactly one wrap-up step, and that step carries no tools.
+			allowTools: ({ turnId }) => !options.service.beginWrapUpStep(turnId),
+		},
 	};
 }
 

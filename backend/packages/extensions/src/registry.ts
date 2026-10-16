@@ -11,6 +11,8 @@ import type {
 	ExtensionTokenUsageInput,
 	ExtensionTurnCompleteInput,
 	ExtensionTurnInput,
+	ExtensionTurnPolicyInput,
+	ExtensionTurnStop,
 } from "./contributors.ts";
 
 export type ExtensionHookName =
@@ -23,10 +25,18 @@ export type ExtensionHookName =
 	| "onTokenUsage"
 	| "nextTurn"
 	| "assertAdmission"
-	| "onAdmissionFailed";
+	| "onAdmissionFailed"
+	| "stopReason"
+	| "toolsStopReason"
+	| "allowTools";
 
 /** A turn an extension asked for, resolved back to the extension that asked. */
 export interface ResolvedAdmission extends ExtensionAdmission {
+	readonly extensionId: string;
+}
+
+/** A turn stop an extension asked for, resolved back to the extension that asked. */
+export interface ResolvedTurnStop extends ExtensionTurnStop {
 	readonly extensionId: string;
 }
 
@@ -150,6 +160,50 @@ export class ExtensionRegistry {
 			this.#report(ref.extensionId, "onAdmissionFailed", error);
 			throw error;
 		}
+	}
+
+	/**
+	 * Asks each extension whether the turn must stop. A throwing extension cannot decide, so it is
+	 * reported and skipped; the failure stays visible in the session trace.
+	 */
+	stopReason(input: ExtensionTurnPolicyInput): ResolvedTurnStop | undefined {
+		return this.#firstTurnStop(input, "stopReason");
+	}
+
+	toolsStopReason(input: ExtensionTurnPolicyInput): ResolvedTurnStop | undefined {
+		return this.#firstTurnStop(input, "toolsStopReason");
+	}
+
+	/** Every contributor is asked, so one extension's state never depends on another's answer. */
+	allowTools(input: ExtensionTurnPolicyInput): boolean {
+		let allowed = true;
+		for (const [id, extension] of this.#extensions) {
+			const hook = extension.turnPolicy?.allowTools;
+			if (!hook) continue;
+			try {
+				if (!hook(input)) allowed = false;
+			} catch (error) {
+				this.#report(id, "allowTools", error);
+			}
+		}
+		return allowed;
+	}
+
+	#firstTurnStop(
+		input: ExtensionTurnPolicyInput,
+		hook: "stopReason" | "toolsStopReason",
+	): ResolvedTurnStop | undefined {
+		for (const [id, extension] of this.#extensions) {
+			const decide = extension.turnPolicy?.[hook];
+			if (!decide) continue;
+			try {
+				const stop = decide(input);
+				if (stop) return Object.freeze({ ...stop, extensionId: id });
+			} catch (error) {
+				this.#report(id, hook, error);
+			}
+		}
+		return undefined;
 	}
 
 	async collectConversationItems(

@@ -1,10 +1,11 @@
-import type { TurnInterruptionReason } from "@mycli/contracts";
+import { isTurnInterruptionReason, type TurnInterruptionReason } from "@mycli/contracts";
 import { GoalStateError } from "@mycli/core";
 import type {
 	ExtensionAdmissionRef,
 	ExtensionContextSection,
 	ExtensionRegistry,
 	ExtensionTurnInput,
+	ExtensionTurnPolicyInput,
 	ExtensionTurnSource,
 } from "@mycli/extensions";
 import type { SessionGoalService } from "../sessions/session-goal-service.ts";
@@ -460,7 +461,7 @@ export class NodeTurnRuntime {
 			store: options.store,
 			budget: this.#agentBudget,
 			activeTools: this.#toolExecutions,
-			toolStopReason: (turnId) => options.goal?.toolsStopReason(turnId) ?? options.goalUsage?.stopReason(turnId),
+			toolStopReason: (turnId) => options.extensions?.toolsStopReason(turnPolicyInput(options.sessionId, turnId))?.message,
 			...(options.toolRouter ? { toolRouter: options.toolRouter } : {}),
 			...(options.approvalPolicy ? { approvalPolicy: options.approvalPolicy } : {}),
 			...(options.approvalCoordinator
@@ -781,7 +782,7 @@ export class NodeTurnRuntime {
 		const resolution = await coordinator.resolve({
 			...input,
 			signal: options.signal,
-			toolStopReason: () => this.#options.goal?.toolsStopReason(pending.turnId) ?? this.#options.goalUsage?.stopReason(pending.turnId),
+			toolStopReason: () => this.#options.extensions?.toolsStopReason(this.#turnPolicyInput(pending.turnId))?.message,
 			onExecutionStart: () => {
 				const argumentsPreview = formatArgumentPreview(parseToolArguments(pending.call.argumentsJson));
 				activeTool = this.#toolExecutions.begin({
@@ -1255,8 +1256,8 @@ export class NodeTurnRuntime {
 				extensionItemsCollected = true;
 				extensionItems = await this.#collectExtensionItems(context);
 			}
-			const goalStop = this.#options.goal?.stopReason(turnId) ?? this.#options.goalUsage?.stopReason(turnId);
-			if (goalStop) return this.#finalizeFailure(submission, { code: "interrupted", message: goalStop, interruptionReason: this.#options.goal?.interruptionReason(turnId) ?? this.#options.goalUsage?.interruptionReason(turnId), retryable: false }, emit);
+			const stop = this.#turnStopFailure(turnId, "stopReason");
+			if (stop) return this.#finalizeFailure(submission, stop, emit);
 			const providerBudgetExhausted = this.#agentBudget.beginProviderStep();
 			if (providerBudgetExhausted) {
 				return this.#finalizeAgentBudget(context, providerBudgetExhausted);
@@ -1267,7 +1268,7 @@ export class NodeTurnRuntime {
 			let durableTimelineWindowId: string | undefined;
 			let logicalRequest: ProviderRequest;
 			// The turn that ran out of goal budget answers the pending batch without new tools.
-			const stepTools = this.#options.goal?.beginWrapUpStep(turnId) === true ? [] : tools;
+			const stepTools = this.#options.extensions?.allowTools(this.#turnPolicyInput(turnId)) === false ? [] : tools;
 			if (this.#coordinatorBroker) {
 				try {
 					const hookContexts = context.hookContexts.snapshot();
@@ -1548,8 +1549,8 @@ export class NodeTurnRuntime {
 					requestInput: logicalRequest.items ?? history,
 				});
 			}
-			const toolsStop = this.#options.goal?.toolsStopReason(turnId) ?? this.#options.goalUsage?.stopReason(turnId);
-			if (toolsStop) return this.#finalizeFailure(submission, { code: "interrupted", message: toolsStop, interruptionReason: this.#options.goal?.interruptionReason(turnId) ?? this.#options.goalUsage?.interruptionReason(turnId), retryable: false }, emit);
+			const toolsStop = this.#turnStopFailure(turnId, "toolsStopReason");
+			if (toolsStop) return this.#finalizeFailure(submission, toolsStop, emit);
 			if (!hasUniqueCallIds(stepResult.toolCalls)) {
 				return this.#finalizeFailure(submission, toolProtocolFailure(), emit);
 			}
@@ -1834,6 +1835,25 @@ export class NodeTurnRuntime {
 		return await registry.collectContext(
 			this.#extensionTurnInput(context.submission, context.turnId, context.signal),
 		);
+	}
+
+	#turnPolicyInput(turnId: string): ExtensionTurnPolicyInput {
+		return turnPolicyInput(this.#options.sessionId, turnId);
+	}
+
+	/** A stop an extension asked for, as the runtime failure the turn loop reports. */
+	#turnStopFailure(turnId: string, hook: "stopReason" | "toolsStopReason"): RuntimeFailure | undefined {
+		const registry = this.#options.extensions;
+		if (!registry) return undefined;
+		const stop = registry[hook](this.#turnPolicyInput(turnId));
+		if (!stop) return undefined;
+		const reason = stop.interruptionReason;
+		return {
+			code: "interrupted",
+			message: stop.message,
+			...(reason !== undefined && isTurnInterruptionReason(reason) ? { interruptionReason: reason } : {}),
+			retryable: false,
+		};
 	}
 
 	/** The view every extension hook gets of the running turn. */
@@ -2365,6 +2385,10 @@ function boundedDurationMs(startedAt: number, finishedAt: number): number {
 		return 0;
 	}
 	return Math.min(86_400_000, Math.max(0, Math.round(elapsed)));
+}
+
+function turnPolicyInput(sessionId: string, turnId: string): ExtensionTurnPolicyInput {
+	return Object.freeze({ sessionId, turnId });
 }
 
 function isFailureLike(error: unknown): error is {
