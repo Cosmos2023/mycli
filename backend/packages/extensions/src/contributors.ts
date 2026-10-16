@@ -208,6 +208,20 @@ export interface CompactionBudgetContributor {
 	compactionBudget?(input: ExtensionCompactionBudgetInput): ExtensionCompactionBudget | undefined;
 }
 
+export interface ExtensionTurnContextInput {
+	readonly sessionId: string;
+	readonly turnId: string;
+}
+
+/**
+ * Lets an extension fill the session's `conversation_context` fragment. That fragment keeps its own
+ * kind and its own position in the instruction list, so the slot decides *who* fills it rather than
+ * what it renders as — moving it into `context` sections would reorder the model input.
+ */
+export interface ConversationContextContributor {
+	conversationContext?(input: ExtensionTurnContextInput): string | undefined;
+}
+
 export interface ConversationItemContributor {
 	/**
 	 * Items the runtime inserts ahead of the current user input, mirroring how memory is injected.
@@ -256,6 +270,7 @@ export interface ExtensionDefinition {
 	readonly sessionLifecycle?: SessionLifecycleContributor;
 	readonly tools?: ToolContributor;
 	readonly compactionBudget?: CompactionBudgetContributor;
+	readonly conversationContext?: ConversationContextContributor;
 	readonly turnLifecycle?: TurnLifecycleContributor;
 	readonly conversationItems?: ConversationItemContributor;
 	readonly context?: ContextContributor;

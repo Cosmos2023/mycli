@@ -14,6 +14,7 @@ registry: features register contributors, and the runtime asks the registry inst
   `turnPolicy` (`stopReason` / `toolsStopReason` / `allowTools`),
   `sessionLifecycle` (`onRestore` / `onInterrupt` / `onClose`), `tools`,
   `compactionBudget` (the account a compaction summary is charged to),
+  `conversationContext` (who fills the session's `conversation_context` fragment),
   `turnLifecycle` (`onTurnAdmitted` / `onTurnStart` / `onTurnComplete` / `onTurnFinished`),
   `context` (turn-context sections the extension renders itself), `conversationItems` (items
   inserted ahead of the current user input), `tokenUsage.onTokenUsage`.
@@ -40,6 +41,7 @@ The runtime consults the registry in `node-turn-runtime.ts`:
 | `onRestore` / `onInterrupt` / `onClose` | the app's session activation, interruption, and close paths |
 | `tools` | `node-backend.ts`, when the static tool catalog is built |
 | `compactionBudget` | `node-backend.ts`, once per compaction before the summarizer runs |
+| `conversationContext` | `mergeRuntimeContextSources`, when the app leaves the field empty |
 
 Failures land in the session node trace as `extension_failure` rows (extension id, hook, bounded
 message), which `/trace` and the doctor support bundle surface.
@@ -138,13 +140,24 @@ consume Goal budget"). `createGoalExtension` charges the goal accounting for the
 active goal when compaction runs outside a turn; `createGoalUsageExtension` charges the parent goal
 a child turn was bound to.
 
+### Goal context (done)
+
+`sessionGoalContext` no longer appears in the app. The `conversationContext` slot decides who fills
+the session's `conversation_context` fragment, and `createGoalExtension` fills it with the goal's
+model view plus any steering for the running turn.
+
+This deliberately stays a **separate field** rather than becoming an extension `context` section.
+`conversation_context` is a contract fragment kind with its own position in the instruction list
+(between `environment_context` and `compaction_rehydration`), and extension sections render after
+`compaction_rehydration`. Moving goal into the section list would reorder the model input and move
+the prefix-cache boundary for no behavioural gain. The slot therefore answers "who fills this
+fragment", not "what does it render as". The app still wins when it sets the field itself.
+
 ## What is still missing
 
 The runtime turn loop no longer names goal; the remaining coupling is in the app, where goal is a
 user-facing feature with commands and a transcript projection:
 
-- **Goal context.** `contextSources` still renders `sessionGoalContext(goal.modelView(), ...)`,
-  which is a different mechanism from the extension `context` sections.
 - **Delegation.** `runtime.goalUsage.capture` / `.bind` route a child turn's usage to the parent
   goal.
 - **`GoalStateError`.** `normalizeFailure` in `node-turn-runtime.ts` still maps it to an

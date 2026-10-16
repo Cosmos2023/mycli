@@ -12,6 +12,7 @@ import type {
 	ExtensionDefinition,
 	ExtensionFinishedTurnInput,
 	ExtensionTokenUsageInput,
+	ExtensionTurnContextInput,
 	ExtensionTurnCompleteInput,
 	ExtensionTurnInput,
 	ExtensionTurnPolicyInput,
@@ -36,7 +37,8 @@ export type ExtensionHookName =
 	| "onInterrupt"
 	| "onClose"
 	| "tools"
-	| "compactionBudget";
+	| "compactionBudget"
+	| "conversationContext";
 
 /** A turn an extension asked for, resolved back to the extension that asked. */
 export interface ResolvedAdmission extends ExtensionAdmission {
@@ -287,6 +289,24 @@ export class ExtensionRegistry {
 				if (budget) return budget;
 			} catch (error) {
 				this.#report(id, "compactionBudget", error);
+			}
+		}
+		return undefined;
+	}
+
+	/**
+	 * The conversation-context fragment for this turn. The first contributor with content wins; a
+	 * throwing contributor is reported and skipped, so the model still gets the rest of the context.
+	 */
+	conversationContext(input: ExtensionTurnContextInput): string | undefined {
+		for (const [id, extension] of this.#extensions) {
+			const hook = extension.conversationContext?.conversationContext;
+			if (!hook) continue;
+			try {
+				const text = hook(input)?.trim();
+				if (text) return text;
+			} catch (error) {
+				this.#report(id, "conversationContext", error);
 			}
 		}
 		return undefined;

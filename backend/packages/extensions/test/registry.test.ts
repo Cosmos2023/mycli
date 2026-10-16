@@ -302,3 +302,16 @@ test("the first extension with a compaction budget wins and a throwing one is sk
 	assert.deepEqual(failures, [{ extensionId: "broken", hook: "compactionBudget", message: "boom" }]);
 	assert.equal(registry.compactionBudget({ sessionId: "session-1" })?.remainingTokenBudget(), undefined);
 });
+
+test("the first extension with conversation context wins and a throwing one is skipped", () => {
+	const failures: ExtensionFailure[] = [];
+	const registry = new ExtensionRegistry({ onFailure: (failure) => failures.push(failure) });
+	registry.register({ id: "blank", conversationContext: { conversationContext: () => "   " } });
+	registry.register({ id: "broken", conversationContext: { conversationContext: () => { throw new Error("boom"); } } });
+	registry.register({ id: "goal", conversationContext: { conversationContext: () => "  active goal  " } });
+	registry.register({ id: "later", conversationContext: { conversationContext: () => "later" } });
+
+	assert.equal(registry.conversationContext({ sessionId: "session-1", turnId: "turn-1" }), "active goal");
+	assert.deepEqual(failures, [{ extensionId: "broken", hook: "conversationContext", message: "boom" }]);
+	assert.equal(new ExtensionRegistry().conversationContext({ sessionId: "s", turnId: "t" }), undefined);
+});

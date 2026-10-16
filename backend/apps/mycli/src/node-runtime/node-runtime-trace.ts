@@ -459,6 +459,7 @@ const EXTENSION_HOOKS = [
 	"onRestore", "onInterrupt", "onClose",
 	"tools",
 	"compactionBudget",
+	"conversationContext",
 ] as const;
 
 function extensionFailureTracePayload(

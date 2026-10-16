@@ -1,7 +1,7 @@
 import type { GoalRef } from "@mycli/core";
 import type { ExtensionDefinition } from "@mycli/extensions";
 import { GoalTool } from "@mycli/tools";
-import { goalContinuationMessage } from "./session-goal-context.ts";
+import { goalContinuationMessage, sessionGoalContext } from "./session-goal-context.ts";
 import type { SessionGoalService } from "./session-goal-service.ts";
 
 export interface GoalExtensionOptions {
@@ -102,6 +102,13 @@ export function createGoalExtension(options: GoalExtensionOptions): ExtensionDef
 					},
 				};
 			},
+		},
+		conversationContext: {
+			// The goal state the model needs, plus steering while a running turn is being redirected.
+			conversationContext: ({ turnId }) => sessionGoalContext(
+				options.service.modelView(),
+				options.service.steeringFor(turnId),
+			),
 		},
 	};
 }

@@ -1,4 +1,4 @@
-import { SessionGoalService, SessionGoalUsageTracker, sessionGoalContext } from "@mycli/runtime";
+import { SessionGoalService, SessionGoalUsageTracker } from "@mycli/runtime";
 import { GatewayFailure } from "./node-gateway-errors.ts";
 import { GoalObjectiveFiles } from "./goal-objective-files.ts";
 import { loadGitWorkspaceDiff, repositoryInitPrompt, prepareInteractiveReview, workspaceWorkflowFailure, workspaceWorktreeCommands } from "./workspace-slash-workflows.ts";
@@ -1386,7 +1386,6 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			providerAttemptLedger: store.providerAttemptLedger,
 			modelInputTokenCounter: tokenCounter,
 			contextSources: ({ config: activeConfig, runSnapshot }) => Object.freeze({
-				conversationContext: sessionGoalContext(goal?.modelView() ?? null, goal?.steeringFor(runSnapshot.turnId)),
 				skillCatalog: runSnapshot.toolCatalog.skillCatalog ?? "",
 				loadedSkillInstructions: selectedSkills.load(runSnapshot.turnId),
 				workspace: workspaceInstructionsForTrust(

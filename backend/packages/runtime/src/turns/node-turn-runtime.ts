@@ -1269,6 +1269,7 @@ export class NodeTurnRuntime {
 				try {
 					const hookContexts = context.hookContexts.snapshot();
 					const extensionSections = await this.#collectExtensionSections(context);
+					const extensionConversationContext = this.#collectExtensionConversationContext(context);
 					const collectedSources = this.#options.contextSources?.({
 						submission,
 						config,
@@ -1293,6 +1294,7 @@ export class NodeTurnRuntime {
 							collected: collectedSources,
 							hooks: hookContexts,
 							extensionSections,
+							extensionConversationContext,
 							developerInstructions: this.#options.developerInstructions ?? [],
 							collaborationMode,
 							executionPolicy: context.executionPolicy,
@@ -1839,6 +1841,14 @@ export class NodeTurnRuntime {
 		);
 	}
 
+	/** The conversation-context fragment an extension fills, when the app does not fill it itself. */
+	#collectExtensionConversationContext(context: TurnExecutionContext): string | undefined {
+		return this.#options.extensions?.conversationContext({
+			sessionId: this.#options.sessionId,
+			turnId: context.turnId,
+		});
+	}
+
 	#turnPolicyInput(turnId: string): ExtensionTurnPolicyInput {
 		return turnPolicyInput(this.#options.sessionId, turnId);
 	}
@@ -2197,6 +2207,7 @@ function mergeRuntimeContextSources(input: {
 	readonly collected: TurnContextSources;
 	readonly hooks: readonly RuntimeHookContext[];
 	readonly extensionSections: readonly ExtensionContextSection[];
+	readonly extensionConversationContext?: string;
 	readonly developerInstructions: readonly string[];
 	readonly collaborationMode: string;
 	readonly executionPolicy?: ExecutionPolicy;
@@ -2217,6 +2228,9 @@ function mergeRuntimeContextSources(input: {
 		...(input.hooks.length > 0 ? { hooks: input.hooks } : {}),
 		...(input.extensionSections.length > 0
 			? { extensionSections: Object.freeze([...input.extensionSections]) }
+			: {}),
+		...(input.collected.conversationContext === undefined && input.extensionConversationContext !== undefined
+			? { conversationContext: input.extensionConversationContext }
 			: {}),
 		...(subagentContext ? { subagentContext } : {}),
 	});

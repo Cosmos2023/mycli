@@ -9,6 +9,7 @@ export type {
 export type {
 	AdmissionContributor,
 	CompactionBudgetContributor,
+	ConversationContextContributor,
 	ConversationItemContributor,
 	ContextContributor,
 	ExtensionCompactionBudget,
@@ -23,6 +24,7 @@ export type {
 	ExtensionFinishedTurnInput,
 	ExtensionTokenUsageInput,
 	ExtensionTurnCompleteInput,
+	ExtensionTurnContextInput,
 	ExtensionTurnInput,
 	ExtensionTurnPolicyInput,
 	ExtensionTurnStop,
