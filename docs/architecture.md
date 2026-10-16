@@ -15,6 +15,7 @@ generated declaration, test gate, and release package.
 | `backend/packages/config` | User/project config, auth, trust, model catalog, shell settings, execution policy |
 | `backend/packages/providers` | Pi-ai transport boundary, provider directory, payload adaptation, canonical normalization, and replay |
 | `backend/packages/runtime` | Turn loop, continuation, approval, clarification, queue, compaction, memory, session coordination |
+| `backend/packages/extensions` | Runtime extension registry: the contributor slots the turn loop, session lifecycle, and tool catalog consult instead of naming features |
 | `backend/packages/storage` | SQLite session store, transcript snapshots, durable state and recovery operations |
 | `backend/packages/tools` | Tool manifest, file tools, approvals, process policy, PTY transports, shell lifecycle |
 | `backend/packages/integrations` | Skills, MCP, hooks, plugins, subagents, discovery and management |
@@ -243,6 +244,13 @@ independent durable Node threads with frozen least-authority policy, context, bu
 scope. Canonical agent events drive mailbox, artifact, gateway, usage, and TUI projections; the
 compatibility controller owns no runtime handles or projection callback. Plugin declarations cannot
 override built-in tools or slash commands. See [node-agent-runtime.md](node-agent-runtime.md).
+
+Features the turn loop needs to know about are composed through `@mycli/extensions` rather than
+named in it: an extension registers contributors for admission, turn policy, usage accounting,
+context, tools, session lifecycle, delegated-work binding, and failure classification, and the
+runtime asks the registry. Memory and goal are both composed this way, so adding or replacing one no
+longer means editing the core turn loop. See
+[architecture/extension-api.md](architecture/extension-api.md).
 
 ## Contracts And Tests
 
