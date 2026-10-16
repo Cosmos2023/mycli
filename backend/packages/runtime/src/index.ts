@@ -85,6 +85,8 @@ export {
 	publishRuntimeDiagnostic,
 } from "./runtime-observability.ts";
 export type {
+	GoalDiagnosticAction,
+	GoalDiagnosticSource,
 	ProviderStreamDiagnostics,
 	RuntimeDiagnosticEvent,
 } from "./runtime-observability.ts";

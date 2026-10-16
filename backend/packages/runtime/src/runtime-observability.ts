@@ -1,5 +1,16 @@
-import type { ErrorContext, RuntimeErrorCode, RuntimeFailure } from "@mycli/contracts";
+import type { ErrorContext, RuntimeErrorCode, RuntimeFailure, SessionGoal } from "@mycli/contracts";
 import type { ProtocolId, ProviderRouteId, ProviderUsage } from "@mycli/core";
+
+export type GoalDiagnosticAction =
+	| "created"
+	| "edited"
+	| "status_changed"
+	| "cleared"
+	| "round_started"
+	| "usage_accounted";
+
+/** Who asked for the goal change: the model tools, a `/goal` control, or the runtime itself. */
+export type GoalDiagnosticSource = "model_tool" | "user_command" | "runtime";
 
 export interface ProviderStreamDiagnostics {
 	readonly attempt: number;
@@ -73,6 +84,23 @@ export type RuntimeDiagnosticEvent =
 		readonly afterTokens: number;
 		readonly maxTokens: number;
 		readonly durationMs: number;
+	}
+	| {
+		readonly kind: "goal";
+		readonly action: GoalDiagnosticAction;
+		readonly source: GoalDiagnosticSource;
+		readonly goalId: string;
+		readonly revision: number;
+		readonly status: SessionGoal["status"] | null;
+		readonly previousStatus?: SessionGoal["status"];
+		readonly tokenBudget: number | null;
+		readonly tokensUsed: number;
+		readonly usageIncomplete: boolean;
+		readonly roundsStarted: number;
+		readonly auditTurns: number;
+		readonly reason?: string;
+		readonly requestId?: string;
+		readonly turnId?: string;
 	};
 
 export function publishRuntimeDiagnostic(

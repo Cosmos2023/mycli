@@ -903,6 +903,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				? new SessionGoalService({
 					sessionId, workspaceRoot, threadId, store: store.goals,
 					materializeObjective: (input) => goalObjectiveFiles.pathFor(input),
+					recordDiagnostic: (event) => tryAppendNodeTrace(homeDir, sessionId, runtimeDiagnosticTraceEvent(event)),
 				}) : undefined;
 			goal?.restore();
 			const goalUsage = new SessionGoalUsageTracker(goal);

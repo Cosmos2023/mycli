@@ -90,6 +90,12 @@ Each child run captures its initiating goal separately, so reusing an idle agent
 for a later goal does not reuse the earlier goal's accounting. Parent turn
 references remain available after settlement for deferred child admission.
 
+Every goal transition also writes a `goal_lifecycle` row to the session node trace with the
+action (`created`, `edited`, `status_changed`, `cleared`, `round_started`, `usage_accounted`),
+the source that asked for it (model tool, `/goal` control, or runtime), the status before and
+after, and the budget counters. The trace never carries the objective text. Inspect it with
+`/trace` or the session trace file, which is also collected by the doctor support bundle.
+
 Limits apply at observable model-step boundaries. A request or retries already in
 flight can overshoot before a boundary is reached. Work remains subject to ordinary
 provider and agent limits. Missing usage is marked `usage_incomplete`; the shown

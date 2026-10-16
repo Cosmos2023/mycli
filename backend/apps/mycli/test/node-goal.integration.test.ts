@@ -92,6 +92,18 @@ test("model-created goal continues through the ordinary Worker path and complete
 	assert.match(continuation, /verified wait polls a specific process/);
 	assert.match(continuation, /Completion audit/);
 	assert.match(continuation, /Progress visibility/);
+	const traceRows = readFileSync(join(f.homeDir, ".mycli", "traces", "goal-session-trace.jsonl"), "utf8")
+		.split("\n").filter((line) => line.trim().length > 0)
+		.map((line) => JSON.parse(line) as { kind: string; payload: Record<string, unknown> });
+	const goalRows = traceRows.filter((row) => row.kind === "goal_lifecycle");
+	assert.deepEqual(
+		goalRows.filter((row) => row.payload.action === "created" || row.payload.action === "status_changed")
+			.map((row) => `${row.payload.action}:${row.payload.source}:${row.payload.status}`),
+		["created:model_tool:active", "status_changed:model_tool:complete"],
+	);
+	assert.equal(goalRows.some((row) => row.payload.action === "round_started" && row.payload.turn_id !== undefined), true);
+	assert.equal(goalRows.some((row) => row.payload.action === "usage_accounted" && row.payload.source === "runtime"), true);
+	assert.equal(goalRows.every((row) => row.payload.goal_id === goal.goal_id), true);
 	await f.backend.close();
 	const store = openRuntimeSessionStore({ dbPath: join(f.homeDir, ".mycli", "sessions.db") });
 	try { assert.equal(store.goals.get("goal-session")?.status, "complete"); assert.equal(store.goals.get("goal-session")?.tokens_used, 48); }

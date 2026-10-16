@@ -7,10 +7,14 @@ import { goalReference, goalUsageTokens } from "@mycli/core";
 import { openRuntimeSessionStore } from "@mycli/storage";
 import { SessionGoalService } from "../../src/sessions/session-goal-service.ts";
 import { SessionGoalUsageTracker } from "../../src/sessions/session-goal-usage.ts";
+import type { RuntimeDiagnosticEvent } from "../../src/runtime-observability.ts";
 
 function fixture(
 	t: { after(fn: () => void): void },
-	options: { materializeObjective?: (input: { goalId: string; objective: string }) => string } = {},
+	options: {
+		readonly materializeObjective?: (input: { goalId: string; objective: string }) => string;
+		readonly recordDiagnostic?: (event: RuntimeDiagnosticEvent) => void;
+	} = {},
 ): {
 	service: SessionGoalService; store: ReturnType<typeof openRuntimeSessionStore>; advance(ms: number): void;
 } {
@@ -29,6 +33,43 @@ test("normalizes protocol cache shapes and reports unavailable usage", () => {
 	assert.equal(goalUsageTokens({ input_tokens: 100, cached_tokens: 60, output_tokens: 10 }), 50);
 	assert.equal(goalUsageTokens({ input_tokens: 30, cache_creation_input_tokens: 10, cache_read_input_tokens: 60, output_tokens: 10 }), 50);
 	assert.equal(goalUsageTokens({ total_tokens: 110 }), null);
+});
+
+test("goal transitions publish lifecycle diagnostics with the source that asked for them", (t) => {
+	const events: RuntimeDiagnosticEvent[] = [];
+	const { service } = fixture(t, { recordDiagnostic: (event) => events.push(event) });
+
+	service.create({ objective: "Ship the fixture" });
+	service.beginTurn("turn", "goal", service.continuation());
+	service.observeUsage("turn", "request", { input_tokens: 50, output_tokens: 10 });
+	service.updateFromTool("complete", "turn");
+	service.clear();
+
+	assert.deepEqual(
+		events.map((event) => event.kind === "goal" ? `${event.action}:${event.source}` : event.kind),
+		[
+			"created:user_command",
+			"round_started:runtime",
+			"usage_accounted:runtime",
+			"status_changed:model_tool",
+			"cleared:user_command",
+		],
+	);
+	const created = events[0]!;
+	assert.equal(created.kind, "goal");
+	assert.equal(created.status, "active");
+	assert.equal(created.tokenBudget, null);
+	assert.equal(created.roundsStarted, 0);
+	const round = events[1]!;
+	assert.equal(round.kind === "goal" ? round.turnId : undefined, "turn");
+	const usage = events[2]!;
+	assert.equal(usage.kind === "goal" ? usage.requestId : undefined, "request");
+	assert.equal(usage.kind === "goal" ? usage.tokensUsed : undefined, 60);
+	const completed = events[3]!;
+	assert.equal(completed.kind === "goal" ? completed.previousStatus : undefined, "active");
+	assert.equal(completed.kind === "goal" ? completed.status : undefined, "complete");
+	const cleared = events[4]!;
+	assert.equal(cleared.kind === "goal" ? cleared.status : undefined, null);
 });
 
 test("durable goal-only sessions survive and observations are idempotent", (t) => {

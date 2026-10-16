@@ -8,6 +8,12 @@ import {
 	type GoalRef, type GoalStatus, type ProviderUsage,
 } from "@mycli/core";
 import type { GoalCommit, SessionGoalStore } from "@mycli/storage";
+import {
+	publishRuntimeDiagnostic,
+	type GoalDiagnosticAction,
+	type GoalDiagnosticSource,
+	type RuntimeDiagnosticEvent,
+} from "../runtime-observability.ts";
 import type { SessionGoalSteering } from "./session-goal-context.ts";
 
 interface GoalTurn {
@@ -37,6 +43,16 @@ export interface SessionGoalServiceOptions {
 	readonly clock?: () => string;
 	readonly monotonicClock?: () => number;
 	readonly createId?: () => string;
+	readonly recordDiagnostic?: (event: RuntimeDiagnosticEvent) => void;
+}
+
+/** Everything a transition has to add to the commit beyond the goal states themselves. */
+interface GoalCommitContext {
+	readonly eventId?: string;
+	readonly usage?: GoalCommit["usage"];
+	readonly source?: GoalDiagnosticSource;
+	readonly requestId?: string;
+	readonly turnId?: string;
 }
 
 /** Owns goal state and accounting; ordinary runtime admission owns execution. */
@@ -115,7 +131,10 @@ export class SessionGoalService {
 			...createSessionGoal({ ...input, current: previous, goalId: this.#createId(), now: this.#clock() }),
 			audit_turns: turn ? 1 : 0,
 		});
-		this.#commit("create", previous, goal, turnId ? `goal:${goal.goal_id}:turn:${turnId}` : undefined);
+		this.#commit("create", previous, goal, {
+			...(turnId ? { eventId: `goal:${goal.goal_id}:turn:${turnId}`, turnId } : {}),
+			source: turnId ? "model_tool" : "user_command",
+		});
 		if (turn) {
 			turn.ref = goalReference(goal);
 			turn.accountingGoalId = goal.goal_id;
@@ -138,16 +157,20 @@ export class SessionGoalService {
 			token_budget: tokenBudget, updated_at: this.#clock(), audit_turns: 0, status,
 			stop_reason: exhausted ? "Goal token budget exhausted." : status === "paused" ? "Goal edited. Resume to continue." : null,
 		});
-		this.#commit("edit", previous, goal);
+		this.#commit("edit", previous, goal, { source: "user_command" });
 		return goal;
 	}
 
-	setStatus(status: GoalStatus, reason: string | null = null): SessionGoal {
+	setStatus(
+		status: GoalStatus,
+		reason: string | null = null,
+		source: GoalDiagnosticSource = "user_command",
+	): SessionGoal {
 		this.#assertOpen();
 		this.#flushElapsed();
 		const previous = this.#required();
 		const goal = changeGoalStatus(previous, status, this.#clock(), reason);
-		if (goal !== previous) this.#commit("status", previous, goal);
+		if (goal !== previous) this.#commit("status", previous, goal, { source });
 		return goal;
 	}
 
@@ -163,7 +186,11 @@ export class SessionGoalService {
 			throw new GoalStateError("goal_blocked_too_early", "Report blocked only after the same blocker persists for at least three goal turns in the current run.");
 		}
 		if (previous.status === "budget_limited" && status !== "complete") return previous;
-		const goal = this.setStatus(status, status === "blocked" ? "Further progress requires user input or an external change." : null);
+		const goal = this.setStatus(
+			status,
+			status === "blocked" ? "Further progress requires user input or an external change." : null,
+			"model_tool",
+		);
 		turn.ref = goalReference(goal);
 		turn.finalizing = true;
 		return goal;
@@ -173,18 +200,18 @@ export class SessionGoalService {
 		this.#assertOpen();
 		this.#flushElapsed();
 		const previous = this.get();
-		if (previous) this.#commit("clear", previous, null);
+		if (previous) this.#commit("clear", previous, null, { source: "user_command" });
 	}
 
 	/** Cold activation never inherits permission to launch automatic work. */
 	restore(): void {
-		if (this.get()?.status === "active") this.setStatus("paused", GOAL_RESTORED_STOP_REASON);
+		if (this.get()?.status === "active") this.setStatus("paused", GOAL_RESTORED_STOP_REASON, "runtime");
 	}
 
 	interrupt(): void {
 		if (this.#closed || this.#halted) return;
 		try {
-			if (this.get()?.status === "active") this.setStatus("paused", "Goal paused by interruption.");
+			if (this.get()?.status === "active") this.setStatus("paused", "Goal paused by interruption.", "runtime");
 		} catch (error) { this.#halted = true; throw error; }
 	}
 
@@ -200,7 +227,7 @@ export class SessionGoalService {
 		if (active) this.#commit("round", active, Object.freeze({
 			...active, audit_turns: addGoalCount(active.audit_turns, 1),
 			rounds_started: addGoalCount(active.rounds_started, source === "goal" ? 1 : 0), updated_at: this.#clock(),
-		}), `goal:${active.goal_id}:turn:${turnId}`);
+		}), { eventId: `goal:${active.goal_id}:turn:${turnId}`, source: "runtime", turnId });
 		this.#turns.set(turnId, {
 			ref: previous ? goalReference(previous) : null, accountingGoalId: active?.goal_id ?? null,
 			human: source === "user", objective: active?.objective ?? null, accountedAt: this.#now(),
@@ -238,7 +265,12 @@ export class SessionGoalService {
 			stop_reason: exhausted ? tokens === null
 				? "Provider usage is unavailable; budgeted execution stopped. Reported tokens are a lower bound."
 				: "Goal token budget exhausted." : previous.stop_reason,
-		}), `goal:${goalId}:usage:${requestId}:${tokens ?? "unknown"}`, { requestId, tokens });
+		}), {
+			eventId: `goal:${goalId}:usage:${requestId}:${tokens ?? "unknown"}`,
+			usage: { requestId, tokens },
+			source: "runtime",
+			requestId,
+		});
 	}
 
 	accountingGoalId(turnId: string): string | undefined {
@@ -342,7 +374,7 @@ export class SessionGoalService {
 			const elapsed = Math.max(0, Math.floor(now - turn.accountedAt));
 			if (elapsed > 0) this.#commit("usage", previous, Object.freeze({
 				...previous, elapsed_ms: addGoalCount(previous.elapsed_ms, elapsed), updated_at: this.#clock(),
-			}));
+			}), { source: "runtime" });
 			turn.accountedAt = now;
 		}
 	}
@@ -353,18 +385,63 @@ export class SessionGoalService {
 		return goal;
 	}
 
-	#commit(operation: GoalCommit["operation"], previous: SessionGoal | null, next: SessionGoal | null, eventId = `goal:${this.#createId()}`, usage?: GoalCommit["usage"]): boolean {
+	#commit(
+		operation: GoalCommit["operation"],
+		previous: SessionGoal | null,
+		next: SessionGoal | null,
+		context: GoalCommitContext = {},
+	): boolean {
+		const eventId = context.eventId ?? `goal:${this.#createId()}`;
 		let changed: boolean;
 		try {
 			changed = this.options.store.commit({
 				sessionId: this.options.sessionId, workspaceRoot: this.options.workspaceRoot, threadId: this.options.threadId,
-				operation, expected: previous, next, eventId, createdAt: this.#clock(), ...(usage ? { usage } : {}),
+				operation, expected: previous, next, eventId, createdAt: this.#clock(),
+				...(context.usage ? { usage: context.usage } : {}),
 			});
 		} catch (error) { this.#halted = true; throw error; }
-		if (changed) for (const listener of this.#listeners) {
-			try { listener(); } catch { /* Publication cannot undo a durable state change. */ }
+		if (changed) {
+			this.#publishGoalDiagnostic(operation, previous, next, context);
+			for (const listener of this.#listeners) {
+				try { listener(); } catch { /* Publication cannot undo a durable state change. */ }
+			}
 		}
 		return changed;
+	}
+
+	/** Goal lifecycle telemetry is best-effort and never participates in goal state. */
+	#publishGoalDiagnostic(
+		operation: GoalCommit["operation"],
+		previous: SessionGoal | null,
+		next: SessionGoal | null,
+		context: GoalCommitContext,
+	): void {
+		const goal = next ?? previous;
+		if (!goal) return;
+		const action: GoalDiagnosticAction = operation === "create" ? "created"
+			: operation === "edit" ? "edited"
+				: operation === "clear" ? "cleared"
+					: operation === "round" ? "round_started"
+						: operation === "usage" ? "usage_accounted" : "status_changed";
+		publishRuntimeDiagnostic(this.options.recordDiagnostic, Object.freeze({
+			kind: "goal",
+			action,
+			source: context.source ?? "runtime",
+			goalId: goal.goal_id,
+			revision: goal.revision,
+			status: next?.status ?? null,
+			...(previous && next && previous.status !== next.status
+				? { previousStatus: previous.status }
+				: {}),
+			tokenBudget: goal.token_budget,
+			tokensUsed: goal.tokens_used,
+			usageIncomplete: goal.usage_incomplete,
+			roundsStarted: goal.rounds_started,
+			auditTurns: goal.audit_turns,
+			...(goal.stop_reason ? { reason: goal.stop_reason } : {}),
+			...(context.requestId ? { requestId: context.requestId } : {}),
+			...(context.turnId ? { turnId: context.turnId } : {}),
+		}));
 	}
 
 	#assertOpen(): void {

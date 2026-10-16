@@ -132,3 +132,40 @@ test("completion timing survives trace serialization while invalid and private f
 	assert.deepEqual(nodeTraceRows(store, home, "session").at(-1)?.payload, { commit_ms: 0, snapshot_written: false });
 	assert.deepEqual(store.loadHistoryItems("session"), []);
 });
+
+test("goal lifecycle trace keeps counters and never carries the objective text", async (t) => {
+	const home = await mkdtemp(join(tmpdir(), "mycli-goal-trace-"));
+	removeFixtureDirectoryAfterTests(t, home);
+	const store = openRuntimeSessionStore({ dbPath: join(home, "sessions.db") });
+	t.after(() => store.close());
+	const event = runtimeDiagnosticTraceEvent({
+		kind: "goal", action: "status_changed", source: "model_tool", goalId: "goal-1", revision: 2,
+		status: "complete", previousStatus: "active", tokenBudget: 100_000, tokensUsed: 1_234,
+		usageIncomplete: false, roundsStarted: 3, auditTurns: 1, reason: "Goal token budget exhausted.",
+	});
+	// The writer sanitizes whatever payload it is handed, so an unsanitized objective cannot leak.
+	appendNodeTrace(home, "goal-session", {
+		...event,
+		payload: { ...(event.payload as Record<string, unknown>), objective: "Ship the private objective" },
+	});
+
+	const rows = nodeTraceRows(store, home, "goal-session");
+
+	assert.equal(rows.length, 1);
+	assert.equal(rows[0]!.kind, "goal_lifecycle");
+	assert.deepEqual(rows[0]!.payload, {
+		action: "status_changed",
+		source: "model_tool",
+		goal_id: "goal-1",
+		revision: 2,
+		status: "complete",
+		previous_status: "active",
+		token_budget: 100_000,
+		tokens_used: 1_234,
+		usage_incomplete: false,
+		rounds_started: 3,
+		audit_turns: 1,
+		reason: "Goal token budget exhausted.",
+	});
+	assert.equal(JSON.stringify(rows).includes("private objective"), false);
+});

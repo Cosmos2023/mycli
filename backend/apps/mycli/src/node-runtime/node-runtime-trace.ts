@@ -23,6 +23,7 @@ type NodeTraceKind =
 	| "turn_completion_diagnostics"
 	| "tool_execution"
 	| "compaction"
+	| "goal_lifecycle"
 	| "subagent_lifecycle";
 
 export function nodeTraceRows(
@@ -168,6 +169,28 @@ export function runtimeDiagnosticTraceEvent(
 			},
 		});
 	}
+	if (event.kind === "goal") {
+		return Object.freeze({
+			kind: "goal_lifecycle",
+			turn_id: event.turnId ?? "goal",
+			payload: {
+				action: event.action,
+				source: event.source,
+				goal_id: event.goalId,
+				revision: event.revision,
+				status: event.status,
+				...(event.previousStatus ? { previous_status: event.previousStatus } : {}),
+				token_budget: event.tokenBudget,
+				tokens_used: event.tokensUsed,
+				usage_incomplete: event.usageIncomplete,
+				rounds_started: event.roundsStarted,
+				audit_turns: event.auditTurns,
+				...(event.reason ? { reason: event.reason } : {}),
+				...(event.requestId ? { request_id: event.requestId } : {}),
+				...(event.turnId ? { turn_id: event.turnId } : {}),
+			},
+		});
+	}
 	return Object.freeze({
 		kind: event.kind,
 		turn_id: event.turnId,
@@ -275,6 +298,7 @@ function nodeTraceKind(value: unknown): NodeTraceKind | undefined {
 		"turn_completion_diagnostics",
 		"tool_execution",
 		"compaction",
+	"goal_lifecycle",
 		"subagent_lifecycle",
 	].includes(value as NodeTraceKind)
 		? value as NodeTraceKind
@@ -300,6 +324,7 @@ function nodeTracePayload(
 	});
 	if (kind === "tool_execution") return toolExecutionTracePayload(value);
 	if (kind === "compaction") return compactionTracePayload(value);
+	if (kind === "goal_lifecycle") return goalLifecycleTracePayload(value);
 	if (kind === "subagent_lifecycle") return subagentLifecycleTracePayload(value);
 	const clientTurnId = boundedTraceString(value.client_turn_id, 256);
 	return Object.freeze({
@@ -409,6 +434,41 @@ function subagentLifecycleTracePayload(
 		status: traceEnum(value.status, ["started", "completed", "failed", "interrupted"]),
 		duration_ms: boundedTraceNumber(value.duration_ms),
 	});
+}
+
+const GOAL_ACTIONS = ["created", "edited", "status_changed", "cleared", "round_started", "usage_accounted"] as const;
+const GOAL_SOURCES = ["model_tool", "user_command", "runtime"] as const;
+const GOAL_STATUSES = ["active", "paused", "blocked", "usage_limited", "budget_limited", "complete"] as const;
+
+function goalLifecycleTracePayload(
+	value: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> {
+	return compactTracePayload({
+		action: traceEnum(value.action, GOAL_ACTIONS),
+		source: traceEnum(value.source, GOAL_SOURCES),
+		goal_id: boundedTraceToken(value.goal_id, 256),
+		revision: boundedTraceCount(value.revision),
+		status: traceEnum(value.status, GOAL_STATUSES),
+		previous_status: traceEnum(value.previous_status, GOAL_STATUSES),
+		token_budget: boundedTraceCount(value.token_budget),
+		tokens_used: boundedTraceCount(value.tokens_used),
+		usage_incomplete: typeof value.usage_incomplete === "boolean" ? value.usage_incomplete : undefined,
+		rounds_started: boundedTraceCount(value.rounds_started),
+		audit_turns: boundedTraceCount(value.audit_turns),
+		reason: boundedTraceText(value.reason, 256),
+		request_id: boundedTraceToken(value.request_id, 256),
+		turn_id: boundedTraceToken(value.turn_id, 256),
+	});
+}
+
+function boundedTraceText(value: unknown, limit: number): string | undefined {
+	if (typeof value !== "string" || value.trim().length === 0) return undefined;
+	// Strip control characters without a control-character regex class.
+	const printable = [...value].map((character) => {
+		const code = character.codePointAt(0) ?? 0;
+		return code < 0x20 || code === 0x7f ? " " : character;
+	}).join("");
+	return printable.slice(0, limit);
 }
 
 function boundedTraceNumber(value: unknown): number | undefined {
