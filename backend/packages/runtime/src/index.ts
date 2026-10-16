@@ -390,6 +390,8 @@ export type {
 	MemoryRecordKind,
 	MemoryStoreContract,
 } from "./memory/memory-context-service.ts";
+export { createMemoryExtension } from "./memory/memory-extension.ts";
+export type { MemoryExtensionOptions } from "./memory/memory-extension.ts";
 export {
 	CompactionCoordinator,
 	summarizeCompactionWithProvider,

@@ -155,7 +155,16 @@ test("budgets the complete request deterministically while preserving required i
 		sources: {
 			permissionContext: "permission ".repeat(30),
 			tools: TOOLS,
-			memory: [memory],
+			extensionSections: [{
+				key: "memory",
+				kind: "memory",
+				title: "Memory",
+				content: `<memory_context>\n- ${memory.trim()}\n</memory_context>`,
+				source: "runtime:memory",
+				cacheClass: "dynamic",
+				scope: "transcript",
+				includeInMemory: true,
+			}],
 			workspace: {
 				content: workspace,
 				diagnostics: {
@@ -261,7 +270,16 @@ function completeContextInput() {
 			environment: { cwd: "/workspace", shell: "zsh" },
 			conversationContext: "The user previously asked for analysis.",
 			compactionRehydration: ["src/app.ts changed"],
-			memory: ["User prefers focused diffs."],
+			extensionSections: [{
+				key: "memory",
+				kind: "memory" as const,
+				title: "Memory",
+				content: "<memory_context>\n- User prefers focused diffs.\n</memory_context>",
+				source: "runtime:memory",
+				cacheClass: "dynamic" as const,
+				scope: "transcript" as const,
+				includeInMemory: true,
+			}],
 			plan: "Inspect, edit, verify.",
 			hooks: [
 				{

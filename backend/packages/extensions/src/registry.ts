@@ -1,12 +1,18 @@
 import type { CanonicalConversationItem } from "@mycli/core";
 import type {
+	ExtensionContextSection,
 	ExtensionDefinition,
 	ExtensionTokenUsageInput,
 	ExtensionTurnCompleteInput,
 	ExtensionTurnInput,
 } from "./contributors.ts";
 
-export type ExtensionHookName = "onTurnStart" | "onTurnComplete" | "conversationItems" | "onTokenUsage";
+export type ExtensionHookName =
+	| "onTurnStart"
+	| "onTurnComplete"
+	| "conversationItems"
+	| "context"
+	| "onTokenUsage";
 
 /** A hook that threw. Extensions are auxiliary, so a failure is reported instead of propagated. */
 export interface ExtensionFailure {
@@ -85,6 +91,36 @@ export class ExtensionRegistry {
 			}
 		}
 		return Object.freeze(items);
+	}
+
+	/**
+	 * Merges the turn-context sections every extension contributes. Duplicate keys keep the first
+	 * section; a conflicting duplicate is reported instead of silently reordering the context.
+	 */
+	async collectContext(input: ExtensionTurnInput): Promise<readonly ExtensionContextSection[]> {
+		const byKey = new Map<string, ExtensionContextSection>();
+		for (const [id, extension] of this.#extensions) {
+			const hook = extension.context?.context;
+			if (!hook) continue;
+			let contributed: readonly ExtensionContextSection[] | undefined;
+			try {
+				contributed = await hook(input);
+			} catch (error) {
+				this.#report(id, "context", error);
+				continue;
+			}
+			for (const section of contributed ?? []) {
+				const existing = byKey.get(section.key);
+				if (!existing) {
+					byKey.set(section.key, Object.freeze({ ...section }));
+					continue;
+				}
+				if (existing.content !== section.content) {
+					this.#report(id, "context", new Error(`conflicting context section key: ${section.key}`));
+				}
+			}
+		}
+		return Object.freeze([...byKey.values()]);
 	}
 
 	async #run(

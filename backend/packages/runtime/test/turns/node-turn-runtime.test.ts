@@ -59,6 +59,7 @@ import { ExtensionRegistry, type ExtensionFailure } from "@mycli/extensions";
 import {
 	NodeTurnRuntime,
 	ContextItemCoordinator,
+	createMemoryExtension,
 	ExecutionPolicyCoordinator,
 	ProviderContinuationCoordinator,
 	QueueCoordinator,
@@ -384,7 +385,7 @@ test("injects dynamic memory after compaction and before fresh input without per
 		compactionCoordinator: new ScriptedCompactionCoordinator(trace, [
 			compactionResult("compressed", compacted),
 		]),
-		memoryContextService: memory.service,
+		extensions: memoryExtensions(memory.service),
 		runtimeConfig: config({ memoryEnabled: true }),
 	});
 
@@ -423,7 +424,7 @@ test("collects memory once and reuses it across provider tool steps", async () =
 		store,
 		provider,
 		toolRouter: new SequencedRouter(trace),
-		memoryContextService: memory.service,
+		extensions: memoryExtensions(memory.service),
 		runtimeConfig: config({ memoryEnabled: true }),
 	}).submit(submission(), () => {}, { signal: new AbortController().signal });
 
@@ -519,7 +520,7 @@ test("writes the terminal snapshot after durable completion and before memory ac
 		store,
 		provider,
 		toolRouter: new SequencedRouter(trace),
-		memoryContextService: memory.service,
+		extensions: memoryExtensions(memory.service),
 		writeTerminalSnapshot: async () => { trace.push("snapshot"); },
 		runtimeConfig: config({ memoryEnabled: true }),
 	}).submit(submission(), () => {}, { signal: new AbortController().signal });
@@ -541,7 +542,7 @@ test("keeps a durably completed turn and skips memory when snapshot writing fail
 		store,
 		provider,
 		toolRouter: new SequencedRouter(trace),
-		memoryContextService: memory.service,
+		extensions: memoryExtensions(memory.service),
 		writeTerminalSnapshot: async () => {
 			trace.push("snapshot");
 			throw new Error("private snapshot path");
@@ -758,7 +759,7 @@ test("writes a recoverable snapshot after durable approval suspension", async ()
 	assert.ok(trace.indexOf("approval:suspend") < trace.indexOf("snapshot"));
 });
 
-test("memory_enabled=false bypasses runtime collection and explicit actions", async () => {
+test("a disabled memory extension bypasses runtime collection and explicit actions", async () => {
 	const trace: string[] = [];
 	const store = new FakeStore(trace);
 	const provider = scriptedProvider(trace, [], [[{ type: "completed", responseId: "resp-final" }]]);
@@ -768,8 +769,7 @@ test("memory_enabled=false bypasses runtime collection and explicit actions", as
 		store,
 		provider,
 		toolRouter: new SequencedRouter(trace),
-		memoryContextService: memory.service,
-		runtimeConfig: config({ memoryEnabled: false }),
+		extensions: memoryExtensions(memory.service, false),
 	}).submit(submission(), () => {}, { signal: new AbortController().signal });
 
 	assert.equal(result.status, "completed");
@@ -793,7 +793,7 @@ test("failed turns do not run explicit memory actions", async () => {
 		store,
 		provider,
 		toolRouter: new SequencedRouter(trace),
-		memoryContextService: memory.service,
+		extensions: memoryExtensions(memory.service),
 		runtimeConfig: config({ memoryEnabled: true }),
 	}).submit(submission(), () => {}, { signal: new AbortController().signal });
 
@@ -811,7 +811,7 @@ test("memory action failures do not rewrite an already completed provider turn",
 		store,
 		provider,
 		toolRouter: new SequencedRouter(trace),
-		memoryContextService: memory.service,
+		extensions: memoryExtensions(memory.service),
 		runtimeConfig: config({ memoryEnabled: true }),
 	}).submit(submission(), () => {}, { signal: new AbortController().signal });
 
@@ -4356,7 +4356,6 @@ function createRuntime(options: {
 	readonly toolDefinitions?: readonly ToolDefinition[];
 	readonly compactionCoordinator?: CompactionCoordinatorContract;
 	readonly createCompactionCoordinator?: NodeTurnRuntimeOptions["createCompactionCoordinator"];
-	readonly memoryContextService?: MemoryContextServiceContract;
 	readonly extensions?: ExtensionRegistry;
 	readonly providerContinuation?: ProviderContinuationCoordinator;
 	readonly providerStepExecutor?: NodeTurnRuntimeOptions["providerStepExecutor"];
@@ -4415,9 +4414,7 @@ function createRuntime(options: {
 		...(options.createCompactionCoordinator ? {
 			createCompactionCoordinator: options.createCompactionCoordinator,
 		} : {}),
-		...(options.memoryContextService ? {
-			memoryContextService: options.memoryContextService,
-		} : {}),
+		...(options.extensions ? { extensions: options.extensions } : {}),
 		...(options.extensions ? { extensions: options.extensions } : {}),
 		...(options.providerContinuation ? {
 			providerContinuation: options.providerContinuation,
@@ -4459,6 +4456,16 @@ function continuationFixture(trace: string[], initialState?: unknown) {
 		},
 	});
 	return { coordinator, states };
+}
+
+/** Memory is registered as an extension, so tests build the registry the runtime consults. */
+function memoryExtensions(
+	service: MemoryContextServiceContract,
+	enabled = true,
+): ExtensionRegistry {
+	const registry = new ExtensionRegistry();
+	registry.register(createMemoryExtension({ service, enabled: () => enabled }));
+	return registry;
 }
 
 function memoryContextFixture(trace: string[], failAction = false): {

@@ -6,6 +6,7 @@ import { loadGitWorkspaceDiff, repositoryInitPrompt, prepareInteractiveReview, w
 import { SelectedSkillContext } from "./selected-skill-context.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { PluginCatalogService } from "@mycli/integrations";
+import { ExtensionRegistry } from "@mycli/extensions";
 import { McpElicitationBroker } from "./mcp-elicitation-broker.ts";
 import { NetworkApprovalBroker } from "./network-approval-broker.ts";
 import type { GatewayTransport, JsonObject } from "@mycli/gateway";
@@ -103,6 +104,7 @@ import {
 	ClarificationContinuationCoordinator,
 	CompactionCoordinator,
 	ContextItemCoordinator,
+	createMemoryExtension,
 	ExecutionPolicyCoordinator,
 	HookCoordinator,
 	MemoryContextService,
@@ -1263,6 +1265,11 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				sessionStore: store,
 				tokenCounter,
 			});
+			const extensions = new ExtensionRegistry();
+			extensions.register(createMemoryExtension({
+				service: memoryContextService,
+				enabled: () => controlConfig.memoryEnabled,
+			}));
 			const createCompactionCoordinator = (
 				resolved: NodeRuntimeConfig,
 				runSnapshot?: RunExecutionSnapshot,
@@ -1448,7 +1455,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			clarificationCoordinator,
 			queueCoordinator,
 			providerContinuation,
-			memoryContextService,
+			extensions,
 			writeTerminalSnapshot: async () => {
 				const overview = store.loadSession(sessionId);
 				if (!overview) throw new SnapshotStateError("terminal session is missing");

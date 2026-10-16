@@ -1,4 +1,8 @@
-import type { CanonicalConversationItem, ProviderUsage } from "@mycli/core";
+import type {
+	CanonicalConversationItem,
+	InstructionFragmentKind,
+	ProviderUsage,
+} from "@mycli/core";
 
 /** Where a turn came from: a human submission, another agent, or goal continuation. */
 export type ExtensionTurnSource = "user" | "agent_mailbox" | "goal";
@@ -19,6 +23,8 @@ export interface ExtensionTurnInput {
 export interface ExtensionTurnCompleteInput extends ExtensionTurnInput {
 	readonly assistantText: string;
 	readonly usage: ProviderUsage;
+	/** False when the terminal snapshot could not be written, so durable side effects are unsafe. */
+	readonly terminalSnapshotWritten: boolean;
 }
 
 export interface ExtensionTokenUsageInput {
@@ -50,10 +56,37 @@ export interface TokenUsageContributor {
 	onTokenUsage?(input: ExtensionTokenUsageInput): void | Promise<void>;
 }
 
+/**
+ * A turn-context section an extension contributes. The extension owns the identity (`key`,
+ * `kind`, `title`, `source`) and the rendered `content`, so migrating a feature onto the registry
+ * does not change the bytes the model sees.
+ */
+export interface ExtensionContextSection {
+	readonly key: string;
+	readonly kind: InstructionFragmentKind;
+	readonly title: string;
+	readonly content: string;
+	readonly source: string;
+	/** Trusted policy-producing sections carry developer authority, like trusted hook context. */
+	readonly trusted?: boolean;
+	readonly policyProducing?: boolean;
+	readonly cacheClass?: "static" | "dynamic" | "ephemeral";
+	readonly scope?: "turn" | "transcript" | "session";
+	readonly includeInMemory?: boolean;
+	readonly required?: boolean;
+}
+
+export interface ContextContributor {
+	context?(
+		input: ExtensionTurnInput,
+	): readonly ExtensionContextSection[] | undefined | Promise<readonly ExtensionContextSection[] | undefined>;
+}
+
 /** One registered feature. `id` is the stable identity used for ordering, tracing, and failures. */
 export interface ExtensionDefinition {
 	readonly id: string;
 	readonly turnLifecycle?: TurnLifecycleContributor;
 	readonly conversationItems?: ConversationItemContributor;
+	readonly context?: ContextContributor;
 	readonly tokenUsage?: TokenUsageContributor;
 }

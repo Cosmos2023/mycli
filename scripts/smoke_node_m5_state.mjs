@@ -11,8 +11,10 @@ import { parseArgs } from "node:util";
 import { resolveConfig } from "@mycli/config";
 import { fingerprintSubmission } from "@mycli/core";
 import { ProviderRegistry } from "@mycli/providers";
+import { ExtensionRegistry } from "@mycli/extensions";
 import {
 	CompactionCoordinator,
+	createMemoryExtension,
 	MemoryContextService,
 	MemoryStore,
 	NodeTurnRuntime,
@@ -94,6 +96,11 @@ async function main() {
 			store: memoryStore,
 			sessionStore: store,
 		});
+		const memoryExtensions = new ExtensionRegistry();
+		memoryExtensions.register(createMemoryExtension({
+			service: memoryContext,
+			enabled: () => runtimeConfig.memoryEnabled === true,
+		}));
 		const registry = new ProviderRegistry();
 		const runtimeConfig = {
 			...sourceConfig,
@@ -185,7 +192,7 @@ async function main() {
 			clock: () => new Date().toISOString(),
 			maxOutputTokens: TURN_OUTPUT_TOKENS,
 			compactionCoordinator: compaction,
-			memoryContextService: memoryContext,
+			extensions: memoryExtensions,
 			providerContinuation: continuation,
 			writeTerminalSnapshot: async () => writeSnapshot(
 				snapshots,

@@ -29,7 +29,7 @@ test("extensions run in registration order for every hook", async () => {
 	});
 
 	await registry.runTurnStart(turn);
-	await registry.runTurnComplete({ ...turn, assistantText: "done", usage: {} });
+	await registry.runTurnComplete({ ...turn, assistantText: "done", usage: {}, terminalSnapshotWritten: true });
 	await registry.runTokenUsage({ sessionId: "session-1", turnId: "turn-1", requestId: "request-1", usage: {} });
 
 	assert.deepEqual(order, [
@@ -63,7 +63,7 @@ test("a throwing extension is isolated, reported, and never stops the others", a
 	});
 
 	await registry.runTurnStart(turn);
-	await registry.runTurnComplete({ ...turn, assistantText: "done", usage: {} });
+	await registry.runTurnComplete({ ...turn, assistantText: "done", usage: {}, terminalSnapshotWritten: true });
 	await registry.runTokenUsage({ sessionId: "session-1", turnId: "turn-1", requestId: "request-1", usage: {} });
 	const items = await registry.collectConversationItems(turn);
 

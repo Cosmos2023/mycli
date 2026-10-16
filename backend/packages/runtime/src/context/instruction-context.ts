@@ -17,6 +17,7 @@ import {
 } from "./workspace-instructions.ts";
 import type { LoadedWorkspaceInstructions } from "./workspace-instructions.ts";
 import { collaborationModeDeveloperInstruction } from "./collaboration-mode.ts";
+import type { ExtensionContextSection } from "@mycli/extensions";
 
 export type RuntimeHookPoint = "user_prompt_submit" | "pre_tool_use" | "post_tool_use" | "pre_compact";
 
@@ -43,7 +44,7 @@ export interface TurnContextSources {
 	readonly environment?: Readonly<Record<string, string>>;
 	readonly conversationContext?: string;
 	readonly compactionRehydration?: readonly string[];
-	readonly memory?: readonly string[];
+	readonly extensionSections?: readonly ExtensionContextSection[];
 	readonly plan?: string;
 	readonly hooks?: readonly RuntimeHookContext[];
 	readonly runtimePolicyReminders?: readonly string[];
@@ -198,20 +199,7 @@ export function collectTurnContext(input: CollectTurnContextInput): TurnContext 
 			scope: "turn",
 		}));
 	}
-	const memory = renderList(input.sources.memory);
-	if (memory) {
-		add(section({
-			key: "memory",
-			kind: "memory",
-			title: "Memory",
-			content: tagged("memory_context", memory),
-			role: "user",
-			source: "runtime:memory",
-			cacheClass: "dynamic",
-			scope: "transcript",
-			includeInMemory: true,
-		}));
-	}
+	for (const extension of extensionSections(input.sources.extensionSections ?? [])) add(extension);
 	if (input.sources.plan) {
 		add(section({
 			key: "plan",
@@ -353,6 +341,37 @@ function section(
 	};
 }
 
+/**
+ * Renders extension-contributed sections. The extension owns the identity and the content, so a
+ * migrated feature keeps the exact section the model already saw; only trusted policy-producing
+ * sections carry developer authority.
+ */
+function extensionSections(
+	sections: readonly ExtensionContextSection[],
+): readonly TurnContextSection[] {
+	const byKey = new Map<string, TurnContextSection>();
+	for (const contributed of sections) {
+		const content = contributed.content.trim();
+		if (!content || byKey.has(contributed.key)) continue;
+		const trusted = contributed.trusted === true;
+		const policyProducing = contributed.policyProducing === true;
+		byKey.set(contributed.key, section({
+			key: contributed.key,
+			kind: contributed.kind,
+			title: contributed.title,
+			content,
+			role: trusted && policyProducing ? "developer" : "user",
+			source: contributed.source,
+			cacheClass: contributed.cacheClass ?? "dynamic",
+			scope: contributed.scope ?? "transcript",
+			includeInMemory: contributed.includeInMemory ?? false,
+			required: contributed.required ?? false,
+			...(trusted || policyProducing ? { metadata: { trusted, policyProducing } } : {}),
+		}));
+	}
+	return Object.freeze([...byKey.values()]);
+}
+
 function hookSections(hooks: readonly RuntimeHookContext[]): readonly TurnContextSection[] {
 	const deduplicated = new Map<string, RuntimeHookContext>();
 	for (const hook of hooks) {
@@ -390,11 +409,10 @@ function hookSections(hooks: readonly RuntimeHookContext[]): readonly TurnContex
 
 function assertSectionAuthority(section: TurnContextSection): void {
 	if (section.role !== "developer") return;
+	// Trusted policy-producing context (hook or extension) is the only non-core developer source.
+	if (section.metadata?.trusted === true && section.metadata.policyProducing === true) return;
 	if (section.kind === "hook_context") {
-		if (section.metadata?.trusted !== true || section.metadata.policyProducing !== true) {
-			throw new TypeError("untrusted hook context cannot use developer authority");
-		}
-		return;
+		throw new TypeError("untrusted hook context cannot use developer authority");
 	}
 	if (!DEVELOPER_KINDS.has(section.kind)) {
 		throw new TypeError("context source cannot use developer authority");

@@ -1,6 +1,10 @@
 import type { TurnInterruptionReason } from "@mycli/contracts";
 import { GoalStateError } from "@mycli/core";
-import type { ExtensionRegistry, ExtensionTurnInput } from "@mycli/extensions";
+import type {
+	ExtensionContextSection,
+	ExtensionRegistry,
+	ExtensionTurnInput,
+} from "@mycli/extensions";
 import type { SessionGoalService } from "../sessions/session-goal-service.ts";
 import type { SessionGoalUsageTracker } from "../sessions/session-goal-usage.ts";
 import type { GoalRef } from "@mycli/core";
@@ -94,7 +98,6 @@ import type {
 	CompactInput,
 	CompactionResult,
 } from "../context/compaction-coordinator.ts";
-import type { MemoryContextServiceContract } from "../memory/memory-context-service.ts";
 import type {
 	ExecutionPolicyConfiguration,
 	ExecutionPolicySnapshot,
@@ -223,7 +226,6 @@ export interface NodeTurnRuntimeOptions {
 		config: NodeRuntimeConfig,
 		runSnapshot?: RunExecutionSnapshot,
 	) => CompactionCoordinatorContract;
-	readonly memoryContextService?: MemoryContextServiceContract;
 	readonly extensions?: ExtensionRegistry;
 	readonly providerContinuation?: ProviderContinuationContract;
 	readonly hookRunner?: HookRunnerContract;
@@ -242,7 +244,6 @@ export interface RuntimeContextSourceInput {
 	readonly executionPolicyConfiguration?: ExecutionPolicyConfiguration;
 	readonly runSnapshot: RunExecutionSnapshot;
 	readonly hooks: readonly RuntimeHookContext[];
-	readonly memory?: readonly string[];
 }
 
 export interface CompactionCoordinatorContract {
@@ -1074,8 +1075,8 @@ export class NodeTurnRuntime {
 			...(this.#options.developerInstructions ?? []),
 			collaborationModeDeveloperInstruction(collaborationMode),
 		]);
-		let memoryCollected = false;
-		let memoryItem: Extract<CanonicalConversationItem, { readonly type: "user" }> | undefined;
+		let extensionItemsCollected = false;
+		let extensionItems: readonly CanonicalConversationItem[] = [];
 		while (true) {
 			let completedToolBatch = false;
 			const wallClockExhausted = this.#agentBudget.wallClockExhaustion();
@@ -1223,9 +1224,9 @@ export class NodeTurnRuntime {
 					freshItemIds.clear();
 				}
 			}
-			if (!memoryCollected) {
-				memoryCollected = true;
-				memoryItem = await this.#collectMemoryItem(context);
+			if (!extensionItemsCollected) {
+				extensionItemsCollected = true;
+				extensionItems = await this.#collectExtensionItems(context);
 			}
 			const goalStop = this.#options.goal?.stopReason(turnId) ?? this.#options.goalUsage?.stopReason(turnId);
 			if (goalStop) return this.#finalizeFailure(submission, { code: "interrupted", message: goalStop, interruptionReason: this.#options.goal?.interruptionReason(turnId) ?? this.#options.goalUsage?.interruptionReason(turnId), retryable: false }, emit);
@@ -1243,6 +1244,7 @@ export class NodeTurnRuntime {
 			if (this.#coordinatorBroker) {
 				try {
 					const hookContexts = context.hookContexts.snapshot();
+					const extensionSections = await this.#collectExtensionSections(context);
 					const collectedSources = this.#options.contextSources?.({
 						submission,
 						config,
@@ -1253,7 +1255,6 @@ export class NodeTurnRuntime {
 						} : {}),
 						runSnapshot: context.runSnapshot,
 						hooks: hookContexts,
-						...(memoryItem ? { memory: [memoryItem.text] } : {}),
 					}) ?? {};
 					const providerStep = this.#coordinatorBroker.nextProviderStep(turnId);
 					const committed = this.#coordinatorBroker.commitProviderStep({
@@ -1267,7 +1268,7 @@ export class NodeTurnRuntime {
 						sources: mergeRuntimeContextSources({
 							collected: collectedSources,
 							hooks: hookContexts,
-							memory: memoryItem ? [memoryItem.text] : [],
+							extensionSections,
 							developerInstructions: this.#options.developerInstructions ?? [],
 							collaborationMode,
 							executionPolicy: context.executionPolicy,
@@ -1292,9 +1293,11 @@ export class NodeTurnRuntime {
 					);
 				}
 			} else {
-				const providerHistory = memoryItem
-					? insertMemoryBeforeCurrentInput(history, memoryItem, context.submission.message)
-					: history;
+				const providerHistory = insertItemsBeforeCurrentInput(
+					history,
+					extensionItems,
+					context.submission.message,
+				);
 				requestSignature = buildProviderRequestSignature({
 					...requestConfig,
 					instructions,
@@ -1645,7 +1648,7 @@ export class NodeTurnRuntime {
 			readonly requestInput: readonly CanonicalConversationItem[];
 		}>,
 	): Promise<RuntimeTurnRecord> {
-		const { submission, turnId, config, emit, signal } = context;
+		const { submission, turnId, emit, signal } = context;
 		try {
 			await context.hookCoordinator?.runPoint("stop", {
 				assistantMessageChars: stepResult.assistantText.length,
@@ -1669,7 +1672,6 @@ export class NodeTurnRuntime {
 			stepResult.providerState,
 			emit,
 			signal,
-			config.memoryEnabled,
 			continuation,
 		);
 	}
@@ -1785,23 +1787,26 @@ export class NodeTurnRuntime {
 		return result;
 	}
 
-	async #collectMemoryItem(
+	/** Conversation items an extension wants inserted ahead of the current user input. */
+	async #collectExtensionItems(
 		context: TurnExecutionContext,
-	): Promise<Extract<CanonicalConversationItem, { readonly type: "user" }> | undefined> {
-		if ((context.submission.source ?? "user") !== "user") return undefined;
-		const service = this.#options.memoryContextService;
-		if (!service || !context.config.memoryEnabled) return undefined;
-		try {
-			const memory = await service.collect({
-				userMessage: context.submission.message,
-				sessionId: this.#options.sessionId,
-				enabled: true,
-				signal: context.signal,
-			});
-			return memory.item;
-		} catch {
-			return undefined;
-		}
+	): Promise<readonly CanonicalConversationItem[]> {
+		const registry = this.#options.extensions;
+		if (!registry) return [];
+		return await registry.collectConversationItems(
+			this.#extensionTurnInput(context.submission, context.turnId, context.signal),
+		);
+	}
+
+	/** Turn-context sections an extension contributes; the registry isolates failures. */
+	async #collectExtensionSections(
+		context: TurnExecutionContext,
+	): Promise<readonly ExtensionContextSection[]> {
+		const registry = this.#options.extensions;
+		if (!registry) return [];
+		return await registry.collectContext(
+			this.#extensionTurnInput(context.submission, context.turnId, context.signal),
+		);
 	}
 
 	/** The view every extension hook gets of the running turn. */
@@ -1851,7 +1856,6 @@ export class NodeTurnRuntime {
 		providerState: ProviderReplayState | undefined,
 		emit: (event: RuntimeEvent) => void,
 		signal: AbortSignal,
-		memoryEnabled: boolean,
 		continuation: Readonly<{
 			readonly requestConfig: ProviderRequestConfig;
 			readonly requestSignature: string;
@@ -1911,23 +1915,11 @@ export class NodeTurnRuntime {
 				elapsedMs: boundedDurationMs(startedAt, publishedAt),
 				snapshotWritten,
 			});
-			if (snapshotWritten
-				&& memoryEnabled
-				&& (submission.source ?? "user") === "user"
-				&& this.#options.memoryContextService) {
-				try {
-					await this.#options.memoryContextService.applyExplicitActions({
-						userMessage: submission.message,
-						enabled: true,
-					});
-				} catch {
-					// Memory is auxiliary and cannot rewrite an already completed turn.
-				}
-			}
 			await this.#options.extensions?.runTurnComplete({
 				...this.#extensionTurnInput(submission, completed.turn_id, signal),
 				assistantText,
 				usage: lastTokenUsage,
+				terminalSnapshotWritten: snapshotWritten,
 			});
 			return completed;
 		} catch (error) {
@@ -2127,11 +2119,12 @@ function normalizeFailure(
 	};
 }
 
-function insertMemoryBeforeCurrentInput(
+function insertItemsBeforeCurrentInput(
 	history: readonly CanonicalConversationItem[],
-	memory: Extract<CanonicalConversationItem, { readonly type: "user" }>,
+	items: readonly CanonicalConversationItem[],
 	currentInput: string,
 ): readonly CanonicalConversationItem[] {
+	if (items.length === 0) return history;
 	let insertionIndex = -1;
 	for (let index = history.length - 1; index >= 0; index -= 1) {
 		const item = history[index];
@@ -2146,7 +2139,7 @@ function insertMemoryBeforeCurrentInput(
 	if (insertionIndex < 0) return history;
 	return Object.freeze([
 		...history.slice(0, insertionIndex),
-		Object.freeze({ ...memory }),
+		...items.map((item) => Object.freeze({ ...item })),
 		...history.slice(insertionIndex),
 	]);
 }
@@ -2154,7 +2147,7 @@ function insertMemoryBeforeCurrentInput(
 function mergeRuntimeContextSources(input: {
 	readonly collected: TurnContextSources;
 	readonly hooks: readonly RuntimeHookContext[];
-	readonly memory: readonly string[];
+	readonly extensionSections: readonly ExtensionContextSection[];
 	readonly developerInstructions: readonly string[];
 	readonly collaborationMode: string;
 	readonly executionPolicy?: ExecutionPolicy;
@@ -2173,8 +2166,8 @@ function mergeRuntimeContextSources(input: {
 				input.executionPolicyConfiguration,
 			),
 		...(input.hooks.length > 0 ? { hooks: input.hooks } : {}),
-		...(input.memory.length > 0
-			? { memory: Object.freeze([...(input.collected.memory ?? []), ...input.memory]) }
+		...(input.extensionSections.length > 0
+			? { extensionSections: Object.freeze([...input.extensionSections]) }
 			: {}),
 		...(subagentContext ? { subagentContext } : {}),
 	});
