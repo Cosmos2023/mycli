@@ -451,7 +451,11 @@ function subagentLifecycleTracePayload(
 }
 
 const GOAL_ACTIONS = ["created", "edited", "status_changed", "cleared", "round_started", "usage_accounted"] as const;
-const EXTENSION_HOOKS = ["onTurnStart", "onTurnComplete", "conversationItems", "context", "onTokenUsage"] as const;
+const EXTENSION_HOOKS = [
+	"onTurnAdmitted", "onTurnStart", "onTurnComplete", "onTurnFinished",
+	"conversationItems", "context", "onTokenUsage",
+	"nextTurn", "assertAdmission", "onAdmissionFailed",
+] as const;
 
 function extensionFailureTracePayload(
 	value: Readonly<Record<string, unknown>>,

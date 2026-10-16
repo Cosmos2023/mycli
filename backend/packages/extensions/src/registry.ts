@@ -1,18 +1,34 @@
 import type { CanonicalConversationItem } from "@mycli/core";
 import type {
+	ExtensionAdmission,
+	ExtensionAdmissionFailureInput,
+	ExtensionAdmissionInput,
+	ExtensionAdmissionRef,
+	ExtensionAdmittedTurnInput,
 	ExtensionContextSection,
 	ExtensionDefinition,
+	ExtensionFinishedTurnInput,
 	ExtensionTokenUsageInput,
 	ExtensionTurnCompleteInput,
 	ExtensionTurnInput,
 } from "./contributors.ts";
 
 export type ExtensionHookName =
+	| "onTurnAdmitted"
 	| "onTurnStart"
 	| "onTurnComplete"
+	| "onTurnFinished"
 	| "conversationItems"
 	| "context"
-	| "onTokenUsage";
+	| "onTokenUsage"
+	| "nextTurn"
+	| "assertAdmission"
+	| "onAdmissionFailed";
+
+/** A turn an extension asked for, resolved back to the extension that asked. */
+export interface ResolvedAdmission extends ExtensionAdmission {
+	readonly extensionId: string;
+}
 
 /** A hook that threw. Extensions are auxiliary, so a failure is reported instead of propagated. */
 export interface ExtensionFailure {
@@ -64,15 +80,75 @@ export class ExtensionRegistry {
 		}
 	}
 
+	async runTurnAdmitted(input: ExtensionAdmittedTurnInput): Promise<void> {
+		for (const [id, extension] of this.#extensions) {
+			await this.#run(id, "onTurnAdmitted", () => extension.turnLifecycle?.onTurnAdmitted?.(input));
+		}
+	}
+
 	async runTurnComplete(input: ExtensionTurnCompleteInput): Promise<void> {
 		for (const [id, extension] of this.#extensions) {
 			await this.#run(id, "onTurnComplete", () => extension.turnLifecycle?.onTurnComplete?.(input));
 		}
 	}
 
+	async runTurnFinished(input: ExtensionFinishedTurnInput): Promise<void> {
+		for (const [id, extension] of this.#extensions) {
+			await this.#run(id, "onTurnFinished", () => extension.turnLifecycle?.onTurnFinished?.(input));
+		}
+	}
+
 	async runTokenUsage(input: ExtensionTokenUsageInput): Promise<void> {
 		for (const [id, extension] of this.#extensions) {
 			await this.#run(id, "onTokenUsage", () => extension.tokenUsage?.onTokenUsage?.(input));
+		}
+	}
+
+	/**
+	 * Asks each extension, in registration order, whether it wants to start a turn. A throwing
+	 * extension is reported and treated as "no turn", so a broken extension cannot stall the
+	 * scheduler for the others.
+	 */
+	nextTurn(input: ExtensionAdmissionInput): ResolvedAdmission | undefined {
+		for (const [id, extension] of this.#extensions) {
+			const hook = extension.admission?.nextTurn;
+			if (!hook) continue;
+			let admission: ExtensionAdmission | undefined;
+			try {
+				admission = hook(input);
+			} catch (error) {
+				this.#report(id, "nextTurn", error);
+				continue;
+			}
+			if (admission) return Object.freeze({ ...admission, extensionId: id });
+		}
+		return undefined;
+	}
+
+	/**
+	 * Validates an admission with the extension that issued it. Unlike the auxiliary hooks this one
+	 * gates the turn, so the failure is reported *and* propagated to the caller.
+	 */
+	assertAdmission(ref: ExtensionAdmissionRef, input: { readonly sessionId: string }): void {
+		const extension = this.#extensions.get(ref.extensionId);
+		if (!extension) throw new TypeError(`admission from an unregistered extension: ${ref.extensionId}`);
+		try {
+			extension.admission?.assertAdmission?.({ sessionId: input.sessionId, reference: ref.reference });
+		} catch (error) {
+			this.#report(ref.extensionId, "assertAdmission", error);
+			throw error;
+		}
+	}
+
+	/** Tells the owning extension that its admitted turn could not be started. */
+	admissionFailed(ref: ExtensionAdmissionRef, input: Omit<ExtensionAdmissionFailureInput, "reference">): void {
+		const extension = this.#extensions.get(ref.extensionId);
+		if (!extension) return;
+		try {
+			extension.admission?.onAdmissionFailed?.({ ...input, reference: ref.reference });
+		} catch (error) {
+			this.#report(ref.extensionId, "onAdmissionFailed", error);
+			throw error;
 		}
 	}
 

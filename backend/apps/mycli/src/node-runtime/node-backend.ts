@@ -123,6 +123,7 @@ import {
 	CompactionModelJournal,
 	TokenCounter,
 	toolExposureForSnapshot,
+	createGoalExtension,
 	WorkerLeasedAgentThreadRuntimeFactory,
 	WorkerLeasedRootTurnRuntime,
 	runSessionHookPoint,
@@ -1278,6 +1279,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					message: failure.message,
 				}),
 			});
+			if (goal) extensions.register(createGoalExtension({ service: goal }));
 			extensions.register(createMemoryExtension({
 				service: memoryContextService,
 				enabled: () => controlConfig.memoryEnabled,
@@ -1540,6 +1542,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			const binding = Object.assign(runtime, {
 				goal,
 				goalUsage,
+		extensions,
 				sessionPreferences: () => sessionPreferences,
 				setSessionPreferences: (preferences: SessionPreferences) => {
 					sessionPreferences = preferences;

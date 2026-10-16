@@ -7,7 +7,8 @@ import { NODE_RUNTIME_CONTEXT_DEFAULTS } from "@mycli/config";
 import type { ModelProvider } from "@mycli/providers";
 import { openRuntimeSessionStore } from "@mycli/storage";
 import { GoalTool, UPDATE_GOAL_TOOL_DEFINITION, WRITE_TOOL_DEFINITION } from "@mycli/tools";
-import { NodeTurnRuntime, SessionGoalService } from "../../src/index.ts";
+import { ExtensionRegistry } from "@mycli/extensions";
+import { createGoalExtension, NodeTurnRuntime, SessionGoalService } from "../../src/index.ts";
 
 for (const status of ["paused", "complete"] as const) {
 	for (const stopDuringHook of [false, true]) {
@@ -30,7 +31,9 @@ for (const status of ["paused", "complete"] as const) {
 				} else yield { type: "text_delta", text: "Finished." };
 				yield { type: "completed", responseId: `response-${requests}` };
 			} };
-			const runtime = new NodeTurnRuntime({ sessionId: "session", workspaceRoot: root, threadId: "session", instructions: "Fixture", store, goal,
+			const extensions = new ExtensionRegistry();
+			extensions.register(createGoalExtension({ service: goal }));
+			const runtime = new NodeTurnRuntime({ sessionId: "session", workspaceRoot: root, threadId: "session", instructions: "Fixture", store, goal, extensions,
 				resolveConfig: () => ({ ...NODE_RUNTIME_CONTEXT_DEFAULTS, workspaceRoot: root, homeDir: root, provider: "openai", protocol: "responses", model: "gpt-test",
 					apiBaseUrl: "https://example.invalid/v1", apiKey: "test", authRef: "openai", sessionId: "session", sessionsDbPath: join(root, "sessions.db"),
 					maxPromptTokens: 100_000, requestMaxRetries: 0, streamMaxRetries: 0, thinkingEnabled: false, reasoningEffort: "none", supportsImages: true,

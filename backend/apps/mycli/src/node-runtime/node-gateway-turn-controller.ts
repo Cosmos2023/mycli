@@ -1,6 +1,6 @@
 import { isTurnInterruptionReason, type TurnInterruptionReason } from "@mycli/contracts";
 import { publishCompactionEvent } from "./node-gateway-compaction.ts";
-import { goalContinuationMessage } from "@mycli/runtime";
+import type { ExtensionTurnSource } from "@mycli/extensions";
 import type { SkillReference } from "@mycli/contracts";
 import { parseSkillReferences, parseGatewayParams } from "@mycli/contracts";
 import { randomUUID } from "node:crypto";
@@ -78,7 +78,7 @@ type JsonObject = Record<string, unknown>;
 const GRACEFUL_INTERRUPT_TIMEOUT_MS = 100;
 
 interface ActiveTurn {
-	readonly source?: "goal";
+	readonly source?: ExtensionTurnSource;
 	readonly closeReview?: () => Promise<void>;
 	persistenceFailureReported?: boolean;
 	durableProviderAttempts?: boolean;
@@ -1018,12 +1018,19 @@ export class NodeGatewayTurnController {
 		if (!queue) return;
 		const context = this.#session.context();
 		const runtime = this.#session.runtime();
-		const goalRef = record || this.#dependencies.hasPendingGoalInteraction?.() ? undefined : runtime.goal?.continuation();
-		const goal = goalRef ? runtime.goal?.get() : undefined;
-		if (!record && (!goalRef || !goal)) return;
+		// The registry decides who, if anyone, wants a turn; the controller no longer names a feature.
+		const admission = record || this.#dependencies.hasPendingGoalInteraction?.() ? undefined : runtime.extensions?.nextTurn({
+			sessionId: context.sessionId,
+			...(runtime.workspaceRoot ? { workspaceRoot: runtime.workspaceRoot } : {}),
+			toolNames: this.#dependencies.integrations?.toolNames?.() ?? [],
+		});
+		if (!record && !admission) return;
 		const startFailed = (): void => {
 			try {
-				if (goalRef) runtime.goal?.failAdmission(goalRef, "Goal turn could not be started. Resolve the reported error, then resume.");
+				if (admission) runtime.extensions?.admissionFailed(admission, {
+					sessionId: context.sessionId,
+					message: "Goal turn could not be started. Resolve the reported error, then resume.",
+				});
 			} catch {
 				this.#publish("gateway.error", { code: "internal_error", message: "Goal admission stopped because its state could not be saved.", method: "goal.update" });
 				return;
@@ -1045,14 +1052,18 @@ export class NodeGatewayTurnController {
 			return;
 		}
 		const proposed: TurnSubmission = {
-			clientTurnId: record?.clientTurnId ?? `goal_${reservedTurnId}`,
+			clientTurnId: record?.clientTurnId ?? `${admission!.extensionId}_${reservedTurnId}`,
 			...(record ? { clientUserMessageId: record.clientTurnId, queueId: record.queueId,
 				inputSource: record.kind === "rejected_steer" ? "steer" as const : "submit" as const }
-				: { source: "goal" as const, goalRef }),
+				: {
+					source: admission!.source,
+					admission: {
+						extensionId: admission!.extensionId,
+						...(admission!.reference === undefined ? {} : { reference: admission!.reference }),
+					},
+				}),
 			turnId: reservedTurnId,
-			message: record?.text ?? goalContinuationMessage(runtime.goal?.modelView() ?? goal!, {
-				updatePlan: this.#dependencies.integrations?.toolNames?.()?.includes("update_plan") === true,
-			}),
+			message: record?.text ?? admission!.message,
 			localImages: record?.imagePaths ?? [],
 			...(record?.skillReferences?.length ? { skillReferences: record.skillReferences } : {}),
 			modelOverride: this.#settings.model,
@@ -1092,7 +1103,7 @@ export class NodeGatewayTurnController {
 			turnId: reservation.turn.turn_id,
 		};
 		const active: ActiveTurn = {
-			...(goalRef ? { source: "goal" as const } : {}),
+			...(admission ? { source: admission.source } : {}),
 			clientTurnId: submission.clientTurnId,
 			clientUserMessageId: submission.clientTurnId,
 			controller: new AbortController(),

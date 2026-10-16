@@ -5,7 +5,8 @@ import { join } from "node:path";
 import test from "node:test";
 import { NODE_RUNTIME_CONTEXT_DEFAULTS, type NodeRuntimeConfig } from "@mycli/config";
 import type { RuntimeTurnRecord } from "@mycli/contracts";
-import { NodeTurnRuntime, SessionGoalService, QueueCoordinator } from "@mycli/runtime";
+import { ExtensionRegistry } from "@mycli/extensions";
+import { createGoalExtension, NodeTurnRuntime, SessionGoalService, QueueCoordinator } from "@mycli/runtime";
 import { openRuntimeSessionStore } from "@mycli/storage";
 import {
 	NodeGatewayTurnController,
@@ -168,8 +169,10 @@ async function createFixture(t: test.TestContext, options: {
 		activeTurnId: null, createQueueId: () => `queue-${++id}`, clock: () => new Date().toISOString(),
 		store: { loadCommittedQueueIds: () => new Set(), saveSnapshot: (snapshot) => { store.saveQueueSnapshot({ sessionId: config.sessionId, threadId: config.sessionId, workspaceRoot: root, snapshot }); },
 			commitPending: (turnId, records) => store.commitQueuedInputs({ sessionId: config.sessionId, turnId, records }) } }) : undefined;
+	const extensions = new ExtensionRegistry();
+	if (goal) extensions.register(createGoalExtension({ service: goal }));
 	const runtime = new NodeTurnRuntime({
-		goal, queueCoordinator: queue,
+		goal, extensions, queueCoordinator: queue,
 		sessionId: config.sessionId, threadId: config.sessionId, workspaceRoot: root, store,
 		instructions: "Offline regression.", resolveConfig: () => config,
 		createProvider: () => ({ stream: async function* (_request, input) {
@@ -185,6 +188,7 @@ async function createFixture(t: test.TestContext, options: {
 		...(options.writeTerminalSnapshot ? { writeTerminalSnapshot: options.writeTerminalSnapshot } : {}),
 	});
 	if (goal) Object.assign(runtime, { goal });
+	Object.assign(runtime, { extensions, workspaceRoot: root });
 	const context = { sessionId: config.sessionId, generation: 1 };
 	const events: Fixture["events"] = [];
 	const controller: NodeGatewayTurnController = new NodeGatewayTurnController({

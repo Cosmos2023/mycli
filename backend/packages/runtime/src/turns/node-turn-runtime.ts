@@ -1,13 +1,14 @@
 import type { TurnInterruptionReason } from "@mycli/contracts";
 import { GoalStateError } from "@mycli/core";
 import type {
+	ExtensionAdmissionRef,
 	ExtensionContextSection,
 	ExtensionRegistry,
 	ExtensionTurnInput,
+	ExtensionTurnSource,
 } from "@mycli/extensions";
 import type { SessionGoalService } from "../sessions/session-goal-service.ts";
 import type { SessionGoalUsageTracker } from "../sessions/session-goal-usage.ts";
-import type { GoalRef } from "@mycli/core";
 import type { SkillReference, ReviewSelection } from "@mycli/contracts";
 import { resolveProviderRetryPolicy, type NodeRuntimeConfig } from "@mycli/config";
 import {
@@ -162,8 +163,9 @@ export interface TurnSubmission {
 	readonly localImages?: readonly string[];
 	readonly modelOverride?: string;
 	readonly reasoningEffort?: ReasoningEffort;
-	readonly source?: "user" | "agent_mailbox" | "goal";
-	readonly goalRef?: GoalRef;
+	readonly source?: ExtensionTurnSource;
+	/** Set when an extension admitted this turn. The runtime never interprets the reference. */
+	readonly admission?: ExtensionAdmissionRef;
 }
 
 export interface NodeTurnRuntimeOptions {
@@ -532,15 +534,29 @@ export class NodeTurnRuntime {
 		this.#options.approvalPolicy?.configurePermissionProfile?.(input.permission);
 	}
 
-	readonly #goalTurnClients = new Map<string, string>();
+	/** Turns that were admitted, so the terminal hook can report the outcome back to the owner. */
+	readonly #admittedTurns = new Map<string, { clientTurnId: string; source: ExtensionTurnSource; admission?: ExtensionAdmissionRef }>();
 
+	/**
+	 * Synchronous on purpose. The registry runs each hook up to its first `await` before yielding,
+	 * so a synchronous owner (goal) has already updated its state when the next scheduler pass
+	 * reads it, and the registry never rejects.
+	 */
 	#finishTurn(turnId: string): void {
-		const clientTurnId = this.#goalTurnClients.get(turnId);
-		this.#goalTurnClients.delete(turnId);
+		const admitted = this.#admittedTurns.get(turnId);
+		this.#admittedTurns.delete(turnId);
 		try {
-			if (clientTurnId && this.#options.goal) {
-				const record = this.#options.store.loadTurn(this.#options.sessionId, clientTurnId);
-				this.#options.goal.finishTurn(turnId, record?.status ?? "failed", record?.error_code ?? undefined);
+			const registry = this.#options.extensions;
+			if (admitted && registry) {
+				const record = this.#options.store.loadTurn(this.#options.sessionId, admitted.clientTurnId);
+				void registry.runTurnFinished({
+					sessionId: this.#options.sessionId,
+					turnId,
+					source: admitted.source,
+					...(admitted.admission ? { admission: admitted.admission } : {}),
+					status: record?.status ?? "failed",
+					...(record?.error_code ? { errorCode: record.error_code } : {}),
+				});
 			}
 		} finally {
 			this.#options.toolRouter?.finishTurn?.(turnId);
@@ -566,9 +582,10 @@ export class NodeTurnRuntime {
 	}
 
 	reserve(submission: TurnSubmission): TurnReservation {
-		if (submission.source === "goal") {
-			if (!this.#options.goal || !submission.goalRef) throw new Error("goal_runtime_unavailable");
-			this.#options.goal.assertContinuation(submission.goalRef);
+		if (submission.admission) {
+			const registry = this.#options.extensions;
+			if (!registry) throw new Error("goal_runtime_unavailable");
+			registry.assertAdmission(submission.admission, { sessionId: this.#options.sessionId });
 		}
 		const turnId = submission.turnId ?? this.#options.createTurnId();
 		const imagePaths = submission.localImages ?? [];
@@ -620,8 +637,18 @@ export class NodeTurnRuntime {
 		try {
 			let prepared: PreparedTurn;
 				try {
-					this.#goalTurnClients.set(turnId, submission.clientTurnId);
-					this.#options.goal?.beginTurn(turnId, submission.source ?? "user", submission.goalRef);
+					const source = submission.source ?? "user";
+					this.#admittedTurns.set(turnId, {
+						clientTurnId: submission.clientTurnId,
+						source,
+						...(submission.admission ? { admission: submission.admission } : {}),
+					});
+					await this.#options.extensions?.runTurnAdmitted({
+						sessionId: this.#options.sessionId,
+						turnId,
+						source,
+						...(submission.admission ? { admission: submission.admission } : {}),
+					});
 					prepared = await this.#prepareTurn(submission, turnId, emit, options.signal);
 				} catch (error) {
 					return await this.#finalizeFailure(

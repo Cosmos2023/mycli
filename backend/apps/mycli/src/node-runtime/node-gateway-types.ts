@@ -1,5 +1,6 @@
 import type { GatewayCompactionEvent } from "./node-gateway-compaction.ts";
 import type { SessionGoalService } from "@mycli/runtime";
+import type { ExtensionRegistry } from "@mycli/extensions";
 import type { AppendContextItemInput } from "@mycli/storage";
 import type { ReviewSelection, SkillReference } from "@mycli/contracts";
 import type { HookBrowserService } from "@mycli/integrations";
@@ -83,6 +84,9 @@ export interface NodeGatewayCompactionResult {
 
 export interface NodeGatewayRuntime {
 	readonly goal?: SessionGoalService;
+	/** The extension registry, so the turn scheduler can ask who wants the next turn. */
+	readonly extensions?: ExtensionRegistry;
+	readonly workspaceRoot?: string;
 	readonly queueCoordinator?: QueueCoordinator;
 	sessionPreferences?(): SessionPreferences | undefined;
 	setSessionPreferences?(preferences: SessionPreferences): void;

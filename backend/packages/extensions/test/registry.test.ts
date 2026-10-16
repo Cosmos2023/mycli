@@ -121,3 +121,72 @@ test("a failure reporter that throws cannot break the hook chain", async () => {
 
 	assert.deepEqual(ran, ["healthy"]);
 });
+
+test("the first extension that wants a turn gets it, and a throwing one is skipped", () => {
+	const failures: ExtensionFailure[] = [];
+	const registry = new ExtensionRegistry({ onFailure: (failure) => failures.push(failure) });
+	const reference = { goalId: "goal-1", revision: 2 };
+	registry.register({ id: "quiet", admission: { nextTurn: () => undefined } });
+	registry.register({ id: "broken", admission: { nextTurn: () => { throw new Error("boom"); } } });
+	registry.register({
+		id: "goal",
+		admission: {
+			nextTurn: () => ({ source: "goal", message: "continue", reference }),
+		},
+	});
+	registry.register({
+		id: "later",
+		admission: { nextTurn: () => ({ source: "goal", message: "later" }) },
+	});
+
+	const admission = registry.nextTurn({ sessionId: "session-1", workspaceRoot: "/workspace", toolNames: ["Shell"] });
+
+	assert.deepEqual(admission, { extensionId: "goal", source: "goal", message: "continue", reference });
+	assert.deepEqual(failures, [{ extensionId: "broken", hook: "nextTurn", message: "boom" }]);
+	assert.equal(registry.nextTurn({ sessionId: "s", workspaceRoot: "/w", toolNames: [] })?.extensionId, "goal");
+});
+
+test("admission validation is reported and still rejects the turn", () => {
+	const failures: ExtensionFailure[] = [];
+	const registry = new ExtensionRegistry({ onFailure: (failure) => failures.push(failure) });
+	registry.register({
+		id: "goal",
+		admission: {
+			assertAdmission: ({ reference }) => {
+				if (reference !== "ok") throw new Error("stale goal");
+			},
+			onAdmissionFailed: () => undefined,
+		},
+	});
+
+	assert.doesNotThrow(() => registry.assertAdmission({ extensionId: "goal", reference: "ok" }, { sessionId: "s" }));
+	assert.throws(() => registry.assertAdmission({ extensionId: "goal", reference: "stale" }, { sessionId: "s" }), /stale goal/u);
+	assert.throws(() => registry.assertAdmission({ extensionId: "missing" }, { sessionId: "s" }), /unregistered extension/u);
+	assert.deepEqual(failures, [{ extensionId: "goal", hook: "assertAdmission", message: "stale goal" }]);
+});
+
+test("turn lifecycle reports admission and terminal state to every extension", async () => {
+	const seen: string[] = [];
+	const registry = new ExtensionRegistry();
+	registry.register({
+		id: "goal",
+		turnLifecycle: {
+			onTurnAdmitted: (input) => { seen.push(`admitted:${input.source}:${input.turnId}`); },
+			onTurnFinished: (input) => { seen.push(`finished:${input.status}:${input.errorCode ?? "none"}`); },
+		},
+	});
+	registry.register({
+		id: "audit",
+		turnLifecycle: { onTurnFinished: (input) => { seen.push(`audit:${input.turnId}`); } },
+	});
+
+	await registry.runTurnAdmitted({
+		sessionId: "session-1",
+		turnId: "turn-1",
+		source: "goal",
+		admission: { extensionId: "goal", reference: 1 },
+	});
+	await registry.runTurnFinished({ sessionId: "session-1", turnId: "turn-1", source: "goal", status: "failed", errorCode: "quota_exceeded" });
+
+	assert.deepEqual(seen, ["admitted:goal:turn-1", "finished:failed:quota_exceeded", "audit:turn-1"]);
+});

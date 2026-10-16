@@ -8,7 +8,7 @@ import { ERROR_REASONS, RUNTIME_ERROR_CODES, errorDefinition, legacyGatewayReaso
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const FIXTURE = join(ROOT, "tests/fixtures/error-system/emitters.json");
-const roots = ["providers", "runtime", "tools", "storage", "config", "integrations"].map((name) => [`backend/packages/${name}/src`, name]);
+const roots = ["providers", "runtime", "tools", "storage", "config", "integrations", "extensions"].map((name) => [`backend/packages/${name}/src`, name]);
 roots.push(["backend/apps/mycli/src", "gateway"], ["tui/mycli-shell/src", "tui"]);
 
 export function inventoryErrorEmitters() {

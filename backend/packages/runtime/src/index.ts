@@ -489,5 +489,6 @@ export type {
 export { UserTurnCancellation } from "./abort.ts";
 
 export { SessionGoalService, type SessionGoalServiceOptions } from "./sessions/session-goal-service.ts";
+export { createGoalExtension, type GoalExtensionOptions } from "./sessions/goal-extension.ts";
 
 export { sessionGoalContext, goalContinuationMessage, type SessionGoalSteering } from "./sessions/session-goal-context.ts";
