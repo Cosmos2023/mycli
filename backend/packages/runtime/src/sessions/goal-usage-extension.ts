@@ -24,5 +24,10 @@ export function createGoalUsageExtension(options: GoalUsageExtensionOptions): Ex
 			stopReason: ({ turnId }) => stop(turnId),
 			toolsStopReason: ({ turnId }) => stop(turnId),
 		},
+		tokenUsage: {
+			onTokenUsage: ({ turnId, requestId, usage }) => {
+				options.tracker.observe(turnId, requestId, usage);
+			},
+		},
 	};
 }

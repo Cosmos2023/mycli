@@ -8,8 +8,6 @@ import type {
 	ExtensionTurnPolicyInput,
 	ExtensionTurnSource,
 } from "@mycli/extensions";
-import type { SessionGoalService } from "../sessions/session-goal-service.ts";
-import type { SessionGoalUsageTracker } from "../sessions/session-goal-usage.ts";
 import type { SkillReference, ReviewSelection } from "@mycli/contracts";
 import { resolveProviderRetryPolicy, type NodeRuntimeConfig } from "@mycli/config";
 import {
@@ -184,8 +182,6 @@ export interface NodeTurnRuntimeOptions {
 	readonly createModelInputId?: (
 		kind: "tools" | "context" | "request" | "lifecycle",
 	) => string;
-	readonly goal?: SessionGoalService;
-	readonly goalUsage?: SessionGoalUsageTracker;
 	readonly agentBudget?: AgentBudget;
 	readonly store: RuntimeTurnStore;
 	readonly runLifecycle?: {
@@ -540,8 +536,8 @@ export class NodeTurnRuntime {
 
 	/**
 	 * Synchronous on purpose. The registry runs each hook up to its first `await` before yielding,
-	 * so a synchronous owner (goal) has already updated its state when the next scheduler pass
-	 * reads it, and the registry never rejects.
+	 * so a synchronous owner has already updated its state when the next scheduler pass reads it,
+	 * and the registry never rejects.
 	 */
 	#finishTurn(turnId: string): void {
 		const admitted = this.#admittedTurns.get(turnId);
@@ -585,7 +581,7 @@ export class NodeTurnRuntime {
 	reserve(submission: TurnSubmission): TurnReservation {
 		if (submission.admission) {
 			const registry = this.#options.extensions;
-			if (!registry) throw new Error("goal_runtime_unavailable");
+			if (!registry) throw new Error("admission_runtime_unavailable");
 			registry.assertAdmission(submission.admission, { sessionId: this.#options.sessionId });
 		}
 		const turnId = submission.turnId ?? this.#options.createTurnId();
@@ -1267,7 +1263,7 @@ export class NodeTurnRuntime {
 			let durableProviderStep: number | undefined;
 			let durableTimelineWindowId: string | undefined;
 			let logicalRequest: ProviderRequest;
-			// The turn that ran out of goal budget answers the pending batch without new tools.
+			// A turn that exhausted a budget answers its pending batch without opening new work.
 			const stepTools = this.#options.extensions?.allowTools(this.#turnPolicyInput(turnId)) === false ? [] : tools;
 			if (this.#coordinatorBroker) {
 				try {
@@ -1374,12 +1370,21 @@ export class NodeTurnRuntime {
 			let rawStepResult;
 			let usageObserved = false;
 			const usageId = durableRequestId ?? `${turnId}:step:${this.#agentBudget.providerStepCount()}`;
+			const usageExtensions = this.#options.extensions;
 			try {
 				rawStepResult = await this.#providerStepExecutor.execute({
-					...(this.#options.goal || this.#options.goalUsage ? { recordUsage: async (usage: ProviderUsage, attempt: number) => {
+					// Every observation reaches the registry once: retry attempts report what they spent,
+					// and a step that never reported an attempt reports its settled usage below instead.
+					...(usageExtensions ? { recordUsage: async (usage: ProviderUsage, attempt: number) => {
 						usageObserved = true;
-						this.#options.goal?.observeUsage(turnId, `${usageId}:${attempt}`, usage);
-						this.#options.goalUsage?.observe(turnId, `${usageId}:${attempt}`, usage);
+						await usageExtensions.runTokenUsage({
+							sessionId: this.#options.sessionId,
+							turnId,
+							requestId: `${usageId}:${attempt}`,
+							usage,
+							phase: "attempt",
+							attempt,
+						});
 					} } : {}),
 					errorContextVersion: this.#options.store.errorContextVersion,
 					config,
@@ -1492,16 +1497,13 @@ export class NodeTurnRuntime {
 			try {
 				this.#persistWebSearchCalls(turnId, stepResult.webSearchCalls);
 				this.#persistStepReasoning(turnId, this.#agentBudget.providerStepCount(), stepResult);
-				if (!usageObserved) {
-					this.#options.goal?.observeUsage(turnId, `${usageId}:final`, stepResult.usage);
-					this.#options.goalUsage?.observe(turnId, `${usageId}:final`, stepResult.usage);
-				}
-				if (Object.keys(stepResult.usage).length > 0) {
+				if (!usageObserved && Object.keys(stepResult.usage).length > 0) {
 					await this.#options.extensions?.runTokenUsage({
 						sessionId: this.#options.sessionId,
 						turnId,
 						requestId: `${usageId}:final`,
 						usage: stepResult.usage,
+						phase: "final",
 					});
 				}
 			} catch (error) {

@@ -1363,8 +1363,6 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			});
 			const selectedSkills = new SelectedSkillContext({ sessionId, store, service: () => integrationComposition.skills });
 			const coordinatorRuntime = new NodeTurnRuntime({
-			goal,
-			goalUsage: runtimeOptions.subagentContext ? goalUsage : undefined,
 			runLifecycle: {
 				prepare: (turnId, signal) => integrationComposition.prepareRun(JSON.stringify([sessionId, turnId]), signal),
 				finish: (turnId) => integrationComposition.finishRun(JSON.stringify([sessionId, turnId])),

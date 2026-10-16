@@ -81,6 +81,18 @@ export interface ExtensionTokenUsageInput {
 	/** Identifies the provider request the usage belongs to, so accounting stays idempotent. */
 	readonly requestId: string;
 	readonly usage: ProviderUsage;
+	/**
+	 * `attempt` for usage a retry attempt reported while it was still streaming, `final` for the
+	 * step's settled usage.
+	 *
+	 * A step reports its settled usage only when no attempt reported any, so every observation is
+	 * distinct and a feature that keys on `requestId` never counts the same work twice. A retry
+	 * attempt that cost tokens but then failed still reports them, and a response with no usage at
+	 * all reports an empty usage so the cost is recorded as unknown instead of free.
+	 */
+	readonly phase: "attempt" | "final";
+	/** The retry attempt index, present for the `attempt` phase. */
+	readonly attempt?: number;
 }
 
 export interface TurnLifecycleContributor {

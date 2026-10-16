@@ -172,7 +172,7 @@ async function createFixture(t: test.TestContext, options: {
 	const extensions = new ExtensionRegistry();
 	if (goal) extensions.register(createGoalExtension({ service: goal }));
 	const runtime = new NodeTurnRuntime({
-		goal, extensions, queueCoordinator: queue,
+		extensions, queueCoordinator: queue,
 		sessionId: config.sessionId, threadId: config.sessionId, workspaceRoot: root, store,
 		instructions: "Offline regression.", resolveConfig: () => config,
 		createProvider: () => ({ stream: async function* (_request, input) {

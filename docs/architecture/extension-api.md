@@ -84,17 +84,25 @@ callbacks, the post-step stop check, the tool-stop check, and the wrap-up step t
 - `createGoalUsageExtension` is the delegated-work half: a subagent runtime carries no goal service
   of its own, so it mirrors the parent goal it was bound to.
 
+### Usage accounting (done)
+
+`NodeTurnRuntimeOptions.goal` and `.goalUsage` are gone: the runtime no longer imports
+`SessionGoalService` at all. The `tokenUsage` slot now carries every observation once, tagged with
+`phase: "attempt" | "final"` and, for attempts, the retry index.
+
+- A retry attempt reports what it spent as soon as the provider streams usage, because an attempt
+  that fails still costs tokens.
+- A step reports its settled usage under `${usageId}:final` **only when no attempt reported any**,
+  which is what keeps goal accounting from counting one step twice (`session_goal_usage` is keyed
+  by request id). The `phase` field makes that rule visible instead of implicit.
+- A response that produced events but no usage reports an empty usage, so the cost is recorded as
+  unknown rather than free; goal turns that into `usage_incomplete` and stops a budgeted goal.
+- `createGoalExtension` and `createGoalUsageExtension` both implement `onTokenUsage`, and the
+  runtime wires `recordUsage` whenever a registry exists instead of whenever goal exists.
+
 ## What is still missing
 
-### 4. Usage accounting
-
-`node-turn-runtime.ts` still holds `options.goal` / `options.goalUsage` for `observeUsage` and
-`observe`, so the runtime still imports `SessionGoalService`. Migrating it needs a decision the
-`tokenUsage` slot does not make today: the runtime reports retry attempts as `${usageId}:${attempt}`
-and the step result as `${usageId}:final`, and it deliberately skips the final goal write when an
-attempt already reported usage, because `session_goal_usage` is keyed by request id. The extension
-would have to know which of the two it is looking at, so the slot needs to carry that distinction
-before goal accounting can move.
+## What is still missing
 
 ### 5. Tools and session lifecycle
 
@@ -104,6 +112,11 @@ before goal accounting can move.
 - Session lifecycle: `restore()`, `interrupt()`, `close()`, and `subscribe()` are driven by the app
   (`node-gateway-session-controller.ts`, `node-backend.ts`). A `sessionLifecycle` slot should carry
   those so a feature can react to cold activation and interruption without the app naming it.
+- One goal reference is still left in the turn loop on purpose: `normalizeFailure` maps
+  `GoalStateError` to an interruption. The error comes from the goal *tools*, so it should move
+  when those tools move onto the registry — they own the error then. Doing it now would mean
+  threading the registry through roughly twenty call sites of a free function for no behaviour
+  change.
 
 ## Constraints discovered while migrating
 

@@ -62,6 +62,12 @@ export function createGoalExtension(options: GoalExtensionOptions): ExtensionDef
 			// A budgeted goal gets exactly one wrap-up step, and that step carries no tools.
 			allowTools: ({ turnId }) => !options.service.beginWrapUpStep(turnId),
 		},
+		tokenUsage: {
+			// One observation per provider step, so the goal counts every retry's spend exactly once.
+			onTokenUsage: ({ turnId, requestId, usage }) => {
+				options.service.observeUsage(turnId, requestId, usage);
+			},
+		},
 	};
 }
 

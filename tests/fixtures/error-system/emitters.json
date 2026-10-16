@@ -705,7 +705,7 @@
   {"file":"backend/packages/runtime/src/turns/node-turn-coordinator-broker.ts","boundary":"StorageFailure","code":"persistence_error","evidence":"legacy_code","scope":"turn","reason":"storage.failure_unclassified"},
   {"file":"backend/packages/runtime/src/turns/node-turn-runtime.ts","boundary":"ApprovalNotPendingError","code":"*","evidence":"explicit_generic_fallback","scope":"turn","reason":"runtime.internal_error"},
   {"file":"backend/packages/runtime/src/turns/node-turn-runtime.ts","boundary":"ClarificationNotPendingError","code":"*","evidence":"explicit_generic_fallback","scope":"turn","reason":"runtime.internal_error"},
-  {"file":"backend/packages/runtime/src/turns/node-turn-runtime.ts","boundary":"Error","code":"goal_runtime_unavailable","evidence":"legacy_code","scope":"turn","reason":"runtime.internal_error"},
+  {"file":"backend/packages/runtime/src/turns/node-turn-runtime.ts","boundary":"Error","code":"admission_runtime_unavailable","evidence":"legacy_code","scope":"turn","reason":"runtime.internal_error"},
   {"file":"backend/packages/runtime/src/turns/node-turn-runtime.ts","boundary":"ProviderFailure","code":"config_error","evidence":"legacy_code","scope":"turn","reason":"config.invalid"},
   {"file":"backend/packages/runtime/src/turns/node-turn-runtime.ts","boundary":"ProviderFailure","code":"unsupported_capability","evidence":"legacy_code","scope":"turn","reason":"capability.unspecified"},
   {"file":"backend/packages/runtime/src/turns/node-turn-runtime.ts","boundary":"runtime_failure","code":"config_error","evidence":"legacy_code","scope":"turn","reason":"config.invalid"},

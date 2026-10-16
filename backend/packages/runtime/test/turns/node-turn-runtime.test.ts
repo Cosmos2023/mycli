@@ -453,7 +453,7 @@ test("registered extensions observe turn start, token usage, and completion", as
 		},
 		tokenUsage: {
 			onTokenUsage: (input) => {
-				events.push(`usage:${input.requestId.endsWith(":final")}:${input.usage.output_tokens ?? 0}`);
+				events.push(`usage:${input.phase}:${input.attempt ?? "none"}:${input.usage.output_tokens ?? 0}`);
 			},
 		},
 	});
@@ -470,7 +470,40 @@ test("registered extensions observe turn start, token usage, and completion", as
 	}).submit(submission(), () => {}, { signal: new AbortController().signal });
 
 	assert.equal(result.status, "completed");
-	assert.deepEqual(events, ["start:user:Read README.md", "usage:true:2", "complete:done:2"]);
+	// The stream reported usage during attempt 1, so the step has nothing left to report.
+	assert.deepEqual(events, ["start:user:Read README.md", "usage:attempt:1:2", "complete:done:2"]);
+});
+
+test("a step whose executor never reported usage reports its settled usage once", async () => {
+	const events: string[] = [];
+	const extensions = new ExtensionRegistry();
+	extensions.register({
+		id: "observer",
+		tokenUsage: {
+			onTokenUsage: (input) => {
+				events.push(`usage:${input.phase}:${input.requestId.endsWith(":final")}:${input.usage.output_tokens ?? 0}`);
+			},
+		},
+	});
+
+	const result = await createRuntime({
+		store: new FakeStore([]),
+		provider: scriptedProvider([], [], [[]]),
+		providerStepExecutor: {
+			// A pluggable executor may hand back usage without streaming a usage event.
+			execute: async () => ({
+				assistantText: "done",
+				toolCalls: [],
+				webSearchCalls: [],
+				usage: { input_tokens: 4, output_tokens: 2 },
+			}),
+		},
+		toolRouter: new SequencedRouter([]),
+		extensions,
+	}).submit(submission(), () => {}, { signal: new AbortController().signal });
+
+	assert.equal(result.status, "completed");
+	assert.deepEqual(events, ["usage:final:true:2"]);
 });
 
 test("a throwing extension cannot fail the turn and is reported", async () => {
@@ -4414,7 +4447,6 @@ function createRuntime(options: {
 		...(options.createCompactionCoordinator ? {
 			createCompactionCoordinator: options.createCompactionCoordinator,
 		} : {}),
-		...(options.extensions ? { extensions: options.extensions } : {}),
 		...(options.extensions ? { extensions: options.extensions } : {}),
 		...(options.providerContinuation ? {
 			providerContinuation: options.providerContinuation,
