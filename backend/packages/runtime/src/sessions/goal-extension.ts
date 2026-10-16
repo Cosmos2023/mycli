@@ -110,6 +110,13 @@ export function createGoalExtension(options: GoalExtensionOptions): ExtensionDef
 				options.service.steeringFor(turnId),
 			),
 		},
+		delegation: {
+			// Work delegated from this turn inherits the goal this turn is accounting for.
+			captureDelegatedWork: ({ turnId }) => {
+				const ref = options.service.usageReference(turnId);
+				return ref ? { service: options.service, ref } : undefined;
+			},
+		},
 	};
 }
 

@@ -315,3 +315,34 @@ test("the first extension with conversation context wins and a throwing one is s
 	assert.deepEqual(failures, [{ extensionId: "broken", hook: "conversationContext", message: "boom" }]);
 	assert.equal(new ExtensionRegistry().conversationContext({ sessionId: "s", turnId: "t" }), undefined);
 });
+
+test("captured delegated work handles are offered to every extension that can adopt one", () => {
+	const failures: ExtensionFailure[] = [];
+	const registry = new ExtensionRegistry({ onFailure: (failure) => failures.push(failure) });
+	const bound: string[] = [];
+	const released: string[] = [];
+	registry.register({
+		id: "goal",
+		delegation: { captureDelegatedWork: ({ turnId }) => (turnId === "parent-turn" ? { goalId: "goal-1" } : undefined) },
+	});
+	registry.register({
+		id: "broken",
+		delegation: { captureDelegatedWork: () => { throw new Error("boom"); } },
+	});
+	registry.register({
+		id: "goal-usage",
+		delegation: {
+			bindDelegatedWork: ({ handle }) => { bound.push(JSON.stringify(handle)); },
+			releaseDelegatedWork: ({ turnId }) => { released.push(turnId); },
+		},
+	});
+
+	const handles = registry.captureDelegatedWork({ sessionId: "session-1", turnId: "parent-turn" });
+	assert.deepEqual(handles, [{ goalId: "goal-1" }]);
+	registry.bindDelegatedWork({ sessionId: "session-1", turnId: "child-turn", handles });
+	registry.releaseDelegatedWork({ sessionId: "session-1", turnId: "child-turn" });
+
+	assert.deepEqual(bound, ['{"goalId":"goal-1"}']);
+	assert.deepEqual(released, ["child-turn"]);
+	assert.deepEqual(failures, [{ extensionId: "broken", hook: "captureDelegatedWork", message: "boom" }]);
+});

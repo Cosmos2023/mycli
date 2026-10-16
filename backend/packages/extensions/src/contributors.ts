@@ -222,6 +222,25 @@ export interface ConversationContextContributor {
 	conversationContext?(input: ExtensionTurnContextInput): string | undefined;
 }
 
+/**
+ * Lets an extension carry its accounting across a runtime boundary: the parent runtime captures a
+ * handle for the turn that delegated work, and the child runtime adopts it for the turn doing that
+ * work.
+ *
+ * Handles are opaque, and the extension that captures one is not necessarily the extension that
+ * adopts it (goal captures on the parent side, goal-usage adopts on the child side). So every
+ * captured handle is offered to every extension and an extension ignores the ones it does not
+ * recognise.
+ */
+export interface DelegationContributor {
+	/** The handle for what this runtime accounts for on `turnId`, or undefined when it accounts nothing. */
+	captureDelegatedWork?(input: ExtensionTurnContextInput): unknown;
+	/** Consider one captured handle; ignore it when it belongs to another extension. */
+	bindDelegatedWork?(input: ExtensionTurnContextInput & { readonly handle: unknown }): void;
+	/** The delegated turn ended; drop the binding. */
+	releaseDelegatedWork?(input: ExtensionTurnContextInput): void;
+}
+
 export interface ConversationItemContributor {
 	/**
 	 * Items the runtime inserts ahead of the current user input, mirroring how memory is injected.
@@ -271,6 +290,7 @@ export interface ExtensionDefinition {
 	readonly tools?: ToolContributor;
 	readonly compactionBudget?: CompactionBudgetContributor;
 	readonly conversationContext?: ConversationContextContributor;
+	readonly delegation?: DelegationContributor;
 	readonly turnLifecycle?: TurnLifecycleContributor;
 	readonly conversationItems?: ConversationItemContributor;
 	readonly context?: ContextContributor;

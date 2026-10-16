@@ -327,7 +327,6 @@ type ComposedNodeRuntime = NodeGatewayRuntime & Pick<
 	"bindProviderStepExecutor"
 > & {
 	readonly integrations: RuntimeIntegrationComposition;
-	readonly goalUsage: SessionGoalUsageTracker;
 	readonly workspaceRoot: string;
 	toolNames(): readonly string[];
 	closeExtensions(): Promise<void>;
@@ -1545,8 +1544,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			};
 			const binding = Object.assign(runtime, {
 				goal,
-				goalUsage,
-		extensions,
+				extensions,
 				sessionPreferences: () => sessionPreferences,
 				setSessionPreferences: (preferences: SessionPreferences) => {
 					sessionPreferences = preferences;
@@ -1801,7 +1799,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					});
 				} finally {
 					signal.removeEventListener("abort", forwardAbort);
-					runtime.goalUsage.release(turnId);
+					runtime.extensions?.releaseDelegatedWork({ sessionId: input.childSessionId, turnId });
 					activeTurn = undefined;
 					running = false;
 					localAbort = undefined;
@@ -1809,7 +1807,12 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			};
 			return {
 				bindParentTurn: (turnId, parentTurnId) => {
-					runtime.goalUsage.bind(turnId, runtimeRegistry.get(input.parentSessionId)?.goalUsage.capture(parentTurnId));
+					runtime.extensions?.bindDelegatedWork({
+						sessionId: input.childSessionId,
+						turnId,
+						handles: runtimeRegistry.get(input.parentSessionId)?.extensions
+							?.captureDelegatedWork({ sessionId: input.parentSessionId, turnId: parentTurnId }) ?? [],
+					});
 				},
 				run: (prompt, signal, emit, turnId) => runChild(
 					prompt,

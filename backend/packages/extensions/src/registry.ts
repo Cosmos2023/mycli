@@ -38,7 +38,10 @@ export type ExtensionHookName =
 	| "onClose"
 	| "tools"
 	| "compactionBudget"
-	| "conversationContext";
+	| "conversationContext"
+	| "captureDelegatedWork"
+	| "bindDelegatedWork"
+	| "releaseDelegatedWork";
 
 /** A turn an extension asked for, resolved back to the extension that asked. */
 export interface ResolvedAdmission extends ExtensionAdmission {
@@ -310,6 +313,55 @@ export class ExtensionRegistry {
 			}
 		}
 		return undefined;
+	}
+
+	/** Every handle an extension wants to carry across a runtime boundary, in registration order. */
+	captureDelegatedWork(input: ExtensionTurnContextInput): readonly unknown[] {
+		const handles: unknown[] = [];
+		for (const [id, extension] of this.#extensions) {
+			const hook = extension.delegation?.captureDelegatedWork;
+			if (!hook) continue;
+			try {
+				const handle = hook(input);
+				if (handle !== undefined) handles.push(handle);
+			} catch (error) {
+				this.#report(id, "captureDelegatedWork", error);
+			}
+		}
+		return Object.freeze(handles);
+	}
+
+	/**
+	 * Offers each captured handle to every extension. The capturer and the adopter can be different
+	 * extensions in different runtimes, so dispatch cannot key on an extension id; an extension
+	 * ignores a handle it does not recognise.
+	 */
+	bindDelegatedWork(
+		input: ExtensionTurnContextInput & { readonly handles: readonly unknown[] },
+	): void {
+		for (const handle of input.handles) {
+			for (const [id, extension] of this.#extensions) {
+				const hook = extension.delegation?.bindDelegatedWork;
+				if (!hook) continue;
+				try {
+					hook({ sessionId: input.sessionId, turnId: input.turnId, handle });
+				} catch (error) {
+					this.#report(id, "bindDelegatedWork", error);
+				}
+			}
+		}
+	}
+
+	releaseDelegatedWork(input: ExtensionTurnContextInput): void {
+		for (const [id, extension] of this.#extensions) {
+			const hook = extension.delegation?.releaseDelegatedWork;
+			if (!hook) continue;
+			try {
+				hook(input);
+			} catch (error) {
+				this.#report(id, "releaseDelegatedWork", error);
+			}
+		}
 	}
 
 	async collectConversationItems(

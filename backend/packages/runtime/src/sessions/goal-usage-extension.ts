@@ -1,5 +1,5 @@
 import type { ExtensionDefinition } from "@mycli/extensions";
-import type { SessionGoalUsageTracker } from "./session-goal-usage.ts";
+import type { GoalUsageBinding, SessionGoalUsageTracker } from "./session-goal-usage.ts";
 
 export interface GoalUsageExtensionOptions {
 	readonly tracker: SessionGoalUsageTracker;
@@ -42,5 +42,23 @@ export function createGoalUsageExtension(options: GoalUsageExtensionOptions): Ex
 				};
 			},
 		},
+		delegation: {
+			// The parent runtime captured this handle; the child adopts it for its own turn. Handles
+			// from other extensions are ignored rather than clearing the binding.
+			bindDelegatedWork: ({ turnId, handle }) => {
+				const binding = goalUsageBinding(handle);
+				if (binding) options.tracker.bind(turnId, binding);
+			},
+			releaseDelegatedWork: ({ turnId }) => {
+				options.tracker.release(turnId);
+			},
+		},
 	};
+}
+
+/** The runtime treats the handle as opaque, so the shape is re-checked before the tracker adopts it. */
+function goalUsageBinding(handle: unknown): GoalUsageBinding | undefined {
+	if (typeof handle !== "object" || handle === null) return undefined;
+	const { service, ref } = handle as Partial<GoalUsageBinding>;
+	return service !== undefined && ref !== undefined ? { service, ref } : undefined;
 }

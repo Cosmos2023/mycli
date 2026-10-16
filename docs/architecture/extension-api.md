@@ -15,6 +15,7 @@ registry: features register contributors, and the runtime asks the registry inst
   `sessionLifecycle` (`onRestore` / `onInterrupt` / `onClose`), `tools`,
   `compactionBudget` (the account a compaction summary is charged to),
   `conversationContext` (who fills the session's `conversation_context` fragment),
+  `delegation` (carrying an extension's accounting across a runtime boundary),
   `turnLifecycle` (`onTurnAdmitted` / `onTurnStart` / `onTurnComplete` / `onTurnFinished`),
   `context` (turn-context sections the extension renders itself), `conversationItems` (items
   inserted ahead of the current user input), `tokenUsage.onTokenUsage`.
@@ -42,6 +43,7 @@ The runtime consults the registry in `node-turn-runtime.ts`:
 | `tools` | `node-backend.ts`, when the static tool catalog is built |
 | `compactionBudget` | `node-backend.ts`, once per compaction before the summarizer runs |
 | `conversationContext` | `mergeRuntimeContextSources`, when the app leaves the field empty |
+| `captureDelegatedWork` / `bindDelegatedWork` / `releaseDelegatedWork` | the agent-thread factory that runs delegated work |
 
 Failures land in the session node trace as `extension_failure` rows (extension id, hook, bounded
 message), which `/trace` and the doctor support bundle surface.
@@ -153,13 +155,28 @@ This deliberately stays a **separate field** rather than becoming an extension `
 the prefix-cache boundary for no behavioural gain. The slot therefore answers "who fills this
 fragment", not "what does it render as". The app still wins when it sets the field itself.
 
+### Delegation (done)
+
+`runtime.goalUsage.capture` / `.bind` / `.release` are gone from the app; the gateway runtime view
+no longer carries `goalUsage` at all. `delegation` moves an extension's accounting across a runtime
+boundary: the parent runtime's registry captures handles for the turn that delegated work, and the
+child runtime's registry offers each handle to every extension that can adopt one.
+
+Two details are deliberate:
+
+- **Handles are not keyed by extension id.** The capturer and the adopter are different extensions
+  in different registries (`goal` captures on the parent side, `goal-usage` adopts on the child
+  side), so keying on an id silently dropped every handle. Each handle is broadcast instead, and an
+  extension ignores the ones it does not recognise — adopting an unknown handle must not clear a
+  binding it already holds.
+- **Handles are opaque.** `goal` captures the `{ service, ref }` binding, and `goal-usage`
+  re-validates the shape before handing it to the tracker.
+
 ## What is still missing
 
 The runtime turn loop no longer names goal; the remaining coupling is in the app, where goal is a
 user-facing feature with commands and a transcript projection:
 
-- **Delegation.** `runtime.goalUsage.capture` / `.bind` route a child turn's usage to the parent
-  goal.
 - **`GoalStateError`.** `normalizeFailure` in `node-turn-runtime.ts` still maps it to an
   interruption. The error comes from the goal tools, so it should move with them; doing it now
   means threading the registry through roughly twenty call sites of a free function for no
