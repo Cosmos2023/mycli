@@ -85,7 +85,13 @@ test("model-created goal continues through the ordinary Worker path and complete
 	const transcript = (await f.rpc("transcript.load", { limit: 100 })).items as { type: string; text: string }[];
 	assert.equal(transcript.filter((item) => item.type === "user").length, 1, JSON.stringify(transcript.map((item) => ({ type: item.type, text: item.text?.slice(0, 90) }))));
 	assert.equal(transcript.filter((item) => item.type === "system_notice" && item.text === "Continuing goal").length, 1);
-	assert.match(JSON.stringify(f.requests[2]), /Automatic goal continuation/);
+	const continuation = JSON.stringify(f.requests[2]);
+	assert.match(continuation, /Automatic goal continuation/);
+	assert.match(continuation, /Budget: tokens used/);
+	assert.match(continuation, /No-progress check/);
+	assert.match(continuation, /verified wait polls a specific process/);
+	assert.match(continuation, /Completion audit/);
+	assert.match(continuation, /Progress visibility/);
 	await f.backend.close();
 	const store = openRuntimeSessionStore({ dbPath: join(f.homeDir, ".mycli", "sessions.db") });
 	try { assert.equal(store.goals.get("goal-session")?.status, "complete"); assert.equal(store.goals.get("goal-session")?.tokens_used, 48); }

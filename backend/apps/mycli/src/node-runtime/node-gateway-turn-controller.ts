@@ -1050,7 +1050,9 @@ export class NodeGatewayTurnController {
 				inputSource: record.kind === "rejected_steer" ? "steer" as const : "submit" as const }
 				: { source: "goal" as const, goalRef }),
 			turnId: reservedTurnId,
-			message: record?.text ?? goalContinuationMessage(runtime.goal?.modelView() ?? goal!),
+			message: record?.text ?? goalContinuationMessage(runtime.goal?.modelView() ?? goal!, {
+				updatePlan: this.#dependencies.integrations?.toolNames?.()?.includes("update_plan") === true,
+			}),
 			localImages: record?.imagePaths ?? [],
 			...(record?.skillReferences?.length ? { skillReferences: record.skillReferences } : {}),
 			modelOverride: this.#settings.model,

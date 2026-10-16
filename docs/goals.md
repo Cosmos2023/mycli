@@ -60,6 +60,15 @@ Duplicate idle notifications cannot start two turns. Goal id and revision preven
 old turns from changing a replacement or resumed objective. Goals grant no new
 filesystem, network, or approval permissions.
 
+Automatic continuation input is more than the objective: it restates the token budget and
+requires the model to classify the previous goal turn as progress, a verified wait, or no
+progress; to keep the objective intact instead of shrinking it to what fits in one turn;
+to verify completion requirement by requirement against authoritative evidence; and to
+respect the blocked audit. A `verified wait` polls a specific process, session, job, or tool
+handle that is confirmed live, so an observation timeout is not a terminal state: the same
+handle is re-polled instead of restarting the work. The plan guidance is included only when
+the runtime exposes `update_plan`.
+
 The work summary above the input shows Goal state and, when space allows, token usage and
 the relevant `/goal` control. It shares a row with task progress and background Shell count,
 and remains visible when the session footer is off. The full record is available with `/goal`.
