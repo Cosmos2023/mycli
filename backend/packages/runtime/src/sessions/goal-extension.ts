@@ -17,6 +17,15 @@ export interface GoalExtensionOptions {
  * carries it back unchanged.
  */
 export function createGoalExtension(options: GoalExtensionOptions): ExtensionDefinition {
+	/**
+	 * The goal a compaction is charged to: the one accounting for the turn, or the active goal when
+	 * compaction runs outside a turn. Resolved once per compaction, like the runtime did.
+	 */
+	const chargedGoalId = (turnId: string | undefined): string | undefined => {
+		if (turnId !== undefined) return options.service.accountingGoalId(turnId);
+		const goal = options.service.get();
+		return goal?.status === "active" ? goal.goal_id : undefined;
+	};
 	return {
 		id: "goal",
 		admission: {
@@ -81,6 +90,18 @@ export function createGoalExtension(options: GoalExtensionOptions): ExtensionDef
 			tools: () => (["create", "get", "update"] as const).map(
 				(operation) => new GoalTool(operation, options.sessionId, options.service),
 			),
+		},
+		compactionBudget: {
+			compactionBudget: ({ turnId }) => {
+				const goalId = chargedGoalId(turnId);
+				if (!goalId) return undefined;
+				return {
+					remainingTokenBudget: () => options.service.remainingTokenBudget(goalId, turnId),
+					observeUsage: (requestId, usage) => {
+						options.service.observeAttributedUsage(goalId, requestId, usage);
+					},
+				};
+			},
 		},
 	};
 }

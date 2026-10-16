@@ -182,6 +182,32 @@ export interface ToolContributor {
 	tools?(): readonly ToolAdapter[];
 }
 
+export interface ExtensionCompactionBudgetInput {
+	readonly sessionId: string;
+	/** The turn being compacted, when compaction runs inside one. */
+	readonly turnId?: string;
+}
+
+/**
+ * The account a compaction summary is charged to. Resolved once per compaction so the owner can
+ * capture which account it is charging, while the remaining amount is read fresh — a compaction
+ * attempt can itself consume the budget it is being limited by.
+ */
+export interface ExtensionCompactionBudget {
+	/** Remaining tokens for the summary; `undefined` means unbounded. */
+	remainingTokenBudget(): number | undefined;
+	/** Attribute one compaction attempt's usage. */
+	observeUsage(requestId: string, usage: ProviderUsage): void;
+}
+
+/**
+ * Lets an extension enforce its own budget on the compaction summarizer, so compaction does not
+ * have to know which feature is accounting for the tokens it spends.
+ */
+export interface CompactionBudgetContributor {
+	compactionBudget?(input: ExtensionCompactionBudgetInput): ExtensionCompactionBudget | undefined;
+}
+
 export interface ConversationItemContributor {
 	/**
 	 * Items the runtime inserts ahead of the current user input, mirroring how memory is injected.
@@ -229,6 +255,7 @@ export interface ExtensionDefinition {
 	readonly turnPolicy?: TurnPolicyContributor;
 	readonly sessionLifecycle?: SessionLifecycleContributor;
 	readonly tools?: ToolContributor;
+	readonly compactionBudget?: CompactionBudgetContributor;
 	readonly turnLifecycle?: TurnLifecycleContributor;
 	readonly conversationItems?: ConversationItemContributor;
 	readonly context?: ContextContributor;

@@ -1327,21 +1327,25 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 							...resolved,
 							model: input.model ?? resolved.model,
 						}, undefined, runtimeEnvironment);
-						const compactionGoalId = runSnapshot ? goal?.accountingGoalId(runSnapshot.turnId)
-							: goal?.get()?.status === "active" ? goal.get()!.goal_id : undefined;
-						const childGoalUsage = runtimeOptions.subagentContext && runSnapshot ? goalUsage.capture(runSnapshot.turnId) : undefined;
+						// The registry decides which feature's budget this compaction is charged to.
+						const compactionBudget = extensions.compactionBudget({
+							sessionId,
+							...(runSnapshot ? { turnId: runSnapshot.turnId } : {}),
+						});
 						const summaryResult = await summarizeCompactionWithProvider(
 							registry.create(summaryConfig, providerRouteForConfig(summaryConfig)),
 							summaryConfig,
-							{ ...input, remainingTokenBudget: () => compactionGoalId
-								? goal?.remainingTokenBudget(compactionGoalId, runSnapshot?.turnId)
-								: childGoalUsage?.service.remainingTokenBudget(childGoalUsage.ref.goalId),
+							{ ...input,
+								...(compactionBudget
+									? { remainingTokenBudget: () => compactionBudget.remainingTokenBudget() }
+									: {}),
 								recordEvent: async (event) => {
 								await input.recordEvent(event);
 								if (event.type === "usage") {
-									const usageId = `compaction:${input.operationId}:${event.attempt}`;
-									if (compactionGoalId) goal?.observeAttributedUsage(compactionGoalId, usageId, event.usage);
-									childGoalUsage?.service.observeAttributedUsage(childGoalUsage.ref.goalId, usageId, event.usage);
+									compactionBudget?.observeUsage(
+										`compaction:${input.operationId}:${event.attempt}`,
+										event.usage,
+									);
 								}
 							} },
 							{ recordDiagnostic: (diagnostic) => tryAppendNodeTrace(homeDir, sessionId,

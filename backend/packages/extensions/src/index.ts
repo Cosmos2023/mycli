@@ -8,8 +8,11 @@ export type {
 } from "./registry.ts";
 export type {
 	AdmissionContributor,
+	CompactionBudgetContributor,
 	ConversationItemContributor,
 	ContextContributor,
+	ExtensionCompactionBudget,
+	ExtensionCompactionBudgetInput,
 	ExtensionAdmission,
 	ExtensionAdmissionFailureInput,
 	ExtensionAdmissionInput,

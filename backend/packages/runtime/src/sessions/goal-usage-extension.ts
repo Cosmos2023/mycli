@@ -29,5 +29,18 @@ export function createGoalUsageExtension(options: GoalUsageExtensionOptions): Ex
 				options.tracker.observe(turnId, requestId, usage);
 			},
 		},
+		compactionBudget: {
+			compactionBudget: ({ turnId }) => {
+				// The binding is captured once, so a goal that stops mid-compaction keeps being charged.
+				const binding = turnId === undefined ? undefined : options.tracker.capture(turnId);
+				if (!binding) return undefined;
+				return {
+					remainingTokenBudget: () => binding.service.remainingTokenBudget(binding.ref.goalId),
+					observeUsage: (requestId, usage) => {
+						binding.service.observeAttributedUsage(binding.ref.goalId, requestId, usage);
+					},
+				};
+			},
+		},
 	};
 }

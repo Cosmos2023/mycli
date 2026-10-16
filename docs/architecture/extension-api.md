@@ -13,6 +13,7 @@ registry: features register contributors, and the runtime asks the registry inst
 - Slots: `admission` (`nextTurn` / `assertAdmission` / `onAdmissionFailed`),
   `turnPolicy` (`stopReason` / `toolsStopReason` / `allowTools`),
   `sessionLifecycle` (`onRestore` / `onInterrupt` / `onClose`), `tools`,
+  `compactionBudget` (the account a compaction summary is charged to),
   `turnLifecycle` (`onTurnAdmitted` / `onTurnStart` / `onTurnComplete` / `onTurnFinished`),
   `context` (turn-context sections the extension renders itself), `conversationItems` (items
   inserted ahead of the current user input), `tokenUsage.onTokenUsage`.
@@ -38,6 +39,7 @@ The runtime consults the registry in `node-turn-runtime.ts`:
 | `allowTools` | the wrap-up step that decides whether the request carries tools |
 | `onRestore` / `onInterrupt` / `onClose` | the app's session activation, interruption, and close paths |
 | `tools` | `node-backend.ts`, when the static tool catalog is built |
+| `compactionBudget` | `node-backend.ts`, once per compaction before the summarizer runs |
 
 Failures land in the session node trace as `extension_failure` rows (extension id, hook, bounded
 message), which `/trace` and the doctor support bundle surface.
@@ -103,8 +105,6 @@ callbacks, the post-step stop check, the tool-stop check, and the wrap-up step t
 - `createGoalExtension` and `createGoalUsageExtension` both implement `onTokenUsage`, and the
   runtime wires `recordUsage` whenever a registry exists instead of whenever goal exists.
 
-## What is still missing
-
 ### Tools and session lifecycle (done)
 
 - `tools` lets an extension contribute `ToolAdapter`s to the session's static catalog, so the app
@@ -118,13 +118,31 @@ callbacks, the post-step stop check, the tool-stop check, and the wrap-up step t
   the memory extension is registered later when its service exists. The app composes goal through
   the registry for admission, turn policy, usage, tools, and session lifecycle.
 
+### Compaction budget (done)
+
+Compaction no longer names goal. `compactionBudget` resolves the account a summary is charged to
+**once per compaction** and hands back a handle:
+
+```ts
+interface ExtensionCompactionBudget {
+  remainingTokenBudget(): number | undefined;   // read fresh: the attempt itself can consume it
+  observeUsage(requestId: string, usage: ProviderUsage): void;
+}
+```
+
+Resolving once is what preserves the old behaviour: the app used to capture the charged goal id
+before the summarizer ran, so a goal that flipped to `budget_limited` mid-compaction kept being
+charged and kept limiting output. The remaining amount is still read fresh on every check, because
+the summarizer deliberately re-reads it at dispatch ("attempt persistence can change ownership or
+consume Goal budget"). `createGoalExtension` charges the goal accounting for the turn, or the
+active goal when compaction runs outside a turn; `createGoalUsageExtension` charges the parent goal
+a child turn was bound to.
+
 ## What is still missing
 
 The runtime turn loop no longer names goal; the remaining coupling is in the app, where goal is a
 user-facing feature with commands and a transcript projection:
 
-- **Compaction budget.** `node-backend.ts` asks goal for `accountingGoalId`,
-  `remainingTokenBudget`, and `observeAttributedUsage` when it builds the compaction coordinator.
 - **Goal context.** `contextSources` still renders `sessionGoalContext(goal.modelView(), ...)`,
   which is a different mechanism from the extension `context` sections.
 - **Delegation.** `runtime.goalUsage.capture` / `.bind` route a child turn's usage to the parent

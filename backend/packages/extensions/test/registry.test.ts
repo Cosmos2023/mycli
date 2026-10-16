@@ -278,3 +278,27 @@ test("tool contributions are concatenated in order and a throwing one is skipped
 	assert.deepEqual(registry.tools().map((adapter) => adapter.definition.name), ["create_goal", "update_goal"]);
 	assert.deepEqual(failures, [{ extensionId: "broken", hook: "tools", message: "boom" }]);
 });
+
+test("the first extension with a compaction budget wins and a throwing one is skipped", () => {
+	const failures: ExtensionFailure[] = [];
+	const charged: string[] = [];
+	const registry = new ExtensionRegistry({ onFailure: (failure) => failures.push(failure) });
+	registry.register({ id: "quiet", compactionBudget: { compactionBudget: () => undefined } });
+	registry.register({ id: "broken", compactionBudget: { compactionBudget: () => { throw new Error("boom"); } } });
+	registry.register({
+		id: "goal",
+		compactionBudget: {
+			compactionBudget: ({ turnId }) => ({
+				remainingTokenBudget: () => (turnId === "turn-1" ? 40 : undefined),
+				observeUsage: (requestId, usage) => { charged.push(`${requestId}:${usage.output_tokens}`); },
+			}),
+		},
+	});
+
+	const budget = registry.compactionBudget({ sessionId: "session-1", turnId: "turn-1" });
+	assert.equal(budget?.remainingTokenBudget(), 40);
+	budget?.observeUsage("compaction:op:1", { output_tokens: 7 });
+	assert.deepEqual(charged, ["compaction:op:1:7"]);
+	assert.deepEqual(failures, [{ extensionId: "broken", hook: "compactionBudget", message: "boom" }]);
+	assert.equal(registry.compactionBudget({ sessionId: "session-1" })?.remainingTokenBudget(), undefined);
+});

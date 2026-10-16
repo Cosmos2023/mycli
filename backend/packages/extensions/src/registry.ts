@@ -6,6 +6,8 @@ import type {
 	ExtensionAdmissionInput,
 	ExtensionAdmissionRef,
 	ExtensionAdmittedTurnInput,
+	ExtensionCompactionBudget,
+	ExtensionCompactionBudgetInput,
 	ExtensionContextSection,
 	ExtensionDefinition,
 	ExtensionFinishedTurnInput,
@@ -33,7 +35,8 @@ export type ExtensionHookName =
 	| "onRestore"
 	| "onInterrupt"
 	| "onClose"
-	| "tools";
+	| "tools"
+	| "compactionBudget";
 
 /** A turn an extension asked for, resolved back to the extension that asked. */
 export interface ResolvedAdmission extends ExtensionAdmission {
@@ -269,6 +272,24 @@ export class ExtensionRegistry {
 			}
 		}
 		return Object.freeze(adapters);
+	}
+
+	/**
+	 * The account this compaction is charged to, resolved once so the owner captures it before the
+	 * summarizer spends anything. A throwing contributor is reported and skipped.
+	 */
+	compactionBudget(input: ExtensionCompactionBudgetInput): ExtensionCompactionBudget | undefined {
+		for (const [id, extension] of this.#extensions) {
+			const resolve = extension.compactionBudget?.compactionBudget;
+			if (!resolve) continue;
+			try {
+				const budget = resolve(input);
+				if (budget) return budget;
+			} catch (error) {
+				this.#report(id, "compactionBudget", error);
+			}
+		}
+		return undefined;
 	}
 
 	async collectConversationItems(
