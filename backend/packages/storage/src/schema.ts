@@ -5,6 +5,7 @@ export const SCHEMA_V12_VERSION = 12;
 export const SCHEMA_V13_VERSION = 13;
 export const SCHEMA_V14_VERSION = 14;
 export const SCHEMA_V15_VERSION = 15;
+export const SCHEMA_V16_VERSION = 16;
 
 export const SCHEMA_V2_SQL = `
 CREATE TABLE IF NOT EXISTS schema_version (

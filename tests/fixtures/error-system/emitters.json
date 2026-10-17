@@ -787,6 +787,7 @@
   {"file":"backend/packages/storage/src/migrations/v12/v12-provider-attempt-migration.ts","boundary":"StorageFailure","code":"persistence_error","evidence":"legacy_code","scope":"session","reason":"storage.failure_unclassified"},
   {"file":"backend/packages/storage/src/migrations/v13/v13-error-context-migration.ts","boundary":"StorageFailure","code":"persistence_error","evidence":"legacy_code","scope":"session","reason":"storage.failure_unclassified"},
   {"file":"backend/packages/storage/src/migrations/v14/v14-goal-migration.ts","boundary":"StorageFailure","code":"persistence_error","evidence":"legacy_code","scope":"session","reason":"storage.failure_unclassified"},
+  {"file":"backend/packages/storage/src/migrations/v15/v15-extension-input-migration.ts","boundary":"StorageFailure","code":"persistence_error","evidence":"legacy_code","scope":"session","reason":"storage.failure_unclassified"},
   {"file":"backend/packages/storage/src/migrations/v9/v9-normalization-cutover.ts","boundary":"Error","code":"*","evidence":"explicit_generic_fallback","scope":"session","reason":"storage.failure_unclassified"},
   {"file":"backend/packages/storage/src/migrations/v9/v9-normalization-cutover.ts","boundary":"RangeError","code":"*","evidence":"explicit_generic_fallback","scope":"session","reason":"storage.failure_unclassified"},
   {"file":"backend/packages/storage/src/migrations/v9/v9-normalization-cutover.ts","boundary":"StorageFailure","code":"persistence_error","evidence":"legacy_code","scope":"session","reason":"storage.failure_unclassified"},

@@ -9,6 +9,7 @@ import {
 	SCHEMA_V13_VERSION,
 	SCHEMA_V14_VERSION,
 	SCHEMA_V15_VERSION,
+	SCHEMA_V16_VERSION,
 	SCHEMA_VERSION,
 	stageV10ContentBlobMigrationBatch,
 	StorageFailure,
@@ -36,7 +37,8 @@ export function contentBlobMigrationReport(dbPath: string): JsonObject {
 	const version = sessionSchemaVersion(dbPath);
 	if (version === SCHEMA_VERSION) return requiresTranscriptNormalization(true);
 	if (version === SCHEMA_V11_VERSION || version === SCHEMA_V12_VERSION
-		|| version === SCHEMA_V13_VERSION || version === SCHEMA_V14_VERSION || version === SCHEMA_V15_VERSION) {
+		|| version === SCHEMA_V13_VERSION || version === SCHEMA_V14_VERSION
+		|| version === SCHEMA_V15_VERSION || version === SCHEMA_V16_VERSION) {
 		return Object.freeze({
 			content_blob_migration_status: "blob_backed",
 			content_blob_migration_schema_version: version,
@@ -60,7 +62,8 @@ export function prepareContentBlobMigration(
 		});
 	}
 	if (version === SCHEMA_V11_VERSION || version === SCHEMA_V12_VERSION
-		|| version === SCHEMA_V13_VERSION || version === SCHEMA_V14_VERSION || version === SCHEMA_V15_VERSION) {
+		|| version === SCHEMA_V13_VERSION || version === SCHEMA_V14_VERSION
+		|| version === SCHEMA_V15_VERSION || version === SCHEMA_V16_VERSION) {
 		return Object.freeze({
 			cutoverReady: false,
 			result: Object.freeze({

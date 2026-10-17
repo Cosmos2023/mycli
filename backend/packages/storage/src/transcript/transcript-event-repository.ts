@@ -1,6 +1,7 @@
 import { SESSION_GOAL_USAGE_SQL } from "../schema.ts";
 import { parseSessionGoal } from "@mycli/contracts";
 import { migrateV14Goals } from "../migrations/v14/v14-goal-migration.ts";
+import { migrateV15ExtensionInputs } from "../migrations/v15/v15-extension-input-migration.ts";
 import { randomUUID } from "node:crypto";
 import { SessionGoalRepository } from "../sessions/session-goal-repository.ts";
 import { mkdirSync, statSync } from "node:fs";
@@ -45,6 +46,7 @@ import {
 	SCHEMA_V13_VERSION,
 	SCHEMA_V14_VERSION,
 	SCHEMA_V15_VERSION,
+	SCHEMA_V16_VERSION,
 	SESSION_RUNTIME_LEASE_SQL,
 } from "../schema.ts";
 import { migrateV12ProviderAttempts } from "../migrations/v12/v12-provider-attempt-migration.ts";
@@ -356,10 +358,11 @@ export interface SQLiteTranscriptEventRepositoryOptions {
 		| typeof SCHEMA_V11_VERSION
 		| typeof SCHEMA_V12_VERSION
 		| typeof SCHEMA_V13_VERSION
-		| typeof SCHEMA_V14_VERSION | typeof SCHEMA_V15_VERSION;
+		| typeof SCHEMA_V14_VERSION | typeof SCHEMA_V15_VERSION | typeof SCHEMA_V16_VERSION;
 	readonly upgradeProviderAttempts?: boolean;
 	readonly upgradeErrorContexts?: boolean;
 	readonly upgradeGoals?: boolean;
+	readonly upgradeExtensionInputs?: boolean;
 	readonly providerAttemptFailpoint?: (name: ProviderAttemptLedgerFailpoint) => void;
 	readonly busyTimeoutMs?: number;
 	readonly clock?: () => string;
@@ -496,7 +499,7 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 		| typeof SCHEMA_V11_VERSION
 		| typeof SCHEMA_V12_VERSION
 		| typeof SCHEMA_V13_VERSION
-		| typeof SCHEMA_V14_VERSION | typeof SCHEMA_V15_VERSION;
+		| typeof SCHEMA_V14_VERSION | typeof SCHEMA_V15_VERSION | typeof SCHEMA_V16_VERSION;
 	readonly errorContextVersion: 1 | undefined;
 	#closed = false;
 
@@ -521,9 +524,12 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 				const errorContexts = options.upgradeErrorContexts && upgraded === SCHEMA_V13_VERSION
 					? migrateV13ErrorContexts(this.#database, <Result>(operation: () => Result) => this.#write(operation))
 					: upgraded;
-				this.#schemaVersion = options.upgradeGoals && errorContexts === SCHEMA_V14_VERSION
+				const goals = options.upgradeGoals && errorContexts === SCHEMA_V14_VERSION
 					? migrateV14Goals(this.#database, <Result>(operation: () => Result) => this.#write(operation))
 					: errorContexts;
+				this.#schemaVersion = options.upgradeExtensionInputs && goals === SCHEMA_V15_VERSION
+					? migrateV15ExtensionInputs(this.#database, <Result>(operation: () => Result) => this.#write(operation))
+					: goals;
 			} else {
 				throw new StorageFailure("session schema version marker is invalid");
 			}
@@ -706,6 +712,8 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 					return Object.freeze({ kind: "existing", turn: existing });
 				}
 				if (input.source === "goal" && this.#schemaVersion < SCHEMA_V15_VERSION) throw new StorageFailure("goal input requires session format 15");
+				if (input.source === "extension" && this.#schemaVersion < SCHEMA_V16_VERSION) throw new StorageFailure("extension input requires session format 16");
+				if (input.source === "extension" && !input.extensionId) throw new StorageFailure("extension input requires an extension id");
 				this.#touchSession(input);
 				this.#insertRuntimeTurn(initial);
 				if (input.source !== "agent_mailbox") {
@@ -727,7 +735,10 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 							text: input.userText,
 							clientUserMessageId: input.clientUserMessageId,
 							...(input.queueId ? { queueId: input.queueId } : {}),
-							source: input.source === "goal" ? "goal" : input.inputSource ?? "submit",
+							source: input.source === "goal" || input.source === "extension"
+								? input.source
+								: input.inputSource ?? "submit",
+							...(input.source === "extension" ? { extensionId: input.extensionId } : {}),
 							...(input.skillReferences?.length ? { skillReferences: input.skillReferences } : {}),
 							...(images.length > 0 ? { images } : {}),
 						},
@@ -2691,6 +2702,10 @@ export class SQLiteTranscriptEventRepository implements TranscriptEventRepositor
 			(input.eventType === "user_input" && input.payload.source === "goal")
 			|| (input.eventType === "display_activity" && input.payload.activityType === "goal")
 		)) throw new StorageFailure("goals require session schema version 15");
+		if (this.#schemaVersion < SCHEMA_V16_VERSION
+			&& input.eventType === "user_input" && input.payload.source === "extension") {
+			throw new StorageFailure("extension inputs require session schema version 16");
+		}
 		if (this.errorContextVersion !== 1 && (
 			(input.eventType === "turn_lifecycle" && input.payload.errorContext !== undefined)
 			|| (input.eventType === "display_activity" && input.payload.metadata?.error_context !== undefined)
@@ -4541,7 +4556,7 @@ function initializeTranscriptSchema(
 		| typeof SCHEMA_V11_VERSION
 		| typeof SCHEMA_V12_VERSION
 		| typeof SCHEMA_V13_VERSION
-		| typeof SCHEMA_V14_VERSION | typeof SCHEMA_V15_VERSION,
+		| typeof SCHEMA_V14_VERSION | typeof SCHEMA_V15_VERSION | typeof SCHEMA_V16_VERSION,
 ): void {
 	database.exec("BEGIN IMMEDIATE");
 	try {
@@ -4587,9 +4602,10 @@ function schemaVersion(database: Database.Database):
 
 function transcriptSchemaVersion(
 	version: number,
-): typeof SCHEMA_V10_VERSION | typeof SCHEMA_V11_VERSION | typeof SCHEMA_V12_VERSION | typeof SCHEMA_V13_VERSION | typeof SCHEMA_V14_VERSION | typeof SCHEMA_V15_VERSION {
+): typeof SCHEMA_V10_VERSION | typeof SCHEMA_V11_VERSION | typeof SCHEMA_V12_VERSION | typeof SCHEMA_V13_VERSION | typeof SCHEMA_V14_VERSION | typeof SCHEMA_V15_VERSION | typeof SCHEMA_V16_VERSION {
 	if (version === SCHEMA_V10_VERSION || version === SCHEMA_V11_VERSION
-		|| version === SCHEMA_V12_VERSION || version === SCHEMA_V13_VERSION || version === SCHEMA_V14_VERSION || version === SCHEMA_V15_VERSION) return version;
+		|| version === SCHEMA_V12_VERSION || version === SCHEMA_V13_VERSION || version === SCHEMA_V14_VERSION
+		|| version === SCHEMA_V15_VERSION || version === SCHEMA_V16_VERSION) return version;
 	throw new StorageFailure("unsupported transcript event schema version", {
 		expected_version: SCHEMA_V12_VERSION,
 		actual_version: Number.isFinite(version) ? version : null,
@@ -4597,7 +4613,7 @@ function transcriptSchemaVersion(
 }
 
 function usesContentBlobs(
-	version: typeof SCHEMA_V10_VERSION | typeof SCHEMA_V11_VERSION | typeof SCHEMA_V12_VERSION | typeof SCHEMA_V13_VERSION | typeof SCHEMA_V14_VERSION | typeof SCHEMA_V15_VERSION,
+	version: typeof SCHEMA_V10_VERSION | typeof SCHEMA_V11_VERSION | typeof SCHEMA_V12_VERSION | typeof SCHEMA_V13_VERSION | typeof SCHEMA_V14_VERSION | typeof SCHEMA_V15_VERSION | typeof SCHEMA_V16_VERSION,
 ): boolean {
 	return version >= SCHEMA_V11_VERSION;
 }

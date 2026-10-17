@@ -16,7 +16,7 @@ import {
 	encodeSessionContentBlob,
 	MODEL_INPUT_CONTENT_BLOB_MARKER_JSON,
 	openRuntimeSessionStore,
-	SCHEMA_V15_VERSION,
+	SCHEMA_V16_VERSION,
 	subagentRunId,
 	type RuntimeSessionStore,
 	type TranscriptSnapshotV2,
@@ -349,7 +349,7 @@ test("Node backend advertises a refreshed update only on the next startup", asyn
 	await second.close();
 });
 
-test("fresh schema-v15 bootstrap loads the virtual session transcript without persisting it", async (t) => {
+test("fresh bootstrap loads the virtual session transcript without persisting it", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "mycli-node-virtual-session-"));
 	const home = join(root, "home");
 	const workspace = join(root, "workspace");
@@ -404,7 +404,7 @@ test("fresh schema-v15 bootstrap loads the virtual session transcript without pe
 
 	const database = new DatabaseSync(join(home, ".mycli", "sessions.db"), { readOnly: true });
 	try {
-		assert.equal(database.prepare("SELECT version FROM schema_version").get()?.version, SCHEMA_V15_VERSION);
+		assert.equal(database.prepare("SELECT version FROM schema_version").get()?.version, SCHEMA_V16_VERSION);
 		assert.equal(database.prepare("SELECT COUNT(*) AS count FROM sessions").get()?.count, 0);
 	} finally {
 		database.close();
@@ -1400,7 +1400,7 @@ test("Explicit in-process rollback resumes default Worker state without duplicat
 		reopened.close();
 	}
 	const database = new DatabaseSync(dbPath, { readOnly: true });
-	assert.equal(database.prepare("SELECT version FROM schema_version").get()?.version, SCHEMA_V15_VERSION);
+	assert.equal(database.prepare("SELECT version FROM schema_version").get()?.version, SCHEMA_V16_VERSION);
 	const ownerCount = Number(database.prepare("SELECT COUNT(*) AS count FROM model_input_blobs").get()?.count);
 	const referenceCount = Number(database.prepare("SELECT COUNT(*) AS count FROM model_input_blob_refs").get()?.count);
 	assert.ok(ownerCount > 0);
@@ -5199,7 +5199,7 @@ test("Worker-backed root retains provider-free slash commands in the coordinator
 	assert.equal(displayValue(normalizedResult, "kind"), "notice");
 	assert.equal(resultValue(normalizedResult, "phase"), "complete");
 	assert.equal(resultValue(normalizedResult, "status"), "already_normalized");
-	assert.equal(resultValue(normalizedResult, "schema_version"), SCHEMA_V15_VERSION);
+	assert.equal(resultValue(normalizedResult, "schema_version"), SCHEMA_V16_VERSION);
 	writeRequest(backend, "provider-free-shutdown", "shutdown", {});
 	assert.equal(await backend.completion, 0);
 	const normalized = openRuntimeSessionStore({ dbPath });
@@ -5260,7 +5260,7 @@ test("Node backend reports v14 content blobs complete and collects explicit orph
 	const complete = await runCommand("/session maintenance --apply-content-blobs");
 	assert.equal(resultValue(complete, "phase"), "complete");
 	assert.equal(resultValue(complete, "status"), "already_blob_backed");
-	assert.equal(resultValue(complete, "schema_version"), SCHEMA_V15_VERSION);
+	assert.equal(resultValue(complete, "schema_version"), SCHEMA_V16_VERSION);
 	assert.doesNotMatch(JSON.stringify(complete), /private backend content|content-event/u);
 
 	const orphan = encodeSessionContentBlob("private backend orphan ".repeat(500));

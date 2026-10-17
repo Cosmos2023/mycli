@@ -22,7 +22,7 @@ test("previous storage reader refuses an enriched database before constructing a
 	store.close();
 	let opened = false;
 	assert.throws(() => openPreviousRuntimeSessionStore({ dbPath }, () => { opened = true; }),
-		(error) => error.code === "persistence_error" && error.diagnostics.actual_version === 15);
+		(error) => error.code === "persistence_error" && error.diagnostics.actual_version === 16);
 	assert.equal(opened, false);
 	const reopened = openRuntimeSessionStore({ dbPath });
 	try { assert.deepEqual(reopened.loadEventWindow("session:old", { limit: 100 }), before); }

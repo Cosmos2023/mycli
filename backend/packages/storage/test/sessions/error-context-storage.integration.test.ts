@@ -75,7 +75,7 @@ test("v13 migration retains transcript bytes and old format writers reject enric
 	current.close();
 	assert.deepEqual(storedEvents(dbPath), before);
 	const database = new Database(dbPath, { readonly: true });
-	try { assert.equal(database.prepare("SELECT version FROM schema_version").pluck().get(), 15); }
+	try { assert.equal(database.prepare("SELECT version FROM schema_version").pluck().get(), 16); }
 	finally { database.close(); }
 });
 

@@ -39,14 +39,22 @@ function readableRows(event: TranscriptEventEnvelope): Readonly<{
 	switch (event.eventType) {
 		case "user_input": {
 			if (event.payload.source === "approval_resume") return emptyRows();
+			// A runtime-generated input is a status row: the user did not type it, and its text is
+			// the continuation message the extension wrote for the model.
+			const generated = event.payload.source === "goal"
+				? "Continuing goal"
+				: event.payload.source === "extension" && event.payload.extensionId
+					? `Continuing ${event.payload.extensionId}`
+					: undefined;
 			return historyRows({
 				...base,
-				id: event.payload.source === "goal" && event.turnId ? `${event.turnId}:goal` : projection?.itemId ?? readableUserId(event),
-				type: event.payload.source === "goal" ? "status" : "user_message",
-				text: event.payload.source === "goal" ? "Continuing goal" : event.payload.text,
+				id: generated && event.turnId ? `${event.turnId}:${event.payload.source}` : projection?.itemId ?? readableUserId(event),
+				type: generated ? "status" : "user_message",
+				text: generated ?? event.payload.text,
 				metadata: {
 					...(readableCreatedAt ? { created_at: readableCreatedAt } : {}),
 					source: event.payload.source,
+					...(event.payload.extensionId ? { extension_id: event.payload.extensionId } : {}),
 					...(event.payload.queueId ? { queue_id: event.payload.queueId } : {}),
 					...(event.payload.source === "queued" ? { queued: true } : {}),
 				},

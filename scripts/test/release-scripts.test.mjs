@@ -680,10 +680,10 @@ test("cross-platform long-history gate seeds the current session schema", async 
 	);
 	assert.match(
 		workflow,
-		/benchmark:long-history -- --profile compact_stress --storage-schema v15/u,
+		/benchmark:long-history -- --profile compact_stress --storage-schema v16/u,
 	);
 
-	const root = await mkdtemp(join(tmpdir(), "mycli-long-history-v15-"));
+	const root = await mkdtemp(join(tmpdir(), "mycli-long-history-v16-"));
 	try {
 		await mkdir(join(root, "home"), { recursive: true });
 		await mkdir(join(root, "workspace"), { recursive: true });
@@ -697,7 +697,7 @@ test("cross-platform long-history gate seeds the current session schema", async 
 			"--profile",
 			"blob_smoke",
 			"--storage-schema",
-			"v15",
+			"v16",
 			"--seed-only",
 			"--fixture-root",
 			root,
@@ -709,7 +709,7 @@ test("cross-platform long-history gate seeds the current session schema", async 
 			readonly: true,
 		});
 		try {
-			assert.equal(database.prepare("SELECT version FROM schema_version").pluck().get(), 15);
+			assert.equal(database.prepare("SELECT version FROM schema_version").pluck().get(), 16);
 			assert.equal(database.prepare(`
 				SELECT COUNT(*) FROM transcript_events WHERE session_id = 'target'
 			`).pluck().get(), 195);

@@ -49,7 +49,9 @@ export interface ReserveTurnInput {
 	readonly skillReferences?: readonly SkillReference[];
 	readonly imagePaths?: readonly string[];
 	readonly images?: readonly CanonicalImage[];
-	readonly source?: "user" | "agent_mailbox" | "goal";
+	readonly source?: "user" | "agent_mailbox" | "goal" | "extension";
+	/** Present only for `extension`: the extension that admitted this turn. */
+	readonly extensionId?: string;
 	readonly startedAt: string;
 }
 

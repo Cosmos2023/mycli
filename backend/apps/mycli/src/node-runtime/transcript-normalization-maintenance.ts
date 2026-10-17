@@ -10,6 +10,7 @@ import {
 	SCHEMA_V13_VERSION,
 	SCHEMA_V14_VERSION,
 	SCHEMA_V15_VERSION,
+	SCHEMA_V16_VERSION,
 	SCHEMA_VERSION,
 	stageV9TranscriptNormalizationBatch,
 	StorageFailure,
@@ -42,7 +43,8 @@ interface TranscriptNormalizationPreparation {
 export function transcriptNormalizationReport(dbPath: string): JsonObject {
 	const version = sessionSchemaVersion(dbPath);
 	if (version === SCHEMA_V10_VERSION || version === SCHEMA_V11_VERSION
-		|| version === SCHEMA_V12_VERSION || version === SCHEMA_V13_VERSION || version === SCHEMA_V14_VERSION || version === SCHEMA_V15_VERSION) {
+		|| version === SCHEMA_V12_VERSION || version === SCHEMA_V13_VERSION || version === SCHEMA_V14_VERSION
+		|| version === SCHEMA_V15_VERSION || version === SCHEMA_V16_VERSION) {
 		return Object.freeze({
 			transcript_normalization_status: "normalized",
 			transcript_normalization_schema_version: version,
@@ -63,7 +65,8 @@ export function prepareTranscriptNormalization(
 ): TranscriptNormalizationPreparation {
 	const version = sessionSchemaVersion(dbPath);
 	if (version === SCHEMA_V10_VERSION || version === SCHEMA_V11_VERSION
-		|| version === SCHEMA_V12_VERSION || version === SCHEMA_V13_VERSION || version === SCHEMA_V14_VERSION || version === SCHEMA_V15_VERSION) {
+		|| version === SCHEMA_V12_VERSION || version === SCHEMA_V13_VERSION || version === SCHEMA_V14_VERSION
+		|| version === SCHEMA_V15_VERSION || version === SCHEMA_V16_VERSION) {
 		return Object.freeze({
 			cutoverReady: false,
 			result: Object.freeze({

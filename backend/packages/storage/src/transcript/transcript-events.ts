@@ -118,7 +118,10 @@ export interface UserInputTranscriptPayload {
 		| "agent_mailbox"
 		| "task_notification"
 		| "approval_resume"
-		| "goal";
+		| "goal"
+		| "extension";
+	/** Present only for `extension`: the extension that admitted this turn. */
+	readonly extensionId?: string;
 	readonly images?: readonly CanonicalImage[];
 	readonly readableProjection?: TranscriptReadableProjection;
 }
@@ -425,14 +428,18 @@ function payloadFor(
 
 function userInput(value: unknown): UserInputTranscriptPayload {
 	const payload = record(value, "payload");
-	keys(payload, ["text", "clientUserMessageId", "queueId", "source", "images", "readableProjection", "skillReferences"], [
+	keys(payload, ["text", "clientUserMessageId", "queueId", "source", "extensionId", "images", "readableProjection", "skillReferences"], [
 		"text", "clientUserMessageId", "source",
 	], "payload");
 	if (payload.source !== "submit" && payload.source !== "steer"
 		&& payload.source !== "queued" && payload.source !== "agent_mailbox"
-		&& payload.source !== "task_notification" && payload.source !== "approval_resume" && payload.source !== "goal") {
+		&& payload.source !== "task_notification" && payload.source !== "approval_resume" && payload.source !== "goal"
+		&& payload.source !== "extension") {
 		invalid("payload.source");
 	}
+	// An extension-admitted turn must name its owner; no other source may claim one.
+	const extensionId = payload.extensionId === undefined ? undefined : identity(payload.extensionId, "payload.extensionId");
+	if ((payload.source === "extension") !== (extensionId !== undefined)) invalid("payload.extensionId");
 	const images = payload.images === undefined ? undefined : canonicalImagePayload(payload.images);
 	const queueId = optionalIdentity(payload.queueId, "payload.queueId");
 	const readableProjection = optionalReadableProjection(payload.readableProjection);
@@ -442,6 +449,7 @@ function userInput(value: unknown): UserInputTranscriptPayload {
 		clientUserMessageId: identity(payload.clientUserMessageId, "payload.clientUserMessageId"),
 		...(queueId ? { queueId } : {}),
 		source: payload.source,
+		...(extensionId ? { extensionId } : {}),
 		...(images && images.length > 0 ? { images } : {}),
 		...(readableProjection ? { readableProjection } : {}),
 	});
