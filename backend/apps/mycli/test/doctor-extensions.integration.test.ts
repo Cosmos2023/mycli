@@ -15,6 +15,7 @@ test("extension doctor isolates malformed metadata and reports migration without
 	const builtinSkillRoot = join(root, "builtin-skills");
 	const mycliRoot = join(workspaceRoot, ".mycli");
 	await mkdir(join(mycliRoot, "skills"), { recursive: true });
+	await mkdir(join(mycliRoot, "agents"), { recursive: true });
 	await mkdir(join(mycliRoot, "plugins", "legacy"), { recursive: true });
 	await mkdir(join(mycliRoot, "plugins", "healthy", "dist"), { recursive: true });
 	await mkdir(builtinSkillRoot, { recursive: true });
@@ -28,6 +29,10 @@ test("extension doctor isolates malformed metadata and reports migration without
 		"private skill prompt",
 	].join("\n"), "utf8");
 	await writeFile(join(mycliRoot, "plugins", "legacy", "__init__.py"), "TOKEN='python-test-secret'\n", "utf8");
+	await writeFile(join(mycliRoot, "agents", "reviewer.toml"),
+		'name = "reviewer"\ndescription = "Read-only review."\ntools = ["Read"]\n', "utf8");
+	await writeFile(join(mycliRoot, "agents", "broken.toml"),
+		'name = "Reviewer"\ndescription = "doctor-role-test-secret"\n', "utf8");
 	await writeFile(join(mycliRoot, "plugins", "legacy", "plugin.yaml"), "name: Legacy\n", "utf8");
 	await writeFile(join(mycliRoot, "plugins", "healthy", "dist", "index.js"), "export const unused = true;\n", "utf8");
 	await writeFile(join(mycliRoot, "plugins", "healthy", "plugin.yaml"), [
@@ -74,14 +79,15 @@ test("extension doctor isolates malformed metadata and reports migration without
 	assert.equal(byName.get("plugin_migration")?.status, "warning");
 	assert.match(byName.get("plugin_migration")?.message ?? "", /migration_required/u);
 	assert.equal(byName.get("skills")?.status, "warning");
-	assert.equal(byName.get("subagents")?.status, "ok");
-	assert.equal(byName.get("subagents")?.message, "mode=prompt_driven profiles=disabled");
+	assert.equal(byName.get("subagents")?.status, "warning");
+	assert.equal(byName.get("subagents")?.message, "mode=prompt_driven roles=1 issues=1");
+	assert.match(byName.get("subagents")?.detail ?? "", /role_name_invalid/u);
 	assert.equal(byName.get("mcp")?.status, "ok");
 	assert.match(byName.get("plugins")?.message ?? "", /runtime=not_probed/u);
 	assert.match(byName.get("mcp")?.message ?? "", /runtime=not_probed/u);
 	assert.doesNotMatch(
 		JSON.stringify(checks),
-		/hook-test-secret|skill-test-secret|python-test-secret|plugin-env-test-secret|private.*prompt/u,
+		/hook-test-secret|skill-test-secret|python-test-secret|plugin-env-test-secret|doctor-role-test-secret|private.*prompt/u,
 	);
 	const missingEnv = await collectExtensionChecks({ workspaceRoot, homeDir, env: {}, builtinSkillRoot }, new AbortController().signal);
 	assert.equal(missingEnv.find((check) => check.name === "plugins")?.status, "failed");

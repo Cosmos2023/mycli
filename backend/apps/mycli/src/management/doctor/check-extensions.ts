@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import {
 	builtinSkillRoot as defaultBuiltinSkillRoot,
+	discoverAgentRoles,
 	discoverConfiguredMcpServers,
 	discoverPlugins,
 	HookManagementService,
@@ -28,7 +29,7 @@ export async function collectExtensionChecks(
 	);
 	checks.push(...pluginChecks);
 	checks.push(await isolated("skills", () => checkSkills(options)));
-	checks.push(check("subagents", "ok", "mode=prompt_driven profiles=disabled"));
+	checks.push(await isolated("subagents", () => checkSubagents(options)));
 	checks.push(await isolated("mcp", () => checkMcp(options, signal)));
 	return Object.freeze(checks);
 }
@@ -101,6 +102,21 @@ async function checkSkills(options: ExtensionDoctorOptions): Promise<DoctorCheck
 		diagnostics.issueCount > 0 ? "warning" : "ok",
 		`loaded=${diagnostics.loadedCount} issues=${diagnostics.issueCount} duplicates=${diagnostics.duplicateCount}`,
 		diagnosticClasses(diagnostics.issues.map((issue) => issue.errorClass)),
+	);
+}
+
+async function checkSubagents(options: ExtensionDoctorOptions): Promise<DoctorCheck> {
+	const catalog = await discoverAgentRoles({
+		homeDir: options.homeDir,
+		workspaceRoot: options.workspaceRoot,
+		...(options.includeRepository === undefined ? {} : { includeRepository: options.includeRepository }),
+	});
+	const issues = catalog.issues.map((issue) => issue.errorClass);
+	return check(
+		"subagents",
+		issues.length > 0 ? "warning" : "ok",
+		`mode=prompt_driven roles=${catalog.roles.length} issues=${catalog.issues.length}`,
+		diagnosticClasses(issues),
 	);
 }
 
