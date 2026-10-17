@@ -9,6 +9,8 @@ import { ExtensionRegistry } from "@mycli/extensions";
 import type { ExtensionToolRegistration } from "@mycli/extensions";
 import { createMcpExtension } from "./mcp-extension.ts";
 import { createSkillsExtension } from "./skills-extension.ts";
+import { createPluginsExtension } from "./plugins-extension.ts";
+import { createSubagentsExtension } from "./subagents-extension.ts";
 import { McpElicitationBroker } from "./mcp-elicitation-broker.ts";
 import { NetworkApprovalBroker } from "./network-approval-broker.ts";
 import type { GatewayTransport, JsonObject } from "@mycli/gateway";
@@ -1014,6 +1016,8 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			// The registry owns whichever integration sources its extensions claim, so the app stops
 			// filtering a source out of the catalog by name.
 			extensions.register(createMcpExtension({ composition: integrationComposition }));
+			extensions.register(createPluginsExtension({ composition: integrationComposition }));
+			extensions.register(createSubagentsExtension({ composition: integrationComposition }));
 			const selectedSkills = new SelectedSkillContext({ sessionId, store, service: () => integrationComposition.skills });
 			extensions.register(createSkillsExtension({ composition: integrationComposition, selected: selectedSkills }));
 			const currentRegistrations = () => mergeIntegrationRegistrations(
@@ -1054,9 +1058,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			extensionTools: currentRegistrations().map((registration) => ({
 				name: registration.definition.name,
 				...(registration.approvalScope ? { approvalScope: registration.approvalScope } : {}),
-				approvalPolicy: registration.approvalPolicy ?? (registration.source === "skill" || registration.source === "subagent"
-					? "auto_allow" as const
-					: "request" as const),
+				approvalPolicy: registration.approvalPolicy ?? "request" as const,
 				...(registration.definition.description
 					? { description: registration.definition.description }
 					: {}),
@@ -1173,9 +1175,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					(registration) => ({
 						name: registration.definition.name,
 						...(registration.approvalScope ? { approvalScope: registration.approvalScope } : {}),
-						approvalPolicy: registration.approvalPolicy ?? (registration.source === "skill" || registration.source === "subagent"
-							? "auto_allow" as const
-							: "request" as const),
+						approvalPolicy: registration.approvalPolicy ?? "request" as const,
 					}),
 				));
 			};

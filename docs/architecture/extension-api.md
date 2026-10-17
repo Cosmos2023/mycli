@@ -197,10 +197,19 @@ the registry first and otherwise delegates to the unchanged helper.
   approval policy, and origin metadata. The app merges them generically — whichever sources the
   registry claims belong to the registry, and each claimed source is replaced **in place**, so the
   catalog order is unchanged. `node-backend.ts` no longer filters a source by name.
-- `mcp` and `skills` are migrated. Each owns its own slice: MCP contributes the builtin adapters
-  that read resources and prompts plus every connected server's tools; skills contribute the
-  model-visible skill catalog, the tool registrations that invoke a skill, and the instructions for
-  the skills selected on a turn.
+- `mcp`, `skills`, `plugin`, and `subagent` are migrated, so every integration source the catalog
+  holds is claimed by an extension and `node-backend.ts` no longer filters a source by name. Each
+  owns its own slice: MCP contributes the builtin adapters that read resources and prompts plus
+  every connected server's tools; skills contribute the model-visible skill catalog, the tool
+  registrations that invoke a skill, and the instructions for the skills selected on a turn;
+  plugins contribute the tools a loaded compiled-ESM plugin exposes; subagents contribute the
+  coordination tools.
+- The auto-approval default for skill and subagent tools moved into those extensions too, so the
+  app's default is now just `"request"` — the safe answer for a source nobody claims.
+- **One app-level source check is left**: whether a tool is model-visible or discovered on demand
+  is still derived from the source (`mcp` and `plugin` are deferred) in `deferredCandidates` and in
+  `partitionRuntimeToolRegistrations`. That is a property of the registration, not of the feature
+  that produced it, so it belongs on `IntegrationRegistration` as an explicit discovery field.
 - `skills.skillCatalog` and `skills.selectedInstructions` are **contract-bearing** — they report and
   propagate. That is not cosmetic: the integration test "selected skills reach one provider request
   and disabled selections cannot be invoked on later turns" caught the isolated version, where a

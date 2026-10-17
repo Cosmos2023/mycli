@@ -18,7 +18,12 @@ export interface SkillsExtensionOptions {
 export function createSkillsExtension(options: SkillsExtensionOptions): ExtensionDefinition {
 	const { composition, selected } = options;
 	const skillRegistrations = () => composition.registrations
-		.filter((registration) => registration.source === "skill");
+		.filter((registration) => registration.source === "skill")
+		// A skill the user selected runs without an approval prompt. The feature owns that default,
+		// so the app no longer has to know which sources are auto-approved.
+		.map((registration) => registration.approvalPolicy === undefined
+			? Object.freeze({ ...registration, approvalPolicy: "auto_allow" as const })
+			: registration);
 	return {
 		id: "skills",
 		tools: { toolRegistrations: skillRegistrations },
