@@ -167,9 +167,26 @@ function reduceRuntimeEventUnchecked(
 			state.pendingClarification,
 			params,
 		);
-		const goalMarkerId = `${params.turn_id}:goal`;
-		const transcript = params.source === "goal" && !state.transcript.some((item) => item.id === goalMarkerId)
-			? [...state.transcript, { id: goalMarkerId, type: "system_notice", text: "Continuing goal", turn_id: stringValue(params.turn_id) ?? undefined, metadata: { source: "goal" } }]
+		// A turn the runtime generated gets a live notice whose id matches the status row the
+		// transcript projection writes for the same turn, so a reload replaces it instead of doubling.
+		const extensionId = stringValue(params.extension_id);
+		const generated = params.source === "goal"
+			? { id: `${params.turn_id}:goal`, text: "Continuing goal", metadata: { source: "goal" } }
+			: params.source === "extension" && extensionId
+				? {
+					id: `${params.turn_id}:extension`,
+					text: `Continuing ${extensionId}`,
+					metadata: { source: "extension", extension_id: extensionId },
+				}
+				: undefined;
+		const transcript = generated && !state.transcript.some((item) => item.id === generated.id)
+			? [...state.transcript, {
+				id: generated.id,
+				type: "system_notice",
+				text: generated.text,
+				turn_id: stringValue(params.turn_id) ?? undefined,
+				metadata: generated.metadata,
+			}]
 			: state.transcript;
 		return {
 			...state,

@@ -237,29 +237,36 @@ So before adding one, answer which *second* feature wants it. Codex's contributo
 two or more users. A slot that only ever serves one feature is a named option wearing a contributor's
 clothes — and the branch's whole point was to stop adding named options.
 
-## What is still missing
+### Extension-admitted turns (done)
 
-`node-turn-runtime.ts` no longer names any feature: memory and goal are both composed entirely
-through the registry. What is left is one durable-format decision.
+Any extension can now admit a turn with its own durable label. `ExtensionTurnSource` gained
+`"extension"`, and a turn admitted under it records `extension` plus the admitting extension's id:
 
-**`TurnSubmission.source`** is still the closed union `"user" | "agent_mailbox" | "goal"` because
-storage persists it and the transcript renders it (`payload.source === "goal"` becomes "Continuing
-goal", and schema v15 gates goal input). A new durable label is a new transcript value, which a
-reader that predates it rejects, so this is a schema version bump plus a projection change — not a
-rename.
+```ts
+{ source: "extension", extensionId: "scheduler" }
+```
 
-Until then, a second admitting extension has no correct label to borrow, and the admission
-integration test records both halves of that:
+That pair flows from the admission through `TurnSubmission.admission` (the id was already there, so
+no new submission field was needed), into the transcript payload, and out again as a status row
+`Continuing <id>` in the readable projection and a matching live notice in the TUI. `goal` keeps its
+own label and its own row, so nothing about existing sessions changed.
 
-- `"goal"` is not neutral. `createGoalExtension` cannot build a goal reference for a turn it did
-  not admit, so `onTurnAdmitted` throws, the registry records an `extension_failure`, and the turn
-  runs with no goal bookkeeping.
-- `"user"` is not neutral either. It persists as a normal submit and `SessionGoalService` marks the
-  turn `human`, which is what grants goal authority.
+The cost was the format bump, and it is worth recording what that cost actually was:
 
-So the durable label is the last thing standing between the registry and a second feature that
-admits turns: the controller side is already extension-agnostic (the test admits a turn from a
-synthetic `scheduler` extension without the controller naming it), but the storage side is not.
+- The payload gained a value, so a reader that predates it **rejects** the event rather than
+  ignoring it. The marker therefore had to move to `16`, even though no SQL changed — the migration
+  is marker-only.
+- Everything that enumerates versions had to follow: the repository's accepted set, doctor's storage
+  check, both maintenance reports, the long-history benchmark's "current schema" label, the CI
+  workflow's schema pin, and every test that asserted `15` as "the current format" — including the
+  proof that a previous release's reader refuses a newer database.
+- The gateway contract is a closed enum too: `turn.started.source` is
+  `["user", "goal", "extension"]` and carries `extension_id`, regenerated from the schema.
+
+Two release artifacts still declare the old window and were deliberately left alone, because they
+are maintained at release time rather than per format bump: `release/compatibility-policy.json`
+(`sessions.runtime_schema: 12`) and the Session Window section of `docs/compatibility.md`. Both were
+already stale at `15`.
 
 ## Constraints discovered while migrating
 

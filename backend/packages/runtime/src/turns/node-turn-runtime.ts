@@ -612,6 +612,11 @@ export class NodeTurnRuntime {
 			...(submission.inputSource ? { inputSource: submission.inputSource } : {}),
 			...(imagePaths.length > 0 ? { imagePaths, images } : {}),
 			...(submission.source ? { source: submission.source } : {}),
+			// The durable label for a turn an extension admitted is `extension` plus its id, so the
+			// transcript can name the owner without inventing a label per feature.
+			...(submission.source === "extension" && submission.admission
+				? { extensionId: submission.admission.extensionId }
+				: {}),
 			startedAt: this.#options.clock(),
 		});
 	}

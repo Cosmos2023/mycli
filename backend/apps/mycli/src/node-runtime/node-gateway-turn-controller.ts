@@ -79,6 +79,8 @@ const GRACEFUL_INTERRUPT_TIMEOUT_MS = 100;
 
 interface ActiveTurn {
 	readonly source?: ExtensionTurnSource;
+	/** Set with `source: "extension"` so the TUI can name the extension that admitted the turn. */
+	readonly extensionId?: string;
 	readonly closeReview?: () => Promise<void>;
 	persistenceFailureReported?: boolean;
 	durableProviderAttempts?: boolean;
@@ -1103,6 +1105,7 @@ export class NodeGatewayTurnController {
 		};
 		const active: ActiveTurn = {
 			...(admission ? { source: admission.source } : {}),
+			...(admission ? { extensionId: admission.extensionId } : {}),
 			clientTurnId: submission.clientTurnId,
 			clientUserMessageId: submission.clientTurnId,
 			controller: new AbortController(),
@@ -1226,6 +1229,9 @@ export class NodeGatewayTurnController {
 				active.turnId = event.turnId;
 				this.#publish("turn.started", {
 					source: active.source ?? "user",
+					...(active.source === "extension" && active.extensionId
+						? { extension_id: active.extensionId }
+						: {}),
 					client_turn_id: event.clientTurnId,
 					turn_id: event.turnId,
 				});

@@ -215,7 +215,11 @@ export class SessionGoalService {
 		} catch (error) { this.#halted = true; throw error; }
 	}
 
-	beginTurn(turnId: string, source: "user" | "agent_mailbox" | "goal", expected?: GoalRef): void {
+	beginTurn(
+		turnId: string,
+		source: "user" | "agent_mailbox" | "goal" | "extension",
+		expected?: GoalRef,
+	): void {
 		this.#assertOpen();
 		if (this.#turns.has(turnId)) return;
 		if (source === "goal") {

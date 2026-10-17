@@ -2689,7 +2689,12 @@
     "turn.started": {
       "name": "turn.started",
       "properties": {
-        "source": {"type": "string", "enum": ["user", "goal"]},
+        "source": {"type": "string", "enum": ["user", "goal", "extension"]},
+        "extension_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
         "session_id": {
           "maxLength": 256,
           "minLength": 1,

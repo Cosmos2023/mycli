@@ -33,6 +33,21 @@ test("automatic turns create one system marker and never a human message", () =>
 	assert.equal(state.turnRunning, true);
 });
 
+test("an extension-admitted turn creates one marker naming its owner", () => {
+	const params = {
+		session_id: "session", generation: 1, client_turn_id: "scheduler-client",
+		turn_id: "scheduler-turn", source: "extension", extension_id: "scheduler",
+	};
+	let state: RuntimeShellState = { ...initialRuntimeState(), sessionId: "session", sessionGeneration: 1 };
+	state = reduceRuntimeEvent(state, "turn.started", params);
+	state = reduceRuntimeEvent(state, "turn.started", params);
+	assert.equal(state.transcript.length, 1);
+	assert.equal(state.transcript[0]?.type, "system_notice");
+	assert.equal(state.transcript[0]?.id, "scheduler-turn:extension");
+	assert.equal(state.transcript[0]?.text, "Continuing scheduler");
+	assert.deepEqual(state.transcript[0]?.metadata, { source: "extension", extension_id: "scheduler" });
+});
+
 test("goal status keeps text labels and fits narrow terminals", () => {
 	// Codex wording: one phrase per state, with usage only where the state has one.
 	for (const [status, expected] of [

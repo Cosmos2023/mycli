@@ -320,9 +320,9 @@ test("a non-goal extension is admitted without the controller naming it", async 
 			nextTurn: () => {
 				if (admissions > 0) return undefined;
 				admissions += 1;
-				// The durable source label is still the closed set, so a non-goal extension borrows
-				// one until the transcript format grows an extension-owned label.
-				return { source: "user", message: "Scheduled work." };
+				// The generic label plus the extension id: the transcript names the owner without a
+				// bespoke label per feature, and goal keeps its own.
+				return { source: "extension", message: "Scheduled work." };
 			},
 		},
 	};
@@ -336,8 +336,16 @@ test("a non-goal extension is admitted without the controller naming it", async 
 	await waitFor(() => !f.controller.hasActiveTurn());
 
 	const started = f.events.find((event) => event.method === "turn.started");
-	assert.equal(started?.params.source, "user");
+	assert.equal(started?.params.source, "extension");
+	assert.equal(started?.params.extension_id, "scheduler");
 	// The controller names the admission after the extension that asked for it, not after a feature.
 	assert.ok(f.store.loadTurn("admission-session", `scheduler_${String(started?.params.turn_id)}`));
 	assert.equal(f.providerCalls(), 1);
+	// The label round-trips: the stored turn renders as a runtime-generated row naming its owner.
+	assert.deepEqual(
+		f.store.loadReadableTranscriptSnapshot("admission-session").items
+			.filter((item) => item.type === "status")
+			.map((item) => item.text),
+		["Continuing scheduler"],
+	);
 });

@@ -1781,7 +1781,8 @@ export interface TurnQueue {
   [k: string]: any;
 }
 export interface Turn5 {
-  source?: "user" | "goal";
+  source?: "user" | "goal" | "extension";
+  extension_id?: string;
   session_id?: string;
   generation?: number;
   client_turn_id: string;

@@ -9,12 +9,14 @@ import type {
 import type { ExtensionToolApprovalPolicy, ToolAdapter } from "@mycli/tools";
 
 /**
- * Where a turn came from: a human submission, another agent, or the goal extension's continuation.
- * The set stays closed because storage persists the label and the transcript renders it — a second
- * extension that admits turns has no label of its own yet and has to borrow one, which is not
- * neutral (see the durable-source note in docs/architecture/extension-api.md).
+ * Where a turn came from: a human submission, another agent, the goal extension's continuation, or
+ * any other extension's admission.
+ *
+ * The set stays closed because storage persists the label and the transcript renders it. `goal`
+ * predates the generic label and keeps its own row ("Continuing goal"); every other admitting
+ * extension records `extension` plus its id, which the transcript renders as "Continuing <id>".
  */
-export type ExtensionTurnSource = "user" | "agent_mailbox" | "goal";
+export type ExtensionTurnSource = "user" | "agent_mailbox" | "goal" | "extension";
 
 /** Identifies the extension that admitted a turn, plus the opaque handle it issued. */
 export interface ExtensionAdmissionRef {
