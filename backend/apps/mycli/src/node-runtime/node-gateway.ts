@@ -209,7 +209,7 @@ class InProcessNodeGateway implements NodeGateway {
 			publish: (method, params) => { this.#emitRuntime(method, params); },
 		});
 		this.#turnController = new NodeGatewayTurnController({
-			dependencies: { ...options, hasPendingGoalInteraction: () => this.#interactiveController.hasPending()
+			dependencies: { ...options, hasPendingInteractiveRequest: () => this.#interactiveController.hasPending()
 				|| (options.agentInteractiveRequests?.pending().length ?? 0) > 0
 				|| (options.mcpElicitations?.pending().length ?? 0) > 0
 				|| options.networkApprovals?.hasPending() === true },

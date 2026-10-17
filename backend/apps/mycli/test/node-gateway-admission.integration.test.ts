@@ -149,7 +149,7 @@ async function createFixture(t: test.TestContext, options: {
 	readonly failPublication?: boolean;
 	readonly goals?: boolean;
 	readonly providerGate?: Promise<void>;
-	readonly hasPendingGoalInteraction?: () => boolean;
+	readonly hasPendingInteractiveRequest?: () => boolean;
 	readonly admissionExtension?: ExtensionDefinition;
 } = {}): Promise<Fixture> {
 	const root = await mkdtemp(join(tmpdir(), "mycli-admission-"));
@@ -195,7 +195,7 @@ async function createFixture(t: test.TestContext, options: {
 	const context = { sessionId: config.sessionId, generation: 1 };
 	const events: Fixture["events"] = [];
 	const controller: NodeGatewayTurnController = new NodeGatewayTurnController({
-		dependencies: { createTurnId: () => `turn-${++id}`, hasPendingGoalInteraction: options.hasPendingGoalInteraction },
+		dependencies: { createTurnId: () => `turn-${++id}`, hasPendingInteractiveRequest: options.hasPendingInteractiveRequest },
 		session: {
 			transitionActive: false, controlActive: false, sessionId: () => context.sessionId,
 			context: () => context, isCurrent: (candidate) => candidate === context,
@@ -299,7 +299,7 @@ test("a queued human input wins over automatic continuation", async (t) => {
 test("pending interactive requests defer goal admission until resolved", async (t) => {
 	let pending = true;
 	const gate = deferred<void>();
-	const f = await createFixture(t, { goals: true, providerGate: gate.promise, hasPendingGoalInteraction: () => pending });
+	const f = await createFixture(t, { goals: true, providerGate: gate.promise, hasPendingInteractiveRequest: () => pending });
 	f.goal!.create({ objective: "Finish" });
 	f.controller.requestNextQueuedTurn();
 	await new Promise<void>((resolve) => setImmediate(resolve));

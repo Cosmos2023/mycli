@@ -132,7 +132,7 @@ interface NodeGatewayTurnControllerOptions {
 }
 
 export interface NodeGatewayTurnDependencies {
-	readonly hasPendingGoalInteraction?: () => boolean;
+	readonly hasPendingInteractiveRequest?: () => boolean;
 	readonly integrations?: NodeGatewayIntegrations;
 	readonly createReviewRuntime?: NodeGatewayReviewRuntimeFactory;
 	readonly validateSelectedSkills?: (sessionId: string, references: readonly SkillReference[]) => void;
@@ -726,7 +726,7 @@ export class NodeGatewayTurnController {
 		});
 	}
 
-	interrupt(params: JsonObject, pauseGoal = true): JsonObject | Promise<JsonObject> {
+	interrupt(params: JsonObject): JsonObject | Promise<JsonObject> {
 		this.#session.assertMutationContext(params);
 		const requestedClientTurnId = params.client_turn_id === undefined
 			? undefined : requiredString(params.client_turn_id, "client_turn_id");
@@ -739,7 +739,7 @@ export class NodeGatewayTurnController {
 					actual_turn_id: admission.turnId,
 				});
 			}
-			try { if (pauseGoal) this.#session.runtime().extensions?.interrupt(); }
+			try { this.#session.runtime().extensions?.interrupt(); }
 			finally { admission.controller.abort(new UserTurnCancellation()); }
 			return admission.settled.then(() => admission.reserved
 				? { accepted: false, requested: false, ...this.#status() }
@@ -817,7 +817,7 @@ export class NodeGatewayTurnController {
 			input_rolled_back: active.inputRolledBack === true,
 		});
 		let pauseFailure: unknown;
-		try { if (pauseGoal) active.runtime.extensions?.interrupt(); }
+		try { active.runtime.extensions?.interrupt(); }
 		catch (error) { pauseFailure = error; }
 		active.controller.abort(new UserTurnCancellation());
 		active.interruptPromise = this.#awaitInterrupt(active);
@@ -1021,7 +1021,7 @@ export class NodeGatewayTurnController {
 		const context = this.#session.context();
 		const runtime = this.#session.runtime();
 		// The registry decides who, if anyone, wants a turn; the controller no longer names a feature.
-		const admission = record || this.#dependencies.hasPendingGoalInteraction?.() ? undefined : runtime.extensions?.nextTurn({
+		const admission = record || this.#dependencies.hasPendingInteractiveRequest?.() ? undefined : runtime.extensions?.nextTurn({
 			sessionId: context.sessionId,
 			toolNames: this.#dependencies.integrations?.toolNames?.() ?? [],
 		});
@@ -1030,7 +1030,8 @@ export class NodeGatewayTurnController {
 			try {
 				if (admission) runtime.extensions?.admissionFailed(admission, {
 					sessionId: context.sessionId,
-					message: "Goal turn could not be started. Resolve the reported error, then resume.",
+					// Handed to whichever extension admitted the turn, so it cannot name a feature.
+					message: "The turn could not be started. Resolve the reported error, then resume.",
 				});
 			} catch {
 				this.#publish("gateway.error", { code: "internal_error", message: "Goal admission stopped because its state could not be saved.", method: "goal.update" });
