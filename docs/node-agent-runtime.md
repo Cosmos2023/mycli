@@ -337,10 +337,20 @@ histories above that item count to compact.
 
 ## Prompt-Driven Spawn Configuration
 
-The parent assigns work directly through `task_name`, `message`, and optional `fork_turns`.
-There is no agent-profile discovery, profile directory, profile-selected model, profile prompt, or
-profile budget. Children inherit the parent's resolved provider/model, execution policy, and
-currently exposed tools. `spawn_agent` is the only child-spawn entry point exposed to providers.
+The parent assigns work directly through `task_name`, `message`, and optional `fork_turns`. Without a
+role, children inherit the parent's resolved provider/model, execution policy, and currently exposed
+tools. `spawn_agent` is the only child-spawn entry point exposed to providers.
+
+A workspace may also declare roles as `<home|workspace>/.mycli/agents/<name>.toml` — a description
+the model reads, an optional `model`, and an optional `tools` allowlist — and choose one through the
+optional `agent_type` argument. A role only ever narrows: its allowlist is intersected with the tools
+the caller may already delegate, and its model goes through the same preference resolution as any
+other model change so provider and protocol stay paired. It adds no prompt of its own and no budget;
+the child's base prompt is still the product content and the task is still the parent's message. The
+repository directory is read only when the workspace is trusted, the repository role wins over a
+user role with the same name, and a malformed file is reported and skipped rather than loaded. The
+catalog reaches the model as context, so a role file added or edited mid-session applies to the next
+spawn.
 
 The current backend allows four resident agents in total, including the root, and defaults to one
 child level. Idle least-recently-used children may unload to free a resident slot; their durable
