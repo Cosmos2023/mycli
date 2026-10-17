@@ -536,7 +536,10 @@ export class NodeTurnRuntime {
 	/**
 	 * Synchronous on purpose. The registry runs each hook up to its first `await` before yielding,
 	 * so a synchronous owner has already updated its state when the next scheduler pass reads it,
-	 * and the registry never rejects.
+	 * and the registry never rejects. A hook that awaits real work can therefore land after that
+	 * pass, which is acceptable because an owner clears its own record inside the hook: a late hook
+	 * costs the owner a continuation instead of granting one. The not-awaited property is pinned by
+	 * `node-turn-runtime.test.ts`.
 	 */
 	#finishTurn(turnId: string): void {
 		const admitted = this.#admittedTurns.get(turnId);

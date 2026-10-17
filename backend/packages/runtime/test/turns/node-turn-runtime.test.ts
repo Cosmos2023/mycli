@@ -533,6 +533,48 @@ test("an extension classifies its own error before the runtime fallback", async 
 	assert.equal(result.error_code, "interrupted");
 });
 
+test("the terminal hook is not awaited before the turn resolves", async () => {
+	let release!: () => void;
+	const gate = new Promise<void>((resolve) => { release = resolve; });
+	const seen: string[] = [];
+	const extensions = new ExtensionRegistry();
+	extensions.register({
+		id: "owner",
+		turnLifecycle: {
+			onTurnFinished: async (input) => {
+				await gate;
+				seen.push(`finished:${input.status}`);
+			},
+		},
+	});
+
+	// A runtime that awaited the terminal hook would never settle this promise, because nothing
+	// releases the gate until afterwards.
+	const result = await Promise.race([
+		createRuntime({
+			store: new FakeStore([]),
+			provider: scriptedProvider([], [], [[
+				{ type: "text_delta", text: "done" },
+				{ type: "completed", responseId: "resp-final" },
+			]]),
+			toolRouter: new SequencedRouter([]),
+			extensions,
+		}).submit(submission(), () => {}, { signal: new AbortController().signal }),
+		new Promise<never>((_, reject) => {
+			setTimeout(() => reject(new Error("the turn waited for its terminal hook")), 5_000).unref();
+		}),
+	]);
+
+	// `#finishTurn` calls `runTurnFinished` without awaiting it, so the turn resolves while the hook
+	// is still waiting. That is safe for the owner because it clears its own record inside this hook:
+	// a hook that lands after the next scheduler pass costs a continuation instead of granting one.
+	assert.equal(result.status, "completed");
+	assert.deepEqual(seen, []);
+	release();
+	await Promise.resolve();
+	assert.deepEqual(seen, ["finished:completed"]);
+});
+
 test("a throwing extension cannot fail the turn and is reported", async () => {
 	const trace: string[] = [];
 	const failures: ExtensionFailure[] = [];

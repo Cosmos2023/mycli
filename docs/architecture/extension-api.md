@@ -223,6 +223,20 @@ the registry first and otherwise delegates to the unchanged helper.
   the session catalog holds. Codex's web-search extension contributes a tool; mycli would need a
   config contributor slot before there is anything to move.
 
+## Adding a slot
+
+A slot is added when a **second** feature needs it, not when the first one does. The registry has 13
+slots today and five of them — `turnPolicy`, `compactionBudget`, `conversationContext`,
+`delegation`, `failure` — exist only because goal needs them. They are not merged into each other,
+because they are genuinely different concerns (stopping a turn, charging a summary, filling a
+contract fragment, carrying accounting across a runtime boundary, classifying an error), but the
+asymmetry is real: the API is ahead of its users, and every future extension has to read past five
+slots that only one feature exercises.
+
+So before adding one, answer which *second* feature wants it. Codex's contributor slots mostly have
+two or more users. A slot that only ever serves one feature is a named option wearing a contributor's
+clothes — and the branch's whole point was to stop adding named options.
+
 ## What is still missing
 
 `node-turn-runtime.ts` no longer names any feature: memory and goal are both composed entirely
@@ -262,7 +276,10 @@ synthetic `scheduler` extension without the controller naming it), but the stora
 5. **`#finishTurn` stays synchronous.** It calls `runTurnFinished` without awaiting it: the
    registry runs each hook up to its first `await` before yielding, so a synchronous owner (goal)
    has already updated its state when the next scheduler pass reads it, and the registry never
-   rejects, so there is no unhandled rejection to guard.
+   rejects, so there is no unhandled rejection to guard. A hook that awaits real work can land after
+   that pass, and the runtime accepts that because an owner clears its own record inside the hook —
+   a late hook costs the owner a continuation instead of granting one. `node-turn-runtime.test.ts`
+   pins the not-awaited property (a hook blocked on a gate must not delay the turn).
 6. **Goal's per-turn bookkeeping is a lifecycle hook, not an admission hook.** `beginTurn` runs for
    *every* turn (goal attributes usage on human turns too), so it lives on
    `turnLifecycle.onTurnAdmitted` rather than on the admission contributor, which is dispatched to
