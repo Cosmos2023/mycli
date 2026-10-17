@@ -267,6 +267,12 @@ synthetic `scheduler` extension without the controller naming it), but the stora
    *every* turn (goal attributes usage on human turns too), so it lives on
    `turnLifecycle.onTurnAdmitted` rather than on the admission contributor, which is dispatched to
    the owning extension only.
+7. **Extension sections widened the developer-authority path.** `assertSectionAuthority` used to
+    accept only `hook_context` sections carrying trusted+policy-producing metadata; it now accepts
+    *any* section that carries them, which is what lets an extension contribute policy rather than
+    only user-role context. The registry is internal, so this is an author opt-in rather than an
+    external trust boundary — but it is a real widening of who can speak with developer authority
+    and should stay a deliberate one.
 
 ## Deliberately out of scope
 
