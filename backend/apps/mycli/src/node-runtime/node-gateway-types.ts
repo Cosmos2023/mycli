@@ -86,7 +86,6 @@ export interface NodeGatewayRuntime {
 	readonly goal?: SessionGoalService;
 	/** The extension registry, so the turn scheduler can ask who wants the next turn. */
 	readonly extensions?: ExtensionRegistry;
-	readonly workspaceRoot?: string;
 	readonly queueCoordinator?: QueueCoordinator;
 	sessionPreferences?(): SessionPreferences | undefined;
 	setSessionPreferences?(preferences: SessionPreferences): void;

@@ -191,7 +191,7 @@ async function createFixture(t: test.TestContext, options: {
 		...(options.writeTerminalSnapshot ? { writeTerminalSnapshot: options.writeTerminalSnapshot } : {}),
 	});
 	if (goal) Object.assign(runtime, { goal });
-	Object.assign(runtime, { extensions, workspaceRoot: root });
+	Object.assign(runtime, { extensions });
 	const context = { sessionId: config.sessionId, generation: 1 };
 	const events: Fixture["events"] = [];
 	const controller: NodeGatewayTurnController = new NodeGatewayTurnController({

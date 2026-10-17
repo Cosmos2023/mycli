@@ -56,12 +56,10 @@ export interface ResolvedAdmission extends ExtensionAdmission {
 	readonly extensionId: string;
 }
 
-/** A turn stop an extension asked for, resolved back to the extension that asked. */
-export interface ResolvedTurnStop extends ExtensionTurnStop {
-	readonly extensionId: string;
-}
+/** A turn stop an extension asked for. Unlike an admission, the runtime never needs its owner back. */
+export type ResolvedTurnStop = ExtensionTurnStop;
 
-/** A hook that threw. Extensions are auxiliary, so a failure is reported instead of propagated. */
+/** A hook that threw. Auxiliary hooks report instead of propagating; contract-bearing ones do both. */
 export interface ExtensionFailure {
 	readonly extensionId: string;
 	readonly hook: ExtensionHookName;
@@ -80,7 +78,8 @@ const FAILURE_MESSAGE_MAX_CHARS = 240;
  *
  * Two properties matter and are enforced here rather than by each feature:
  * - registration order is the execution order, so behaviour is deterministic;
- * - one extension throwing can never fail a turn, and the failure is reported.
+ * - an auxiliary hook throwing is reported and never fails a turn, while a hook that gates
+ *   something (admission, session restore/interrupt, the skill catalog) reports *and* propagates.
  */
 export class ExtensionRegistry {
 	readonly #extensions = new Map<string, ExtensionDefinition>();
@@ -219,7 +218,7 @@ export class ExtensionRegistry {
 			if (!decide) continue;
 			try {
 				const stop = decide(input);
-				if (stop) return Object.freeze({ ...stop, extensionId: id });
+				if (stop) return Object.freeze({ ...stop });
 			} catch (error) {
 				this.#report(id, hook, error);
 			}

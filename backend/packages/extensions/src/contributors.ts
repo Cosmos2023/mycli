@@ -9,8 +9,10 @@ import type {
 import type { ExtensionToolApprovalPolicy, ToolAdapter } from "@mycli/tools";
 
 /**
- * Where a turn came from: a human submission, another agent, or an extension that asked for it.
- * The set stays closed because storage persists the label and the transcript renders it.
+ * Where a turn came from: a human submission, another agent, or the goal extension's continuation.
+ * The set stays closed because storage persists the label and the transcript renders it — a second
+ * extension that admits turns has no label of its own yet and has to borrow one, which is not
+ * neutral (see the durable-source note in docs/architecture/extension-api.md).
  */
 export type ExtensionTurnSource = "user" | "agent_mailbox" | "goal";
 
@@ -26,7 +28,6 @@ export interface ExtensionAdmissionRef {
 
 export interface ExtensionAdmissionInput {
 	readonly sessionId: string;
-	readonly workspaceRoot?: string;
 	/** Tool names currently exposed, so an admission can shape the message it hands the model. */
 	readonly toolNames: readonly string[];
 }
@@ -102,12 +103,13 @@ export interface ExtensionTokenUsageInput {
 export interface TurnLifecycleContributor {
 	/**
 	 * Runs once the turn is admitted and before it is prepared, so bookkeeping that the context
-	 * hooks depend on is in place. Failures are isolated like every other hook.
+	 * hooks depend on is in place. Failures are isolated: a feature that cannot register the turn
+	 * must not stop the turn from running.
 	 */
 	onTurnAdmitted?(input: ExtensionAdmittedTurnInput): void | Promise<void>;
 	/** Runs once the turn is admitted and before the first provider request. */
 	onTurnStart?(input: ExtensionTurnInput): void | Promise<void>;
-	/** Runs after a turn completes; failures are isolated like every other hook. */
+	/** Runs after a turn completes; failures are isolated. */
 	onTurnComplete?(input: ExtensionTurnCompleteInput): void | Promise<void>;
 	/** Runs after a turn reaches a terminal state, whatever that state is. */
 	onTurnFinished?(input: ExtensionFinishedTurnInput): void | Promise<void>;
@@ -145,7 +147,8 @@ export interface ExtensionTurnStop {
 
 /**
  * Lets an extension end a running turn or take its tools away, which is how a feature enforces a
- * budget it owns. Every hook is a pure read of the extension's own state.
+ * budget it owns. `stopReason` and `toolsStopReason` are pure reads; `allowTools` is stateful,
+ * because the owner is the one that knows when its single wrap-up step has been served.
  */
 export interface TurnPolicyContributor {
 	/** Why the turn must stop before the next provider step. The first contributor wins. */
@@ -175,8 +178,8 @@ export interface SessionLifecycleContributor {
 
 /**
  * Which subsystem owns a contributed tool. Mirrors the integration sources, because a contribution
- * is merged into the same catalog: `mcp` and `plugin` tools are discovered on demand, `skill` and
- * `subagent` tools are model-visible and auto-approved.
+ * is merged into the same catalog, and the source still decides discovery: `mcp` and `plugin` tools
+ * are discovered on demand. Approval is not derived from the source — the feature sets it.
  */
 export type ExtensionToolSource = "skill" | "mcp" | "plugin" | "subagent";
 

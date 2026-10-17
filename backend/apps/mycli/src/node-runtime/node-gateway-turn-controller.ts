@@ -1021,7 +1021,6 @@ export class NodeGatewayTurnController {
 		// The registry decides who, if anyone, wants a turn; the controller no longer names a feature.
 		const admission = record || this.#dependencies.hasPendingGoalInteraction?.() ? undefined : runtime.extensions?.nextTurn({
 			sessionId: context.sessionId,
-			...(runtime.workspaceRoot ? { workspaceRoot: runtime.workspaceRoot } : {}),
 			toolNames: this.#dependencies.integrations?.toolNames?.() ?? [],
 		});
 		if (!record && !admission) return;

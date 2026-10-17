@@ -147,11 +147,11 @@ test("the first extension that wants a turn gets it, and a throwing one is skipp
 		admission: { nextTurn: () => ({ source: "goal", message: "later" }) },
 	});
 
-	const admission = registry.nextTurn({ sessionId: "session-1", workspaceRoot: "/workspace", toolNames: ["Shell"] });
+	const admission = registry.nextTurn({ sessionId: "session-1", toolNames: ["Shell"] });
 
 	assert.deepEqual(admission, { extensionId: "goal", source: "goal", message: "continue", reference });
 	assert.deepEqual(failures, [{ extensionId: "broken", hook: "nextTurn", message: "boom" }]);
-	assert.equal(registry.nextTurn({ sessionId: "s", workspaceRoot: "/w", toolNames: [] })?.extensionId, "goal");
+	assert.equal(registry.nextTurn({ sessionId: "s", toolNames: [] })?.extensionId, "goal");
 });
 
 test("admission validation is reported and still rejects the turn", () => {
@@ -214,7 +214,6 @@ test("the first extension with a stop reason wins and a throwing one is skipped"
 
 	const input = { sessionId: "session-1", turnId: "turn-1" };
 	assert.deepEqual(registry.stopReason(input), {
-		extensionId: "budget",
 		message: "Goal token budget exhausted.",
 		interruptionReason: "goal_budget",
 	});
