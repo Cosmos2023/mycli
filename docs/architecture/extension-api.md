@@ -1,8 +1,9 @@
 # Runtime extension API
 
-Internal features used to be wired as named slots on `NodeTurnRuntimeOptions` (56 fields), so
-adding or replacing one meant editing the core turn loop. `@mycli/extensions` replaces that with a
-registry: features register contributors, and the runtime asks the registry instead of naming them.
+Internal features used to be wired as named slots on `NodeTurnRuntimeOptions` (50 top-level fields
+at the branch point; 48 now that `goal` and `goalUsage` are gone), so adding or replacing one meant
+editing the core turn loop. `@mycli/extensions` replaces that with a registry: features register
+contributors, and the runtime asks the registry instead of naming them.
 
 ## What exists today
 
@@ -21,8 +22,11 @@ registry: features register contributors, and the runtime asks the registry inst
   `turnLifecycle` (`onTurnAdmitted` / `onTurnStart` / `onTurnComplete` / `onTurnFinished`),
   `context` (turn-context sections the extension renders itself), `conversationItems` (items
   inserted ahead of the current user input), `tokenUsage.onTokenUsage`.
-- Isolation: every hook call is wrapped. A throwing extension is reported through `onFailure` and
-  never fails a turn, and a throwing `onFailure` cannot break the hook chain either.
+- Isolation: auxiliary hooks are wrapped, so a throwing extension is reported through `onFailure`
+  and never fails a turn, and a throwing `onFailure` cannot break the hook chain either. Hooks that
+  *gate* something are contract-bearing instead and report **and** propagate: `assertAdmission` /
+  `onAdmissionFailed`, `onRestore` / `onInterrupt`, and `skillCatalog` / `selectedInstructions`.
+  `close` is the middle case — every extension is closed, then the first failure is rethrown.
 
 The runtime consults the registry in `node-turn-runtime.ts`:
 
