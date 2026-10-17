@@ -18,6 +18,7 @@ import type {
 	ExtensionTurnInput,
 	ExtensionTurnPolicyInput,
 	ExtensionTurnStop,
+	ExtensionToolRegistration,
 } from "./contributors.ts";
 
 export type ExtensionHookName =
@@ -38,6 +39,7 @@ export type ExtensionHookName =
 	| "onInterrupt"
 	| "onClose"
 	| "tools"
+	| "toolRegistrations"
 	| "compactionBudget"
 	| "conversationContext"
 	| "captureDelegatedWork"
@@ -279,6 +281,25 @@ export class ExtensionRegistry {
 			}
 		}
 		return Object.freeze(adapters);
+	}
+
+	/**
+	 * Registrations every extension contributes, in registration order. The app hands the sources an
+	 * extension claims over to the registry, so it no longer filters by source itself. A throwing
+	 * contributor is reported and skipped.
+	 */
+	toolRegistrations(): readonly ExtensionToolRegistration[] {
+		const registrations: ExtensionToolRegistration[] = [];
+		for (const [id, extension] of this.#extensions) {
+			const contribute = extension.tools?.toolRegistrations;
+			if (!contribute) continue;
+			try {
+				registrations.push(...contribute());
+			} catch (error) {
+				this.#report(id, "toolRegistrations", error);
+			}
+		}
+		return Object.freeze(registrations);
 	}
 
 	/**

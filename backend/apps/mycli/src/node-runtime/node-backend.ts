@@ -6,6 +6,8 @@ import { SelectedSkillContext } from "./selected-skill-context.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { PluginCatalogService } from "@mycli/integrations";
 import { ExtensionRegistry } from "@mycli/extensions";
+import type { ExtensionToolRegistration } from "@mycli/extensions";
+import { createMcpExtension } from "./mcp-extension.ts";
 import { McpElicitationBroker } from "./mcp-elicitation-broker.ts";
 import { NetworkApprovalBroker } from "./network-approval-broker.ts";
 import type { GatewayTransport, JsonObject } from "@mycli/gateway";
@@ -74,11 +76,6 @@ import {
 	boundSubagentReport,
 	SUBAGENT_NOTIFICATION_MAX_BYTES,
 	skillInvocationArtifactFromMetadata,
-	ListMcpResourcesTool,
-	ReadMcpResourceTool,
-	ListMcpResourceTemplatesTool,
-	ListMcpPromptsTool,
-	GetMcpPromptTool,
 	type IntegrationRegistration,
 	type ChildRuntimeCreateInput,
 	type ChildRuntimeEvent,
@@ -1013,8 +1010,15 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			});
 			let unsubscribeExtensions: (() => void) | undefined;
 			try {
-			const currentRegistrations = () => childContext
-				? inheritedIntegrationRegistrations(integrationComposition, inheritedAuthority) : integrationComposition.registrations;
+			// The registry owns whichever integration sources its extensions claim, so the app stops
+			// filtering a source out of the catalog by name.
+			extensions.register(createMcpExtension({ composition: integrationComposition }));
+			const currentRegistrations = () => mergeIntegrationRegistrations(
+				childContext
+					? inheritedIntegrationRegistrations(integrationComposition, inheritedAuthority)
+					: integrationComposition.registrations,
+				extensions.toolRegistrations(),
+			);
 			const currentSkillCatalog = (): string => currentRegistrations().some((registration) => registration.source === "skill")
 				? integrationComposition.skillCatalog : "";
 			const directExtensionRegistrations = partitionRuntimeToolRegistrations(currentRegistrations()).direct;
@@ -1104,11 +1108,6 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			const staticAdapters = [
 				...extensions.tools(),
 				new ViewImageTool({ workspaceRoot, homeDir }),
-				new ListMcpResourcesTool(integrationComposition.mcpResourceService),
-				new ListMcpResourceTemplatesTool(integrationComposition.mcpResourceService),
-				new ReadMcpResourceTool(integrationComposition.mcpResourceService),
-				new ListMcpPromptsTool(integrationComposition.mcpPromptService),
-				new GetMcpPromptTool(integrationComposition.mcpPromptService),
 				reviewMode && reviewRevision
 					? new GitReviewReadTool(readRoot, reviewRevision)
 					: new ReadTool({ workspaceRoot: readRoot, snapshots: fileSnapshots }),
@@ -2740,6 +2739,58 @@ function filterToolDefinitions<Value extends { readonly name: string }>(
 	if (!allowed) return definitions;
 	const names = new Set(allowed);
 	return Object.freeze(definitions.filter((definition) => names.has(definition.name)));
+}
+
+/**
+ * Replaces each source the registry claims with the extension's own registrations, at the position
+ * the composition put that source. The app never names a source: an extension that claims one owns
+ * it, and a source nobody claims stays exactly where the composition placed it.
+ */
+function mergeIntegrationRegistrations(
+	base: readonly IntegrationRegistration[],
+	claimed: readonly ExtensionToolRegistration[],
+): readonly IntegrationRegistration[] {
+	if (claimed.length === 0) return base;
+	const bySource = new Map<string, IntegrationRegistration[]>();
+	for (const contribution of claimed) {
+		const registration = integrationRegistrationFrom(contribution);
+		const replacement = bySource.get(contribution.source);
+		if (replacement) replacement.push(registration);
+		else bySource.set(contribution.source, [registration]);
+	}
+	const merged: IntegrationRegistration[] = [];
+	const emitted = new Set<string>();
+	for (const registration of base) {
+		const replacement = bySource.get(registration.source);
+		if (!replacement) {
+			merged.push(registration);
+			continue;
+		}
+		if (emitted.has(registration.source)) continue;
+		emitted.add(registration.source);
+		merged.push(...replacement);
+	}
+	for (const [source, replacement] of bySource) {
+		if (!emitted.has(source)) merged.push(...replacement);
+	}
+	return Object.freeze(merged);
+}
+
+function integrationRegistrationFrom(contribution: ExtensionToolRegistration): IntegrationRegistration {
+	return Object.freeze({
+		id: contribution.id,
+		source: contribution.source,
+		definition: contribution.definition,
+		adapter: contribution.adapter,
+		originMetadata: contribution.originMetadata ?? Object.freeze({}),
+		supportsParallelToolCalls: contribution.supportsParallelToolCalls
+			?? contribution.adapter.supportsParallelToolCalls === true,
+		...(contribution.sourceDescription === undefined ? {} : { sourceDescription: contribution.sourceDescription }),
+		...(contribution.modelVisible === undefined ? {} : { modelVisible: contribution.modelVisible }),
+		...(contribution.approvalPolicy === undefined ? {} : { approvalPolicy: contribution.approvalPolicy }),
+		...(contribution.approvalScope === undefined ? {} : { approvalScope: contribution.approvalScope }),
+		...(contribution.annotations === undefined ? {} : { annotations: contribution.annotations }),
+	});
 }
 
 function runtimeToolExposure(

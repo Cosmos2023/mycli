@@ -458,6 +458,7 @@ const EXTENSION_HOOKS = [
 	"stopReason", "toolsStopReason", "allowTools",
 	"onRestore", "onInterrupt", "onClose",
 	"tools",
+	"toolRegistrations",
 	"compactionBudget",
 	"conversationContext",
 	"captureDelegatedWork", "bindDelegatedWork", "releaseDelegatedWork",

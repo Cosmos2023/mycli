@@ -1,10 +1,12 @@
 import type {
 	CanonicalConversationItem,
+	ExtensionApprovalScope,
 	InstructionFragmentKind,
 	ProviderUsage,
 	RuntimeErrorCode,
+	ToolDefinition,
 } from "@mycli/core";
-import type { ToolAdapter } from "@mycli/tools";
+import type { ExtensionToolApprovalPolicy, ToolAdapter } from "@mycli/tools";
 
 /**
  * Where a turn came from: a human submission, another agent, or an extension that asked for it.
@@ -172,15 +174,42 @@ export interface SessionLifecycleContributor {
 }
 
 /**
- * Lets an extension contribute tools, so the session catalog is built from the registry instead of
- * the app naming each feature's tool class.
+ * Which subsystem owns a contributed tool. Mirrors the integration sources, because a contribution
+ * is merged into the same catalog: `mcp` and `plugin` tools are discovered on demand, `skill` and
+ * `subagent` tools are model-visible and auto-approved.
  */
+export type ExtensionToolSource = "skill" | "mcp" | "plugin" | "subagent";
+
+/**
+ * A tool an extension contributes together with the catalog metadata the session needs: whether it
+ * is model-visible or discovered on demand, how it is approved, and where it came from. A plain
+ * `ToolAdapter` is enough when none of that applies.
+ */
+export interface ExtensionToolRegistration {
+	readonly id: string;
+	readonly source: ExtensionToolSource;
+	readonly definition: ToolDefinition;
+	readonly adapter: ToolAdapter;
+	readonly originMetadata?: Readonly<Record<string, string>>;
+	readonly sourceDescription?: string;
+	readonly modelVisible?: boolean;
+	readonly supportsParallelToolCalls?: boolean;
+	readonly approvalPolicy?: ExtensionToolApprovalPolicy["approvalPolicy"];
+	readonly approvalScope?: ExtensionApprovalScope;
+	readonly annotations?: ExtensionToolApprovalPolicy["annotations"];
+}
+
 export interface ToolContributor {
 	/**
 	 * Adapters for this session's static catalog. Called whenever the catalog is rebuilt, so the
 	 * extension may build them lazily and keep them out of the model's view until then.
 	 */
 	tools?(): readonly ToolAdapter[];
+	/**
+	 * Registrations that also carry catalog metadata. The session merges them into the integration
+	 * catalog and hands the extension's sources over to it, so the app stops naming them.
+	 */
+	toolRegistrations?(): readonly ExtensionToolRegistration[];
 }
 
 export interface ExtensionCompactionBudgetInput {

@@ -32,6 +32,8 @@ export type {
 	ExtensionTurnPolicyInput,
 	ExtensionTurnStop,
 	ExtensionTurnSource,
+	ExtensionToolRegistration,
+	ExtensionToolSource,
 	SessionLifecycleContributor,
 	TokenUsageContributor,
 	ToolContributor,

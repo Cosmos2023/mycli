@@ -279,6 +279,33 @@ test("tool contributions are concatenated in order and a throwing one is skipped
 	assert.deepEqual(failures, [{ extensionId: "broken", hook: "tools", message: "boom" }]);
 });
 
+test("tool registrations carry catalog metadata and a throwing one is skipped", () => {
+	const failures: ExtensionFailure[] = [];
+	const registry = new ExtensionRegistry({ onFailure: (failure) => failures.push(failure) });
+	registry.register({
+		id: "mcp",
+		tools: {
+			toolRegistrations: () => [{
+				id: "mcp:server:search",
+				source: "mcp",
+				definition: { id: "mcp:search", name: "search", description: "Search", inputSchema: {} },
+				adapter: toolAdapter("search"),
+				originMetadata: { server: "server", tool: "search" },
+				modelVisible: false,
+			}],
+		},
+	});
+	registry.register({ id: "broken", tools: { toolRegistrations: () => { throw new Error("boom"); } } });
+
+	assert.deepEqual(registry.toolRegistrations().map((registration) => ({
+		id: registration.id,
+		source: registration.source,
+		name: registration.definition.name,
+		modelVisible: registration.modelVisible,
+	})), [{ id: "mcp:server:search", source: "mcp", name: "search", modelVisible: false }]);
+	assert.deepEqual(failures, [{ extensionId: "broken", hook: "toolRegistrations", message: "boom" }]);
+});
+
 test("the first extension with a compaction budget wins and a throwing one is skipped", () => {
 	const failures: ExtensionFailure[] = [];
 	const charged: string[] = [];
