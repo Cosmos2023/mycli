@@ -13,6 +13,7 @@ registry: features register contributors, and the runtime asks the registry inst
 - Slots: `admission` (`nextTurn` / `assertAdmission` / `onAdmissionFailed`),
   `turnPolicy` (`stopReason` / `toolsStopReason` / `allowTools`),
   `sessionLifecycle` (`onRestore` / `onInterrupt` / `onClose`), `tools`,
+  `skills` (`skillCatalog` / `selectedInstructions`),
   `compactionBudget` (the account a compaction summary is charged to),
   `conversationContext` (who fills the session's `conversation_context` fragment),
   `delegation` (carrying an extension's accounting across a runtime boundary),
@@ -42,6 +43,8 @@ The runtime consults the registry in `node-turn-runtime.ts`:
 | `allowTools` | the wrap-up step that decides whether the request carries tools |
 | `onRestore` / `onInterrupt` / `onClose` | the app's session activation, interruption, and close paths |
 | `tools` | `node-backend.ts`, when the static tool catalog is built |
+| `toolRegistrations` | `node-backend.ts`, when the integration catalog is assembled |
+| `skillCatalog` / `selectedInstructions` | the run snapshot's skill catalog and the turn's context sources |
 | `compactionBudget` | `node-backend.ts`, once per compaction before the summarizer runs |
 | `conversationContext` | `mergeRuntimeContextSources`, when the app leaves the field empty |
 | `captureDelegatedWork` / `bindDelegatedWork` / `releaseDelegatedWork` | the agent-thread factory that runs delegated work |
@@ -185,6 +188,27 @@ The slot is consulted **before** the runtime's own rules, matching where that br
 was mechanical rather than conceptual — the classifier has to be reachable from the free
 `normalizeFailure` helper, so the ~20 call sites became `this.#normalizeFailure(...)`, which tries
 the registry first and otherwise delegates to the unchanged helper.
+
+### Catalog features (in progress)
+
+`tools` grew a second half so a feature can contribute its *catalog* entry, not just a bare adapter:
+
+- `toolRegistrations` returns registrations that also carry the discovery source, model visibility,
+  approval policy, and origin metadata. The app merges them generically — whichever sources the
+  registry claims belong to the registry, and each claimed source is replaced **in place**, so the
+  catalog order is unchanged. `node-backend.ts` no longer filters a source by name.
+- `mcp` and `skills` are migrated. Each owns its own slice: MCP contributes the builtin adapters
+  that read resources and prompts plus every connected server's tools; skills contribute the
+  model-visible skill catalog, the tool registrations that invoke a skill, and the instructions for
+  the skills selected on a turn.
+- `skills.skillCatalog` and `skills.selectedInstructions` are **contract-bearing** — they report and
+  propagate. That is not cosmetic: the integration test "selected skills reach one provider request
+  and disabled selections cannot be invoked on later turns" caught the isolated version, where a
+  selected-but-disabled skill silently dropped its instructions instead of failing the turn.
+- `web-search` is **not** migrated, because it has no extension-shaped surface in mycli: web search
+  is a provider capability (`webSearchMode` plus provider-returned `webSearchCalls`), not something
+  the session catalog holds. Codex's web-search extension contributes a tool; mycli would need a
+  config contributor slot before there is anything to move.
 
 ## What is still missing
 

@@ -1,11 +1,10 @@
-import type { ExtensionDefinition, ExtensionToolRegistration } from "@mycli/extensions";
+import type { ExtensionDefinition } from "@mycli/extensions";
 import {
 	GetMcpPromptTool,
 	ListMcpPromptsTool,
 	ListMcpResourcesTool,
 	ListMcpResourceTemplatesTool,
 	ReadMcpResourceTool,
-	type IntegrationRegistration,
 } from "@mycli/integrations";
 import type { RuntimeIntegrationComposition } from "./integration-composition.ts";
 
@@ -33,24 +32,7 @@ export function createMcpExtension(options: McpExtensionOptions): ExtensionDefin
 				new GetMcpPromptTool(composition.mcpPromptService),
 			],
 			toolRegistrations: () => composition.registrations
-				.filter((registration) => registration.source === "mcp")
-				.map(mcpToolRegistration),
+				.filter((registration) => registration.source === "mcp"),
 		},
 	};
-}
-
-function mcpToolRegistration(registration: IntegrationRegistration): ExtensionToolRegistration {
-	return Object.freeze({
-		id: registration.id,
-		source: "mcp",
-		definition: registration.definition,
-		adapter: registration.adapter,
-		originMetadata: registration.originMetadata,
-		supportsParallelToolCalls: registration.supportsParallelToolCalls,
-		...(registration.sourceDescription === undefined ? {} : { sourceDescription: registration.sourceDescription }),
-		...(registration.modelVisible === undefined ? {} : { modelVisible: registration.modelVisible }),
-		...(registration.approvalPolicy === undefined ? {} : { approvalPolicy: registration.approvalPolicy }),
-		...(registration.approvalScope === undefined ? {} : { approvalScope: registration.approvalScope }),
-		...(registration.annotations === undefined ? {} : { annotations: registration.annotations }),
-	});
 }

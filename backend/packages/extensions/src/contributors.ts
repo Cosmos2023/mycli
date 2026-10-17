@@ -212,6 +212,29 @@ export interface ToolContributor {
 	toolRegistrations?(): readonly ExtensionToolRegistration[];
 }
 
+/** Instructions for one skill the user selected on this turn. */
+export interface ExtensionSkillInstructions {
+	readonly skillId: string;
+	readonly content: string;
+}
+
+export interface ExtensionSkillInput {
+	readonly sessionId: string;
+	readonly turnId: string;
+}
+
+/**
+ * Lets an extension own the skills a session can invoke: the catalog the model reads, the tool
+ * registrations that invoke them (contributed through `tools`), and the instructions for the
+ * skills selected on a turn.
+ */
+export interface SkillContributor {
+	/** Model-visible catalog of the skills this session can invoke, or empty when it has none. */
+	skillCatalog?(): string | undefined;
+	/** Instructions for the skills selected on this turn. */
+	selectedInstructions?(input: ExtensionSkillInput): readonly ExtensionSkillInstructions[] | undefined;
+}
+
 export interface ExtensionCompactionBudgetInput {
 	readonly sessionId: string;
 	/** The turn being compacted, when compaction runs inside one. */
@@ -334,6 +357,7 @@ export interface ExtensionDefinition {
 	readonly turnPolicy?: TurnPolicyContributor;
 	readonly sessionLifecycle?: SessionLifecycleContributor;
 	readonly tools?: ToolContributor;
+	readonly skills?: SkillContributor;
 	readonly compactionBudget?: CompactionBudgetContributor;
 	readonly conversationContext?: ConversationContextContributor;
 	readonly delegation?: DelegationContributor;

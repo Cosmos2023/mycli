@@ -8,6 +8,7 @@ import { PluginCatalogService } from "@mycli/integrations";
 import { ExtensionRegistry } from "@mycli/extensions";
 import type { ExtensionToolRegistration } from "@mycli/extensions";
 import { createMcpExtension } from "./mcp-extension.ts";
+import { createSkillsExtension } from "./skills-extension.ts";
 import { McpElicitationBroker } from "./mcp-elicitation-broker.ts";
 import { NetworkApprovalBroker } from "./network-approval-broker.ts";
 import type { GatewayTransport, JsonObject } from "@mycli/gateway";
@@ -1013,14 +1014,14 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			// The registry owns whichever integration sources its extensions claim, so the app stops
 			// filtering a source out of the catalog by name.
 			extensions.register(createMcpExtension({ composition: integrationComposition }));
+			const selectedSkills = new SelectedSkillContext({ sessionId, store, service: () => integrationComposition.skills });
+			extensions.register(createSkillsExtension({ composition: integrationComposition, selected: selectedSkills }));
 			const currentRegistrations = () => mergeIntegrationRegistrations(
 				childContext
 					? inheritedIntegrationRegistrations(integrationComposition, inheritedAuthority)
 					: integrationComposition.registrations,
 				extensions.toolRegistrations(),
 			);
-			const currentSkillCatalog = (): string => currentRegistrations().some((registration) => registration.source === "skill")
-				? integrationComposition.skillCatalog : "";
 			const directExtensionRegistrations = partitionRuntimeToolRegistrations(currentRegistrations()).direct;
 			const directExtensionDefinitions = Object.freeze(directExtensionRegistrations.map((registration) => registration.definition));
 			const currentDeferredRegistrations = () => partitionRuntimeToolRegistrations(currentRegistrations()).deferred;
@@ -1168,7 +1169,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				for (const name of mutatingTools(integrationComposition.manifest)) mutatingAgentTools.add(name);
 				const deferred = allowedDeferredRegistrations();
 				extensionCatalog.replace({ version: integrationComposition.version, tools: deferredCandidates(deferred),
-					skillCatalog: currentSkillCatalog() }, currentRegistrations().map(
+					skillCatalog: extensions.skillCatalog() ?? "" }, currentRegistrations().map(
 					(registration) => ({
 						name: registration.definition.name,
 						...(registration.approvalScope ? { approvalScope: registration.approvalScope } : {}),
@@ -1363,7 +1364,6 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				createdAt: new Date().toISOString(),
 				createEventId: () => `lifecycle-${randomUUID()}`,
 			});
-			const selectedSkills = new SelectedSkillContext({ sessionId, store, service: () => integrationComposition.skills });
 			const coordinatorRuntime = new NodeTurnRuntime({
 			runLifecycle: {
 				prepare: (turnId, signal) => integrationComposition.prepareRun(JSON.stringify([sessionId, turnId]), signal),
@@ -1385,7 +1385,10 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			modelInputTokenCounter: tokenCounter,
 			contextSources: ({ config: activeConfig, runSnapshot }) => Object.freeze({
 				skillCatalog: runSnapshot.toolCatalog.skillCatalog ?? "",
-				loadedSkillInstructions: selectedSkills.load(runSnapshot.turnId),
+				loadedSkillInstructions: extensions.selectedSkillInstructions({
+					sessionId,
+					turnId: runSnapshot.turnId,
+				}),
 				workspace: workspaceInstructionsForTrust(
 					workspaceRoot,
 					runSnapshot.policy?.configuration

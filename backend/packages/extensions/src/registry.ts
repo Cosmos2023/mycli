@@ -18,6 +18,8 @@ import type {
 	ExtensionTurnInput,
 	ExtensionTurnPolicyInput,
 	ExtensionTurnStop,
+	ExtensionSkillInput,
+	ExtensionSkillInstructions,
 	ExtensionToolRegistration,
 } from "./contributors.ts";
 
@@ -40,6 +42,8 @@ export type ExtensionHookName =
 	| "onClose"
 	| "tools"
 	| "toolRegistrations"
+	| "skillCatalog"
+	| "selectedInstructions"
 	| "compactionBudget"
 	| "conversationContext"
 	| "captureDelegatedWork"
@@ -300,6 +304,45 @@ export class ExtensionRegistry {
 			}
 		}
 		return Object.freeze(registrations);
+	}
+
+	/**
+	 * The first extension with a skill catalog wins. Like admission, this is contract-bearing: a
+	 * catalog that cannot be rendered must fail the session rather than silently disappear.
+	 */
+	skillCatalog(): string | undefined {
+		for (const [id, extension] of this.#extensions) {
+			const hook = extension.skills?.skillCatalog;
+			if (!hook) continue;
+			try {
+				const catalog = hook()?.trim();
+				if (catalog) return catalog;
+			} catch (error) {
+				this.#report(id, "skillCatalog", error);
+				throw error;
+			}
+		}
+		return undefined;
+	}
+
+	/**
+	 * Instructions for the skills selected on this turn, or undefined when none were selected.
+	 * Contract-bearing: a selected skill that can no longer be resolved must fail the turn instead
+	 * of quietly dropping the instructions the user asked for.
+	 */
+	selectedSkillInstructions(input: ExtensionSkillInput): readonly ExtensionSkillInstructions[] | undefined {
+		for (const [id, extension] of this.#extensions) {
+			const hook = extension.skills?.selectedInstructions;
+			if (!hook) continue;
+			try {
+				const instructions = hook(input);
+				if (instructions?.length) return instructions;
+			} catch (error) {
+				this.#report(id, "selectedInstructions", error);
+				throw error;
+			}
+		}
+		return undefined;
 	}
 
 	/**

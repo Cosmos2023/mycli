@@ -459,6 +459,7 @@ const EXTENSION_HOOKS = [
 	"onRestore", "onInterrupt", "onClose",
 	"tools",
 	"toolRegistrations",
+	"skillCatalog", "selectedInstructions",
 	"compactionBudget",
 	"conversationContext",
 	"captureDelegatedWork", "bindDelegatedWork", "releaseDelegatedWork",

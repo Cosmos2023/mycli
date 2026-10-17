@@ -306,6 +306,49 @@ test("tool registrations carry catalog metadata and a throwing one is skipped", 
 	assert.deepEqual(failures, [{ extensionId: "broken", hook: "toolRegistrations", message: "boom" }]);
 });
 
+test("the first extension with a skill catalog and selected instructions wins", () => {
+	const failures: ExtensionFailure[] = [];
+	const registry = new ExtensionRegistry({ onFailure: (failure) => failures.push(failure) });
+	registry.register({ id: "quiet", skills: { skillCatalog: () => "  ", selectedInstructions: () => [] } });
+	registry.register({
+		id: "skills",
+		skills: {
+			skillCatalog: () => "  - review: Review a change  ",
+			selectedInstructions: ({ turnId }) => turnId === "turn-1"
+				? [{ skillId: "review", content: "Read the diff." }]
+				: undefined,
+		},
+	});
+	registry.register({ id: "later", skills: { skillCatalog: () => "later" } });
+
+	assert.equal(registry.skillCatalog(), "- review: Review a change");
+	assert.deepEqual(registry.selectedSkillInstructions({ sessionId: "session-1", turnId: "turn-1" }), [
+		{ skillId: "review", content: "Read the diff." },
+	]);
+	assert.equal(registry.selectedSkillInstructions({ sessionId: "session-1", turnId: "turn-2" }), undefined);
+	assert.deepEqual(failures, []);
+});
+
+test("a skill catalog that cannot be rendered fails the session instead of disappearing", () => {
+	const failures: ExtensionFailure[] = [];
+	const registry = new ExtensionRegistry({ onFailure: (failure) => failures.push(failure) });
+	registry.register({ id: "skills", skills: { skillCatalog: () => { throw new Error("boom"); } } });
+	registry.register({
+		id: "broken",
+		skills: { selectedInstructions: () => { throw new Error("selected skill is unavailable"); } },
+	});
+
+	assert.throws(() => registry.skillCatalog(), /boom/u);
+	assert.throws(
+		() => registry.selectedSkillInstructions({ sessionId: "session-1", turnId: "turn-1" }),
+		/selected skill is unavailable/u,
+	);
+	assert.deepEqual(failures, [
+		{ extensionId: "skills", hook: "skillCatalog", message: "boom" },
+		{ extensionId: "broken", hook: "selectedInstructions", message: "selected skill is unavailable" },
+	]);
+});
+
 test("the first extension with a compaction budget wins and a throwing one is skipped", () => {
 	const failures: ExtensionFailure[] = [];
 	const charged: string[] = [];
