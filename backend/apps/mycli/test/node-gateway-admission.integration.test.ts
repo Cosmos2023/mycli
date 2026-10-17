@@ -6,6 +6,7 @@ import test from "node:test";
 import { NODE_RUNTIME_CONTEXT_DEFAULTS, type NodeRuntimeConfig } from "@mycli/config";
 import type { RuntimeTurnRecord } from "@mycli/contracts";
 import { ExtensionRegistry } from "@mycli/extensions";
+import type { ExtensionDefinition } from "@mycli/extensions";
 import { createGoalExtension, NodeTurnRuntime, SessionGoalService, QueueCoordinator } from "@mycli/runtime";
 import { openRuntimeSessionStore } from "@mycli/storage";
 import {
@@ -149,6 +150,7 @@ async function createFixture(t: test.TestContext, options: {
 	readonly goals?: boolean;
 	readonly providerGate?: Promise<void>;
 	readonly hasPendingGoalInteraction?: () => boolean;
+	readonly admissionExtension?: ExtensionDefinition;
 } = {}): Promise<Fixture> {
 	const root = await mkdtemp(join(tmpdir(), "mycli-admission-"));
 	const dbPath = join(root, "sessions.db");
@@ -171,6 +173,7 @@ async function createFixture(t: test.TestContext, options: {
 			commitPending: (turnId, records) => store.commitQueuedInputs({ sessionId: config.sessionId, turnId, records }) } }) : undefined;
 	const extensions = new ExtensionRegistry();
 	if (goal) extensions.register(createGoalExtension({ sessionId: config.sessionId, service: goal }));
+	if (options.admissionExtension) extensions.register(options.admissionExtension);
 	const runtime = new NodeTurnRuntime({
 		extensions, queueCoordinator: queue,
 		sessionId: config.sessionId, threadId: config.sessionId, workspaceRoot: root, store,
@@ -305,4 +308,36 @@ test("pending interactive requests defer goal admission until resolved", async (
 	await waitFor(() => f.providerCalls() === 1);
 	f.goal!.interrupt(); gate.resolve();
 	await waitFor(() => !f.controller.hasActiveTurn());
+});
+
+test("a non-goal extension is admitted without the controller naming it", async (t) => {
+	let admissions = 0;
+	const admissionExtension: ExtensionDefinition = {
+		id: "scheduler",
+		admission: {
+			// Admitting unconditionally would keep the scheduler admitting turns forever, so the
+			// extension decides when it wants one — the same reason goal's continuation is idle-gated.
+			nextTurn: () => {
+				if (admissions > 0) return undefined;
+				admissions += 1;
+				// The durable source label is still the closed set, so a non-goal extension borrows
+				// one until the transcript format grows an extension-owned label.
+				return { source: "user", message: "Scheduled work." };
+			},
+		},
+	};
+	const f = await createFixture(t, {
+		goals: true,
+		admissionExtension,
+	});
+
+	f.controller.requestNextQueuedTurn();
+	await waitFor(() => f.providerCalls() === 1);
+	await waitFor(() => !f.controller.hasActiveTurn());
+
+	const started = f.events.find((event) => event.method === "turn.started");
+	assert.equal(started?.params.source, "user");
+	// The controller names the admission after the extension that asked for it, not after a feature.
+	assert.ok(f.store.loadTurn("admission-session", `scheduler_${String(started?.params.turn_id)}`));
+	assert.equal(f.providerCalls(), 1);
 });

@@ -193,10 +193,22 @@ through the registry. What is left is one durable-format decision.
 
 **`TurnSubmission.source`** is still the closed union `"user" | "agent_mailbox" | "goal"` because
 storage persists it and the transcript renders it (`payload.source === "goal"` becomes "Continuing
-goal", and schema v15 gates goal input). Generalising it to `{ kind: "extension", ... }` means a
-storage migration plus a projection change, so an extension that is not goal cannot yet admit a
-turn with its own durable label — it would have to borrow `"goal"`. That is the last thing standing
-between the registry and a second feature that admits turns.
+goal", and schema v15 gates goal input). A new durable label is a new transcript value, which a
+reader that predates it rejects, so this is a schema version bump plus a projection change — not a
+rename.
+
+Until then, a second admitting extension has no correct label to borrow, and the admission
+integration test records both halves of that:
+
+- `"goal"` is not neutral. `createGoalExtension` cannot build a goal reference for a turn it did
+  not admit, so `onTurnAdmitted` throws, the registry records an `extension_failure`, and the turn
+  runs with no goal bookkeeping.
+- `"user"` is not neutral either. It persists as a normal submit and `SessionGoalService` marks the
+  turn `human`, which is what grants goal authority.
+
+So the durable label is the last thing standing between the registry and a second feature that
+admits turns: the controller side is already extension-agnostic (the test admits a turn from a
+synthetic `scheduler` extension without the controller naming it), but the storage side is not.
 
 ## Constraints discovered while migrating
 
