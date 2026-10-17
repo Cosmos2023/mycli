@@ -100,6 +100,7 @@ async function main() {
 		memoryExtensions.register(createMemoryExtension({
 			service: memoryContext,
 			enabled: () => runtimeConfig.memoryEnabled === true,
+			state: memoryExtensions.state,
 		}));
 		const registry = new ProviderRegistry();
 		const runtimeConfig = {

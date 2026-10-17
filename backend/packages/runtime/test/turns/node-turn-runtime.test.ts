@@ -55,7 +55,11 @@ import {
 	type ToolRouterContract,
 } from "@mycli/tools";
 import { ApprovalPolicy } from "../../../tools/src/policy/approval-policy.ts";
-import { ExtensionRegistry, type ExtensionFailure } from "@mycli/extensions";
+import {
+	ExtensionRegistry,
+	type ExtensionFailure,
+	type ExtensionStateScope,
+} from "@mycli/extensions";
 import {
 	NodeTurnRuntime,
 	ContextItemCoordinator,
@@ -573,6 +577,42 @@ test("the terminal hook is not awaited before the turn resolves", async () => {
 	release();
 	await Promise.resolve();
 	assert.deepEqual(seen, ["finished:completed"]);
+});
+
+test("a failed turn still drops its extension state", async () => {
+	const extensions = new ExtensionRegistry();
+	let scopeDuringTurn: ExtensionStateScope | undefined;
+	let markerAtFinish: string | undefined;
+	extensions.register({
+		id: "feature",
+		turnLifecycle: {
+			onTurnAdmitted: (input) => {
+				scopeDuringTurn = extensions.state.turn(input.turnId);
+				scopeDuringTurn.set("marker", "set");
+			},
+			onTurnFinished: (input) => {
+				markerAtFinish = extensions.state.turn(input.turnId).get<string>("marker");
+			},
+		},
+	});
+
+	const result = await createRuntime({
+		store: new FakeStore([]),
+		provider: {
+			...scriptedProvider([], [], [[]]),
+			resolveCapabilities: () => { throw new Error("boom"); },
+		},
+		toolRouter: new SequencedRouter([]),
+		extensions,
+	}).submit(submission(), () => {}, { signal: new AbortController().signal });
+
+	assert.equal(result.status, "failed");
+	// The terminal hook still saw what the turn attached, even though the turn never completed.
+	assert.equal(markerAtFinish, "set");
+	// The runtime dropped it on its own: the scope the turn used is untouched, but it is no longer
+	// the turn's scope. Cleaning up in `onTurnComplete` instead would have leaked here.
+	assert.equal(scopeDuringTurn?.get<string>("marker"), "set");
+	assert.equal(extensions.state.turn(result.turn_id).has("marker"), false);
 });
 
 test("a throwing extension cannot fail the turn and is reported", async () => {
@@ -4565,7 +4605,7 @@ function memoryExtensions(
 	enabled = true,
 ): ExtensionRegistry {
 	const registry = new ExtensionRegistry();
-	registry.register(createMemoryExtension({ service, enabled: () => enabled }));
+	registry.register(createMemoryExtension({ service, enabled: () => enabled, state: registry.state }));
 	return registry;
 }
 

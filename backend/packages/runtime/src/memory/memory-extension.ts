@@ -1,10 +1,12 @@
-import type { ExtensionDefinition, ExtensionTurnInput } from "@mycli/extensions";
+import type { ExtensionDefinition, ExtensionState, ExtensionTurnInput } from "@mycli/extensions";
 import type { MemoryContextResult, MemoryContextServiceContract } from "./memory-context-service.ts";
 
 export interface MemoryExtensionOptions {
 	readonly service: MemoryContextServiceContract;
 	/** Read at call time so a settings change applies to the next turn. */
 	readonly enabled: () => boolean;
+	/** Runtime-managed state, so the memoized collect cannot outlive its turn. */
+	readonly state: ExtensionState;
 }
 
 /**
@@ -12,13 +14,16 @@ export interface MemoryExtensionOptions {
  * ahead of the current input and the context section the durable request path renders, then runs
  * the explicit remember/forget actions after a completed turn.
  *
- * The collect call is memoized per turn so both representations stay one observation, and it
- * forgets the turn once it completes.
+ * The collect call is memoized per turn so both representations stay one observation. It is
+ * forgotten when the runtime drops that turn's state, which happens on every terminal path — not
+ * only on completion, which is where the map this replaced cleaned up and therefore leaked on
+ * failed and interrupted turns.
  */
 export function createMemoryExtension(options: MemoryExtensionOptions): ExtensionDefinition {
-	const perTurn = new Map<string, Promise<MemoryContextResult | undefined>>();
+	const collectKey = "memory:collect";
 	const collect = (input: ExtensionTurnInput): Promise<MemoryContextResult | undefined> => {
-		const existing = perTurn.get(input.turnId);
+		const turn = options.state.turn(input.turnId);
+		const existing = turn.get<Promise<MemoryContextResult | undefined>>(collectKey);
 		if (existing) return existing;
 		const pending = input.source !== "user" || !options.enabled()
 			? Promise.resolve(undefined)
@@ -32,7 +37,7 @@ export function createMemoryExtension(options: MemoryExtensionOptions): Extensio
 				// A failed lookup means "no memory for this turn"; the turn keeps going.
 				() => undefined,
 			);
-		perTurn.set(input.turnId, pending);
+		turn.set(collectKey, pending);
 		return pending;
 	};
 	return {
@@ -61,7 +66,6 @@ export function createMemoryExtension(options: MemoryExtensionOptions): Extensio
 		},
 		turnLifecycle: {
 			onTurnComplete: async (input) => {
-				perTurn.delete(input.turnId);
 				// Explicit remember/forget actions are durable, so they need the terminal snapshot.
 				if (!input.terminalSnapshotWritten) return;
 				if (input.source !== "user" || !options.enabled()) return;

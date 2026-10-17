@@ -1285,6 +1285,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			extensions.register(createMemoryExtension({
 				service: memoryContextService,
 				enabled: () => controlConfig.memoryEnabled,
+				state: extensions.state,
 			}));
 			const createCompactionCoordinator = (
 				resolved: NodeRuntimeConfig,

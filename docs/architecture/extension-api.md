@@ -27,6 +27,9 @@ contributors, and the runtime asks the registry instead of naming them.
   *gate* something are contract-bearing instead and report **and** propagate: `assertAdmission` /
   `onAdmissionFailed`, `onRestore` / `onInterrupt`, and `skillCatalog` / `selectedInstructions`.
   `close` is the middle case — every extension is closed, then the first failure is rethrown.
+- State: `registry.state` gives every extension a session scope and a per-turn scope whose lifetime
+  the runtime owns. It is not a slot — an extension reaches it through its own closure, which the app
+  wires when it creates the extension.
 
 The runtime consults the registry in `node-turn-runtime.ts`:
 
@@ -223,20 +226,6 @@ the registry first and otherwise delegates to the unchanged helper.
   the session catalog holds. Codex's web-search extension contributes a tool; mycli would need a
   config contributor slot before there is anything to move.
 
-## Adding a slot
-
-A slot is added when a **second** feature needs it, not when the first one does. The registry has 13
-slots today and five of them — `turnPolicy`, `compactionBudget`, `conversationContext`,
-`delegation`, `failure` — exist only because goal needs them. They are not merged into each other,
-because they are genuinely different concerns (stopping a turn, charging a summary, filling a
-contract fragment, carrying accounting across a runtime boundary, classifying an error), but the
-asymmetry is real: the API is ahead of its users, and every future extension has to read past five
-slots that only one feature exercises.
-
-So before adding one, answer which *second* feature wants it. Codex's contributor slots mostly have
-two or more users. A slot that only ever serves one feature is a named option wearing a contributor's
-clothes — and the branch's whole point was to stop adding named options.
-
 ### Extension-admitted turns (done)
 
 Any extension can now admit a turn with its own durable label. `ExtensionTurnSource` gained
@@ -268,6 +257,39 @@ are maintained at release time rather than per format bump: `release/compatibili
 (`sessions.runtime_schema: 12`) and the Session Window section of `docs/compatibility.md`. Both were
 already stale at `15`.
 
+### Extension state (done)
+
+`registry.state` gives an extension two scopes whose lifetime the runtime owns — Codex hands every
+hook a thread store and a turn store, and these are the two lifetimes mycli needs:
+
+- `state.session` lives as long as the runtime;
+- `state.turn(turnId)` is dropped when that turn reaches **any** terminal state.
+
+It is deliberately not a slot. An extension reaches it through its own closure, which the app wires
+when it creates the extension (`createMemoryExtension({ …, state: extensions.state })`), so no hook
+input had to grow a field. Keys belong to the extension that wrote them; the runtime never inspects
+them.
+
+Honest framing: this has **one** user today, memory. The reason to build it anyway is not the user
+count but what it fixes by construction — memory memoized its per-turn collect in a `Map` that it
+cleared from `onTurnComplete`, and a turn that fails or is interrupted never completes, so every
+such turn leaked an entry. The turn scope is dropped from `#finishTurn` instead, which runs on every
+terminal path. `node-turn-runtime.test.ts` pins that with a turn that fails before it can complete.
+
+## Adding a slot
+
+A slot is added when a **second** feature needs it, not when the first one does. The registry has 13
+slots today and five of them — `turnPolicy`, `compactionBudget`, `conversationContext`,
+`delegation`, `failure` — exist only because goal needs them. They are not merged into each other,
+because they are genuinely different concerns (stopping a turn, charging a summary, filling a
+contract fragment, carrying accounting across a runtime boundary, classifying an error), but the
+asymmetry is real: the API is ahead of its users, and every future extension has to read past five
+slots that only one feature exercises.
+
+So before adding one, answer which *second* feature wants it. Codex's contributor slots mostly have
+two or more users. A slot that only ever serves one feature is a named option wearing a contributor's
+clothes — and the branch's whole point was to stop adding named options.
+
 ## Constraints discovered while migrating
 
 1. **Context sections must be merged after the app's `contextSources` callback.** The callback
@@ -279,7 +301,9 @@ already stale at `15`.
    `scripts/test-suite-catalog.mjs` test target, and `scripts/release-config.mjs`'s vendored list
    (which the release-scripts test counts).
 4. **Scripts that construct the runtime directly must move too** — `scripts/smoke_node_m5_state.mjs`
-   built a registry by hand after the memory migration.
+   builds a registry by hand and has needed a change for two migrations in a row (the memory
+   migration, then the state bag). It is JavaScript, so the type checker does not catch it; only the
+   M5 smoke does.
 5. **`#finishTurn` stays synchronous.** It calls `runTurnFinished` without awaiting it: the
    registry runs each hook up to its first `await` before yielding, so a synchronous owner (goal)
    has already updated its state when the next scheduler pass reads it, and the registry never

@@ -1,5 +1,7 @@
 import type { CanonicalConversationItem } from "@mycli/core";
 import type { ToolAdapter } from "@mycli/tools";
+import { createExtensionState } from "./state.ts";
+import type { ExtensionState } from "./state.ts";
 import type {
 	ExtensionAdmission,
 	ExtensionAdmissionFailureInput,
@@ -84,9 +86,29 @@ const FAILURE_MESSAGE_MAX_CHARS = 240;
 export class ExtensionRegistry {
 	readonly #extensions = new Map<string, ExtensionDefinition>();
 	readonly #onFailure: ((failure: ExtensionFailure) => void) | undefined;
+	readonly #state = createExtensionState();
+	readonly #stateView: ExtensionState;
 
 	constructor(options: ExtensionRegistryOptions = {}) {
 		this.#onFailure = options.onFailure;
+		// A narrow view: extensions get the scopes, only the runtime gets to end a turn's state.
+		this.#stateView = Object.freeze({
+			session: this.#state.session,
+			turn: (turnId: string) => this.#state.turn(turnId),
+		});
+	}
+
+	/**
+	 * State whose lifetime the runtime owns. Extensions reach it through their own closure — the app
+	 * passes `registry.state` when it creates them — so no hook input has to carry it.
+	 */
+	get state(): ExtensionState {
+		return this.#stateView;
+	}
+
+	/** Drops everything a turn attached. The runtime calls this once the turn is terminal. */
+	endTurn(turnId: string): void {
+		this.#state.endTurn(turnId);
 	}
 
 	register(definition: ExtensionDefinition): void {

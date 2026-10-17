@@ -1,4 +1,6 @@
 export { ExtensionRegistry } from "./registry.ts";
+export { createExtensionState } from "./state.ts";
+export type { ExtensionState, ExtensionStateScope, ExtensionStateStore } from "./state.ts";
 export type {
 	ExtensionFailure,
 	ExtensionHookName,

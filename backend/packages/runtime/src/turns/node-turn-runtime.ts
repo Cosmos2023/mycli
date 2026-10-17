@@ -558,6 +558,10 @@ export class NodeTurnRuntime {
 				});
 			}
 		} finally {
+			// Turn state is dropped on every terminal path, after the terminal hook had its chance to
+			// read it. A failed or interrupted turn never reaches `onTurnComplete`, so an extension
+			// that cleaned up there would leak.
+			this.#options.extensions?.endTurn(turnId);
 			this.#options.toolRouter?.finishTurn?.(turnId);
 			this.#options.approvalPolicy?.finishTurn?.(turnId);
 			this.#runExecutions.finish(turnId);
