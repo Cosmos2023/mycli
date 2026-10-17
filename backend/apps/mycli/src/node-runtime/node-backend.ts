@@ -9,6 +9,7 @@ import { ExtensionRegistry } from "@mycli/extensions";
 import type { ExtensionToolRegistration } from "@mycli/extensions";
 import { createMcpExtension } from "./mcp-extension.ts";
 import { createSkillsExtension } from "./skills-extension.ts";
+import { createAgentRolesExtension } from "./agent-roles-extension.ts";
 import { createPluginsExtension } from "./plugins-extension.ts";
 import { createSubagentsExtension } from "./subagents-extension.ts";
 import { McpElicitationBroker } from "./mcp-elicitation-broker.ts";
@@ -76,7 +77,9 @@ import {
 } from "@mycli/core";
 import {
 	IntegrationToolApprovalStore,
+	applyAgentRole,
 	boundSubagentReport,
+	discoverAgentRoles,
 	SUBAGENT_NOTIFICATION_MAX_BYTES,
 	skillInvocationArtifactFromMetadata,
 	type IntegrationRegistration,
@@ -806,13 +809,18 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			const parentRunSnapshot = parentRuntime
 				?.runExecutionSnapshot?.(input.parentTurnId);
 			const parentPreferences = parentRuntime?.sessionPreferences?.();
+			// A role may pick another model, but only through the same resolution path as any other
+			// preference change, so the provider and protocol stay paired with the model.
+			const spawnPreferences = input.role?.model === undefined
+				? parentPreferences ?? defaultPreferences
+				: Object.freeze({ ...(parentPreferences ?? defaultPreferences), model: input.role.model });
 			const resolved = await resolveWorkspaceModelRuntimeConfig({
 				homeDir,
 				workspaceRoot,
 				env: options.env,
 				overrides: sessionPreferenceOverrides(
 					input.childSessionId,
-					parentPreferences ?? defaultPreferences,
+					spawnPreferences,
 				),
 			});
 			const executionPolicy = narrowAgentExecutionPolicy(
@@ -839,7 +847,7 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 					instructions: Object.freeze({
 						project: productSystemPrompt.content,
 					}),
-					tools: Object.freeze([...input.tools]),
+					tools: Object.freeze([...applyAgentRole(input.role, input.tools)]),
 					...(integrationAuthority ? { integrationAuthority } : {}),
 					forkTurns: "none" as const,
 				}),
@@ -860,6 +868,12 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 			resolveSpawnContext: integrationOptions.resolveSubagentSpawnContext,
 			agentActivity, mailbox: agentMailbox, resolveAgentRouteContext,
 			maxAgentDepth: DEFAULT_AGENT_MAX_DEPTH,
+			// Read on every spawn so a role file edited mid-session applies to the next child.
+			roles: () => discoverAgentRoles({
+				homeDir,
+				workspaceRoot: config.workspaceRoot,
+				includeRepository: startupTrustState === "trusted",
+			}),
 		});
 	} catch (error) {
 		await agentSupervisor?.close().catch(() => undefined);
@@ -922,6 +936,13 @@ export async function startNodeBackend(options: StartNodeBackendOptions): Promis
 				}),
 			});
 			if (goal) extensions.register(createGoalExtension({ sessionId, service: goal }));
+			extensions.register(createAgentRolesExtension({
+				roles: () => discoverAgentRoles({
+					homeDir,
+					workspaceRoot,
+					includeRepository: startupTrustState === "trusted",
+				}),
+			}));
 			// Delegated work carries no goal of its own; it mirrors the parent goal it was bound to.
 			if (runtimeOptions.subagentContext) extensions.register(createGoalUsageExtension({ tracker: goalUsage }));
 			// Cold activation: the registry, not the app, decides which features may continue.

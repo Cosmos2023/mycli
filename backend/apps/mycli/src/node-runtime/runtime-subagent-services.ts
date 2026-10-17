@@ -12,6 +12,7 @@ import {
 	SpawnAgentTool,
 	WAIT_AGENT_TOOL_DEFINITION,
 	WaitAgentTool,
+	type AgentRoleCatalog,
 	type IntegrationRegistration,
 	type WaitAgentActivityContract,
 } from "@mycli/integrations";
@@ -31,6 +32,8 @@ export interface RuntimeSubagentServices {
 export function createRuntimeSubagentServices(
 	options: ConstructorParameters<typeof SubagentController>[0] & {
 		readonly agentActivity?: WaitAgentActivityContract;
+		/** Reads the roles this session declares, so `spawn_agent` can validate an `agent_type`. */
+		readonly roles?: () => Promise<AgentRoleCatalog>;
 	},
 ): RuntimeSubagentServices {
 	const controller = new SubagentController(options);
@@ -39,7 +42,11 @@ export function createRuntimeSubagentServices(
 	let closing: Promise<void> | undefined;
 	return Object.freeze({
 		controller,
-		registrations: subagentRegistrations(controller, options.agentActivity ?? UNAVAILABLE_AGENT_ACTIVITY),
+		registrations: subagentRegistrations(
+			controller,
+			options.agentActivity ?? UNAVAILABLE_AGENT_ACTIVITY,
+			options.roles,
+		),
 		subscribe: (listener: (value: Projection) => void) => {
 			listeners.add(listener);
 			return () => { listeners.delete(listener); };
@@ -56,11 +63,12 @@ export function createRuntimeSubagentServices(
 function subagentRegistrations(
 	controller: SubagentController,
 	agentActivity: WaitAgentActivityContract,
+	roles: (() => Promise<AgentRoleCatalog>) | undefined,
 ): readonly IntegrationRegistration[] {
 	return Object.freeze([
 		subagentRegistration(
 			SPAWN_AGENT_TOOL_DEFINITION,
-			new SpawnAgentTool({ control: controller }),
+			new SpawnAgentTool({ control: controller, ...(roles ? { roles } : {}) }),
 		),
 		subagentRegistration(
 			SEND_AGENT_MESSAGE_TOOL_DEFINITION,

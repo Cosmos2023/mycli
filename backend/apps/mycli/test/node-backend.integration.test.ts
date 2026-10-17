@@ -6958,6 +6958,45 @@ test("a skill written while the session is idle reaches the next turn", async (t
 	assert.match(JSON.stringify(requests[1]), /live-reload-skill/u);
 });
 
+test("a declared agent role reaches the model as context", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "mycli-agent-role-context-"));
+	const home = join(root, "home"); const workspace = join(root, "workspace");
+	await mkdir(join(workspace, ".mycli", "agents"), { recursive: true }); await mkdir(home);
+	await writeFile(join(workspace, ".mycli", "agents", "reviewer.toml"),
+		'name = "reviewer"\ndescription = "AGENT_ROLE_MARKER read-only reviewer."\ntools = ["Read"]\n');
+	await new WorkspaceTrustStore({ homeDir: home }).save(workspace, "trusted");
+	const requests: Record<string, unknown>[] = [];
+	const server = createServer((request, reply) => {
+		let body = ""; request.setEncoding("utf8"); request.on("data", (chunk) => { body += chunk; });
+		request.on("end", () => {
+			requests.push(JSON.parse(body) as Record<string, unknown>);
+			reply.writeHead(200, { "content-type": "text/event-stream" });
+			writeResponsesText(reply, "Done.", `role-response-${requests.length}`);
+			reply.end("data: [DONE]\n\n");
+		});
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const address = server.address(); assert.ok(address && typeof address === "object");
+	const backend = await startNodeBackend({ cwd: workspace, args: ["--session", "agent-role", "--model", "gpt-test"], env: {
+		HOME: home, MYCLI_API_KEY: "test-key", MYCLI_BASE_URL: `http://127.0.0.1:${address.port}/v1`, MYCLI_PROVIDER: "openai", MYCLI_PROTOCOL: "responses",
+		MYCLI_THINKING_ENABLED: "false", MYCLI_MEMORY_ENABLED: "false", MYCLI_STREAM_MAX_RETRIES: "0", MYCLI_AGENT_EXECUTION_ADAPTER: "worker",
+	} });
+	t.after(async () => { await backend.close(); await new Promise<void>((resolve) => server.close(() => resolve())); await rm(root, { recursive: true, force: true }); });
+	const messages: Record<string, unknown>[] = [];
+	createInterface({ input: backend.transport.input, crlfDelay: Infinity }).on("line", (line) => { messages.push(parseJsonRpcMessage(JSON.parse(line)) as Record<string, unknown>); });
+	await waitFor(() => event(messages, "runtime.ready"));
+
+	writeRequest(backend, "role-turn", "turn.submit", {
+		session_id: "agent-role", generation: 1, client_turn_id: "role-turn", client_user_message_id: "role-turn", message: "Say hello.",
+	});
+	await waitFor(() => finalMessageCount(messages) === 1, 10000);
+
+	// The spawn tool can only be asked for a role the model has been told about, so the catalog has
+	// to reach the request even though this turn never spawns anything.
+	assert.match(JSON.stringify(requests[0]), /AGENT_ROLE_MARKER/u);
+	assert.match(JSON.stringify(requests[0]), /agent_type/u);
+});
+
 test("TUI review uses read-only tools and releases its runtime before ordinary chat", async (t) => {
  const { execFileSync } = await import("node:child_process");
  const root = await mkdtemp(join(tmpdir(), "mycli-tui-review-"));

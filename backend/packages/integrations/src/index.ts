@@ -241,6 +241,18 @@ export {
 } from "./subagents/coordination-tools.ts";
 export type { AgentCoordinationToolOptions } from "./subagents/coordination-tools.ts";
 export {
+	agentRoleByName,
+	applyAgentRole,
+	discoverAgentRoles,
+} from "./subagents/agent-roles.ts";
+export type {
+	AgentRole,
+	AgentRoleCatalog,
+	AgentRoleDiagnosticIssue,
+	AgentRoleSourceKind,
+	DiscoverAgentRolesOptions,
+} from "./subagents/agent-roles.ts";
+export {
 	SUBAGENT_TOOL_MODEL_OUTPUT_MAX_CHARS,
 } from "./subagents/tool-result.ts";
 export {

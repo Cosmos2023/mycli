@@ -252,6 +252,62 @@ test("Codex-style coordination adapters return typed stable results", async () =
 	});
 });
 
+test("spawn_agent resolves a declared agent type and rejects an unknown one", async () => {
+	const calls: Array<Readonly<Record<string, unknown>>> = [];
+	const control: AgentCoordinationControlContract = {
+		spawnAgent: async (input) => {
+			calls.push({ ...input });
+			return {
+				status: "running",
+				taskId: "task-1",
+				childSessionId: "child-1",
+				taskName: input.taskName,
+				agentPath: parseAgentPath(`/root/${input.taskName}`),
+				summary: "Subagent started in background",
+			};
+		},
+		sendAgent: async () => assert.fail("no messages are expected"),
+		interruptAgent: async () => assert.fail("no interrupts are expected"),
+		listAgents: () => [],
+	};
+	const roles = async (): Promise<integrations.AgentRoleCatalog> => Object.freeze({
+		roles: Object.freeze([{
+			name: "reviewer",
+			description: "Read-only review.",
+			sourcePath: "/workspace/.mycli/agents/reviewer.toml",
+			sourceKind: "repo" as const,
+			tools: Object.freeze(["Read"]),
+		}]),
+		issues: Object.freeze([]),
+	});
+	const spawn = new SpawnAgentTool({ control, roles });
+
+	const known = await spawn.execute({
+		task_name: "audit",
+		message: "review the diff",
+		agent_type: "reviewer",
+	}, execution());
+	const unknown = await spawn.execute({
+		task_name: "audit-again",
+		message: "review the diff",
+		agent_type: "missing",
+	}, execution());
+
+	assert.equal(known.success, true);
+	assert.deepEqual(calls[0]?.role, {
+		name: "reviewer",
+		description: "Read-only review.",
+		sourcePath: "/workspace/.mycli/agents/reviewer.toml",
+		sourceKind: "repo",
+		tools: ["Read"],
+	});
+	assert.equal(unknown.success, false);
+	assert.equal(unknown.errorKind, "invalid_arguments");
+	assert.match(unknown.summary, /Unknown agent type: missing/u);
+	assert.match(unknown.modelOutput, /reviewer/u);
+	assert.equal(calls.length, 1);
+});
+
 test("wait_agent delegates owner activity and maps activity timeout and unavailable outcomes", async () => {
 	const calls: unknown[] = [];
 	let outcome: Awaited<ReturnType<WaitAgentActivityContract["wait"]>> = {

@@ -20,6 +20,7 @@ import type {
 	SubagentTaskRecord,
 } from "@mycli/storage";
 import { resolveChildTools } from "./tool-scope.ts";
+import type { AgentRole } from "./agent-roles.ts";
 
 export interface ChildRuntimeCreateInput {
 	readonly purpose?: "spawn" | "reload";
@@ -92,6 +93,8 @@ export interface StartSubagentInput {
 	readonly parentSessionId?: string;
 	readonly parentTurnId?: string;
 	readonly forkTurns?: string;
+	/** The role the caller asked for, already resolved against the session's declared roles. */
+	readonly role?: AgentRole;
 }
 
 export type SubagentStartResult =
@@ -224,6 +227,7 @@ export interface SpawnAgentInput {
 	readonly taskName: string;
 	readonly message: string;
 	readonly forkTurns?: string;
+	readonly role?: AgentRole;
 }
 
 export interface SendAgentCoordinationInput {
@@ -283,6 +287,7 @@ export interface ResolveSubagentSpawnContextInput {
 	readonly parentTurnId: string;
 	readonly childSessionId: string;
 	readonly tools: readonly string[];
+	readonly role?: AgentRole;
 }
 
 export interface ResolvedSubagentSpawnContext {
@@ -348,6 +353,7 @@ export class SubagentController implements SubagentControlContract, AgentCoordin
 			parentSessionId: input.ownerSessionId,
 			...(input.ownerTurnId ? { parentTurnId: input.ownerTurnId } : {}),
 			...(input.forkTurns ? { forkTurns: input.forkTurns } : {}),
+			...(input.role ? { role: input.role } : {}),
 		});
 	}
 
@@ -377,6 +383,7 @@ export class SubagentController implements SubagentControlContract, AgentCoordin
 				parentTurnId,
 				childSessionId,
 				tools: candidateTools,
+				...(input.role ? { role: input.role } : {}),
 			});
 		} catch {
 			return unavailableSupervisorStart(taskId, childSessionId);

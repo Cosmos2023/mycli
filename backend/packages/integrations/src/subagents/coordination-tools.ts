@@ -6,10 +6,19 @@ import type {
 	ToolExecutionOptions,
 } from "@mycli/tools";
 import type { AgentCoordinationControlContract } from "./controller.ts";
+import type { AgentRoleCatalog } from "./agent-roles.ts";
 import { boundText, failure, success } from "./tool-result.ts";
 
 export interface AgentCoordinationToolOptions {
 	readonly control: AgentCoordinationControlContract;
+}
+
+export interface SpawnAgentToolOptions extends AgentCoordinationToolOptions {
+	/**
+	 * Reads the roles this session declares, so an unknown `agent_type` fails with the list the
+	 * model can actually choose from instead of silently inheriting the caller's configuration.
+	 */
+	readonly roles?: () => Promise<AgentRoleCatalog>;
 }
 
 export const SPAWN_AGENT_TOOL_DEFINITION: ToolDefinition = deepFreeze({
@@ -38,6 +47,11 @@ export const SPAWN_AGENT_TOOL_DEFINITION: ToolDefinition = deepFreeze({
 				type: "string",
 				pattern: "^(?:none|all|[1-9][0-9]*)$",
 				description: "Parent conversation context to include: none, all, or a positive integer string for the most recent turns. Defaults to none.",
+			},
+			agent_type: {
+				type: "string",
+				pattern: "^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?$",
+				description: "Optional role for the child agent, as declared in .mycli/agents/<name>.toml and listed in your context. Omit to inherit your own configuration.",
 			},
 		},
 		required: ["task_name", "message"],
@@ -110,9 +124,11 @@ export const LIST_AGENTS_TOOL_DEFINITION: ToolDefinition = deepFreeze({
 export class SpawnAgentTool implements ToolAdapter {
 	readonly definition = SPAWN_AGENT_TOOL_DEFINITION;
 	readonly #control: AgentCoordinationControlContract;
+	readonly #roles: (() => Promise<AgentRoleCatalog>) | undefined;
 
-	constructor(options: AgentCoordinationToolOptions) {
+	constructor(options: SpawnAgentToolOptions) {
 		this.#control = options.control;
+		this.#roles = options.roles;
 	}
 
 	async execute(
@@ -122,12 +138,23 @@ export class SpawnAgentTool implements ToolAdapter {
 		assertNotAborted(options.signal);
 		try {
 			const forkTurns = optionalString(argumentsValue.fork_turns);
+			const agentType = optionalString(argumentsValue.agent_type);
+			const catalog = agentType === undefined ? undefined : await this.#roles?.();
+			const role = agentType === undefined || catalog === undefined
+				? undefined
+				: catalog.roles.find((candidate) => candidate.name === agentType);
+			if (agentType !== undefined && !role) {
+				const available = catalog?.roles.map((candidate) => candidate.name) ?? [];
+				return failure(JSON.stringify({ error: "unknown_agent_type", agent_type: agentType, available }),
+					`Unknown agent type: ${agentType}`, "invalid_arguments");
+			}
 			const result = await this.#control.spawnAgent({
 				ownerSessionId: options.ownerSessionId,
 				...(options.ownerTurnId ? { ownerTurnId: options.ownerTurnId } : {}),
 				taskName: stringValue(argumentsValue.task_name),
 				message: stringValue(argumentsValue.message),
 				...(forkTurns ? { forkTurns } : {}),
+				...(role ? { role } : {}),
 			});
 			const output = boundText(JSON.stringify({
 				status: result.status,
